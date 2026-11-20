@@ -80,6 +80,18 @@ PostgreSQL's signed 32-bit request-log storage range. Validate timing operands a
 their sum before rounding. For example, two individually finite 1e308 timings are
 not usable measurements and cannot interrupt an otherwise valid response.
 
+An invalid count is not the same as a missing one. Chat streams send
+`"usage": null` on content chunks, and those keep the usage seen so far; a frame
+that reports `{"prompt_tokens": true, "completion_tokens": 180}` replaces it with
+"unavailable", so a limited API key fails closed instead of being charged the one
+output token an earlier frame reported. A frame with `{"completion_tokens": 180}`
+alone is treated the same way, and a later complete pair replaces it. Likewise a
+transcription reporting `{"output_tokens": 180, "total_tokens": 184}` or an
+invalid split count is not re-read through the total-only fallback as 184 input
+tokens. Reasoning
+tokens are part of the output and are capped at the output count, as cached
+tokens are capped at the input count.
+
 The usage parser incrementally decodes UTF-8 and waits for complete SSE events,
 including multi-line data and CRLF split across network chunks. Forwarding still
 yields original upstream bytes. Source routing, metric qualification and report

@@ -1138,6 +1138,8 @@ def _usage_from_embeddings_payload(payload: Mapping[str, JsonValue]) -> SourceUs
     usage = payload.get("usage")
     if not is_json_mapping(usage):
         return None
+    if _reports_invalid_count(usage, _CHAT_USAGE_COUNT_KEYS):
+        return None
     return _usage_from_mapping(usage) or _usage_from_total_tokens_mapping(usage)
 
 
@@ -1153,7 +1155,17 @@ def _usage_from_audio_body(body: bytes, content_type: str | None) -> SourceUsage
     usage = parsed.get("usage")
     if not is_json_mapping(usage):
         return None
-    return _usage_from_mapping(usage) or _usage_from_responses_mapping(usage) or _usage_from_total_tokens_mapping(usage)
+    # The total-only fallback is for genuine total-only telemetry: a reported
+    # split count that is invalid, or that does not complete a supported pair,
+    # makes the usage unavailable instead of being re-read as an input-only
+    # total (``output_tokens: 180, total_tokens: 184`` is not 184 input).
+    split_keys = (*_CHAT_USAGE_COUNT_KEYS, *_RESPONSES_USAGE_COUNT_KEYS)
+    if _reports_invalid_count(usage, split_keys):
+        return None
+    split_usage = _usage_from_mapping(usage) or _usage_from_responses_mapping(usage)
+    if split_usage is not None or _reports_count(usage, split_keys):
+        return split_usage
+    return _usage_from_total_tokens_mapping(usage)
 
 
 def _audio_seconds_from_body(body: bytes, content_type: str | None) -> float | None:
@@ -1243,9 +1255,33 @@ def _nonnegative_token_count(value: JsonValue) -> int | None:
     )
 
 
-def _reasoning_tokens_from_details(usage: Mapping[str, JsonValue], details_field: str) -> int | None:
+_CHAT_USAGE_COUNT_KEYS = ("prompt_tokens", "completion_tokens")
+_RESPONSES_USAGE_COUNT_KEYS = ("input_tokens", "output_tokens")
+
+
+def _reports_count(usage: Mapping[str, JsonValue], keys: tuple[str, ...]) -> bool:
+    """Whether ``usage`` reports any of ``keys``; a missing or null key is not reported."""
+
+    return any(usage.get(key) is not None for key in keys)
+
+
+def _reports_invalid_count(usage: Mapping[str, JsonValue], keys: tuple[str, ...]) -> bool:
+    """Whether ``usage`` reports one of ``keys`` with a value that is not a valid count.
+
+    A missing or null key is not reported; a boolean, negative, fractional or
+    out-of-range value is, and makes the whole usage unavailable.
+    """
+
+    return any(usage.get(key) is not None and _nonnegative_token_count(usage.get(key)) is None for key in keys)
+
+
+def _reasoning_tokens_from_details(
+    usage: Mapping[str, JsonValue], details_field: str, output_tokens: int
+) -> int | None:
     details = usage.get(details_field)
-    return _nonnegative_token_count(details.get("reasoning_tokens")) if is_json_mapping(details) else None
+    reasoning = _nonnegative_token_count(details.get("reasoning_tokens")) if is_json_mapping(details) else None
+    # Reasoning is part of the output, as cached tokens are part of the input.
+    return min(reasoning, output_tokens) if reasoning is not None else None
 
 
 def _usage_from_mapping(usage: Mapping[str, JsonValue]) -> SourceUsage | None:
@@ -1263,7 +1299,7 @@ def _usage_from_mapping(usage: Mapping[str, JsonValue]) -> SourceUsage | None:
         input_tokens=prompt_tokens,
         output_tokens=completion_tokens,
         cached_input_tokens=max(0, min(cached_tokens, prompt_tokens)),
-        reasoning_tokens=_reasoning_tokens_from_details(usage, "completion_tokens_details"),
+        reasoning_tokens=_reasoning_tokens_from_details(usage, "completion_tokens_details", completion_tokens),
     )
 
 
@@ -1282,7 +1318,7 @@ def _usage_from_responses_mapping(usage: Mapping[str, JsonValue]) -> SourceUsage
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=max(0, min(cached_tokens, input_tokens)),
-        reasoning_tokens=_reasoning_tokens_from_details(usage, "output_tokens_details"),
+        reasoning_tokens=_reasoning_tokens_from_details(usage, "output_tokens_details", output_tokens),
     )
 
 
@@ -1397,6 +1433,14 @@ class SourceStreamUsageParser:
             timings = _timings_from_payload(parsed)
         if usage is not None:
             self._usage_holder.usage = usage
+        elif _frame_reports_unusable_usage(parsed, responses=self._response_shape == "responses"):
+            # A frame that omits usage (absent or null) keeps the counts seen
+            # so far; one that reports a split count without a valid pair
+            # (an invalid value, or ``completion_tokens`` alone) supersedes
+            # them, so settlement treats the usage as unavailable instead of
+            # charging an earlier partial count. A later complete pair
+            # replaces it again.
+            self._usage_holder.usage = None
         if timings is not None:
             self._usage_holder.timings = timings
 
@@ -1439,6 +1483,17 @@ class SourceStreamUsageParser:
             delta = event.get("delta")
             if isinstance(delta, str):
                 holder.delta_chars += len(delta)
+
+
+def _frame_reports_unusable_usage(payload: Mapping[str, JsonValue], *, responses: bool) -> bool:
+    """Whether a frame whose usage did not parse still reported a split count."""
+
+    keys = _RESPONSES_USAGE_COUNT_KEYS if responses else _CHAT_USAGE_COUNT_KEYS
+    candidates = [payload.get("usage")]
+    response = payload.get("response")
+    if responses and is_json_mapping(response):
+        candidates.append(response.get("usage"))
+    return any(is_json_mapping(usage) and _reports_count(usage, keys) for usage in candidates)
 
 
 def _usage_from_responses_event(payload: Mapping[str, JsonValue]) -> SourceUsage | None:

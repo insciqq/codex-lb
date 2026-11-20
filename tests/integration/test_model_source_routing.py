@@ -370,6 +370,64 @@ async def test_source_audio_transcription_without_usage_fails_closed_for_limited
         assert result.scalars().all() == []
 
 
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"input_tokens": True, "output_tokens": 180, "total_tokens": 184},
+        {"output_tokens": 180, "total_tokens": 184},
+    ],
+    ids=["invalid-count", "incomplete-pair"],
+)
+@pytest.mark.asyncio
+async def test_source_audio_transcription_with_invalid_usage_pair_fails_closed_for_limited_key(
+    async_client, source_upstream, usage
+):
+    # A split count is reported but no valid pair is: the total-only fallback
+    # must not turn it into 184 input and 0 output tokens.
+    await _enable_api_key_auth(async_client)
+
+    async def transcribe_invalid_usage(_request: web.Request) -> web.Response:
+        return web.json_response({"text": "hi", "usage": usage})
+
+    base_url = await source_upstream(transcribe_invalid_usage)
+    model = "whisper-invalid-usage"
+    source_id = await _create_model_source(
+        async_client,
+        name="asr-invalid-usage",
+        model=model,
+        base_url=base_url,
+        supports_audio_transcriptions=True,
+    )
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "asr-invalid-usage-key",
+            "assignedSourceIds": [source_id],
+            "limits": [
+                {"limitType": "output_tokens", "limitWindow": "weekly", "maxValue": 1_000},
+            ],
+        },
+    )
+    assert created.status_code == 200
+    key = created.json()["key"]
+
+    response = await async_client.post(
+        "/v1/audio/transcriptions",
+        headers={"Authorization": f"Bearer {key}"},
+        data={"model": model},
+        files={"file": ("sample.wav", b"\x01\x02", "audio/wav")},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "usage_unavailable"
+
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(ApiKeyUsageReservation).where(ApiKeyUsageReservation.status == "reserved")
+        )
+        assert result.scalars().all() == []
+
+
 @pytest.mark.asyncio
 async def test_source_audio_transcription_raw_alias_lookup_requires_exact_allowlist(async_client, source_upstream):
     await _enable_api_key_auth(async_client)
@@ -1465,6 +1523,71 @@ async def test_limited_key_settles_usage_from_crlf_stream(async_client, source_u
         limits = await ApiKeysRepository(session).get_limits_by_key(key_id)
         assert len(limits) == 1
         assert limits[0].current_value == 15
+
+
+@pytest.mark.parametrize(
+    "final_usage",
+    [b'{"prompt_tokens":true,"completion_tokens":180}', b'{"completion_tokens":180}'],
+    ids=["invalid-count", "incomplete-pair"],
+)
+@pytest.mark.asyncio
+async def test_limited_key_stream_with_invalid_final_usage_is_not_charged_earlier_counts(
+    async_client, source_upstream, final_usage
+):
+    # An intermediate frame reports one output token; the final usage frame
+    # reports 180 without a valid pair (an invalid prompt count, or none).
+    # The earlier count must not be settled as if it were the final usage.
+    await _enable_api_key_auth(async_client)
+    frames = (
+        b'data: {"id":"chatcmpl_bad","object":"chat.completion.chunk","choices":[],'
+        b'"usage":{"prompt_tokens":9,"completion_tokens":1,"total_tokens":10}}\r\n\r\n'
+        b'data: {"id":"chatcmpl_bad","object":"chat.completion.chunk","choices":'
+        b'[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\r\n\r\n'
+        b'data: {"choices":[],"usage":' + final_usage + b"}\r\n\r\n"
+        b"data: [DONE]\r\n\r\n"
+    )
+
+    async def stream_handler(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(frames)
+        await response.write_eof()
+        return response
+
+    base_url = await source_upstream(stream_handler)
+    model = "source-invalid-final-usage-model"
+    source_id = await _create_model_source(async_client, name="invalid-final-usage", model=model, base_url=base_url)
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "invalid-final-usage-key",
+            "assignedSourceIds": [source_id],
+            "limits": [
+                {"limitType": "output_tokens", "limitWindow": "weekly", "maxValue": 1_000},
+            ],
+        },
+    )
+    assert created.status_code == 200
+    key = created.json()["key"]
+    key_id = created.json()["id"]
+
+    async with async_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"model": model, "messages": [{"role": "user", "content": "hi"}], "stream": True},
+    ) as response:
+        status_code = response.status_code
+        _ = b"".join([chunk async for chunk in response.aiter_bytes()])
+
+    assert status_code == 502
+    async with SessionLocal() as session:
+        limits = await ApiKeysRepository(session).get_limits_by_key(key_id)
+        assert [limit.current_value for limit in limits] == [0]
+        result = await session.execute(
+            select(ApiKeyUsageReservation).where(ApiKeyUsageReservation.status == "reserved")
+        )
+        assert result.scalars().all() == []
 
 
 @pytest.mark.asyncio

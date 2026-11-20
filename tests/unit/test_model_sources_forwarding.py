@@ -2531,3 +2531,109 @@ async def test_source_stream_preserves_fragmented_utf8_bytes_and_terminal_observ
     assert stream.usage_holder.timings is not None
     assert stream.usage_holder.timings.latency_ms == 200
     assert lease.released == 1
+
+
+@pytest.mark.parametrize("shape", ["chat", "responses"])
+def test_source_usage_clamps_reasoning_to_output_tokens(shape: str) -> None:
+    if shape == "chat":
+        usage = _usage_from_chat_payload(
+            {
+                "usage": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 5,
+                    "completion_tokens_details": {"reasoning_tokens": 9},
+                }
+            }
+        )
+    else:
+        usage = _usage_from_responses_payload(
+            {"usage": {"input_tokens": 8, "output_tokens": 5, "output_tokens_details": {"reasoning_tokens": 9}}}
+        )
+
+    assert usage is not None
+    assert usage.reasoning_tokens == 5
+
+
+@pytest.mark.parametrize(
+    ("shape", "invalid_frame"),
+    [
+        ("chat", {"choices": [], "usage": {"prompt_tokens": True, "completion_tokens": 180}}),
+        ("chat", {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 2_147_483_648}}),
+        ("chat", {"choices": [], "usage": {"completion_tokens": 180}}),
+        ("responses", {"type": "response.completed", "response": {"usage": {"output_tokens": 180}}}),
+        ("responses", {"type": "response.completed", "response": {"usage": {"input_tokens": 9, "output_tokens": -1}}}),
+    ],
+)
+def test_stream_usage_parser_invalid_later_usage_supersedes_earlier_counts(
+    shape: str, invalid_frame: dict[str, JsonValue]
+) -> None:
+    holder = SourceUsageHolder()
+    parser = SourceStreamUsageParser(holder, response_shape=shape)
+    if shape == "chat":
+        earlier: dict[str, JsonValue] = {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 1}}
+    else:
+        earlier = {"type": "response.in_progress", "response": {"usage": {"input_tokens": 9, "output_tokens": 1}}}
+
+    parser.feed(f"data: {json.dumps(earlier)}\n\n".encode())
+    assert holder.usage is not None
+    parser.feed(f"data: {json.dumps(invalid_frame)}\n\n".encode())
+    parser.finish()
+
+    assert holder.usage is None
+
+
+def test_stream_usage_parser_later_complete_pair_replaces_unusable_usage() -> None:
+    holder = SourceUsageHolder()
+    parser = SourceStreamUsageParser(holder, response_shape="chat")
+
+    parser.feed(b'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":1}}\n\n')
+    parser.feed(b'data: {"choices":[],"usage":{"completion_tokens":180}}\n\n')
+    assert holder.usage is None
+    parser.feed(b'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":180}}\n\n')
+    parser.finish()
+
+    assert holder.usage == SourceUsage(input_tokens=9, output_tokens=180, cached_input_tokens=0)
+
+
+def test_stream_usage_parser_frames_without_usage_keep_earlier_counts() -> None:
+    holder = SourceUsageHolder()
+    parser = SourceStreamUsageParser(holder, response_shape="chat")
+
+    parser.feed(b'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":6}}\n\n')
+    parser.feed(b'data: {"choices":[{"delta":{"content":"x"}}],"usage":null}\n\n')
+    parser.feed(b'data: {"choices":[],"usage":{"total_tokens":15}}\n\n')
+    parser.feed(b"data: [DONE]\n\n")
+    parser.finish()
+
+    assert holder.usage == SourceUsage(input_tokens=9, output_tokens=6, cached_input_tokens=0)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"input_tokens": True, "output_tokens": 180, "total_tokens": 184},
+        {"prompt_tokens": 4, "completion_tokens": -1, "total_tokens": 184},
+        {"output_tokens": 180, "total_tokens": 184},
+        {"prompt_tokens": 4, "output_tokens": 180, "total_tokens": 184},
+    ],
+)
+def test_audio_usage_parser_does_not_fall_back_to_total_for_invalid_counts(usage: dict[str, JsonValue]) -> None:
+    assert _usage_from_audio_body(json.dumps({"text": "hi", "usage": usage}).encode(), "application/json") is None
+
+
+def test_audio_usage_parser_ignores_an_invalid_unused_total() -> None:
+    usage = _usage_from_audio_body(
+        json.dumps({"text": "hi", "usage": {"input_tokens": 4, "output_tokens": 180, "total_tokens": True}}).encode(),
+        "application/json",
+    )
+
+    assert usage == SourceUsage(input_tokens=4, output_tokens=180, cached_input_tokens=0)
+
+
+def test_audio_usage_parser_total_fallback_ignores_null_split_counts() -> None:
+    usage = _usage_from_audio_body(
+        json.dumps({"text": "hi", "usage": {"input_tokens": None, "output_tokens": None, "total_tokens": 42}}).encode(),
+        "application/json",
+    )
+
+    assert usage == SourceUsage(input_tokens=42, output_tokens=0, cached_input_tokens=0)

@@ -1435,7 +1435,7 @@ The system MUST provide a single migration head when the published affinity hist
 
 ### Requirement: Optional source metrics cannot interrupt valid forwarding
 
-Source usage parsing MUST preserve reported nonnegative integer reasoning tokens and reject boolean or database-integer-out-of-range token values. Missing reasoning details MUST remain unknown. Optional timing parsing MUST reject non-finite, negative, boolean, overflowing and database-integer-out-of-range values, including overflow when adding individually finite timings, without interrupting an otherwise valid upstream response. Streamed usage/metrics MUST parse complete SSE events, combining multiple data lines and preserving framing across chunk-split CRLF boundaries. Forwarded bytes MUST remain unchanged.
+Source usage parsing MUST preserve reported nonnegative integer reasoning tokens, capped at the output token count, and reject boolean or database-integer-out-of-range token values. Missing reasoning details MUST remain unknown. Usage that reports an input or output count without a valid input/output pair (an invalid value, or one count of the pair alone) MUST be unavailable: such a streamed frame MUST supersede earlier counts of the same stream, while a frame whose usage is absent or null keeps them and a later complete pair replaces them, and a total-only fallback MUST apply only when every input and output count is absent or null. Optional timing parsing MUST reject non-finite, negative, boolean, overflowing and database-integer-out-of-range values, including overflow when adding individually finite timings, without interrupting an otherwise valid upstream response. Streamed usage/metrics MUST parse complete SSE events, combining multiple data lines and preserving framing across chunk-split CRLF boundaries. Forwarded bytes MUST remain unchanged.
 
 #### Scenario: Overflowing timing sum is ignored
 
@@ -1455,3 +1455,15 @@ Source usage parsing MUST preserve reported nonnegative integer reasoning tokens
 - **WHEN** usage is parsed
 - **THEN** that usage is treated as unavailable rather than causing request-log persistence to overflow
 - **AND** the existing fail-closed behavior for API-key limits requiring usage is preserved
+
+#### Scenario: Invalid final usage does not settle an earlier count
+
+- **GIVEN** a streamed source response reports valid usage in an intermediate frame and a boolean prompt count in its final usage frame
+- **WHEN** a request for an API key with a token limit completes
+- **THEN** usage is unavailable and the existing fail-closed settlement applies instead of charging the intermediate count
+
+#### Scenario: Invalid split transcription usage is not read as a total
+
+- **GIVEN** a transcription response reports `input_tokens: true`, `output_tokens: 180` and `total_tokens: 184`
+- **WHEN** its usage is parsed
+- **THEN** usage is unavailable rather than 184 input and 0 output tokens
