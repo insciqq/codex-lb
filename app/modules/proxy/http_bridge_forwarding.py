@@ -444,7 +444,7 @@ def parse_forwarded_request(
     # value on an honestly primary-signed forward, so a present-but-invalid
     # header simply falls through to the primary verification.
     tools_bound_signature = _optional_header(headers.get(HTTP_BRIDGE_SIGNATURE_V2_HEADER))
-    tools_bound_valid = tools_bound_signature is not None and hmac.compare_digest(
+    tools_bound_valid = _signature_matches(
         tools_bound_signature,
         _bridge_forward_tools_bound_signature(
             payload=payload,
@@ -485,21 +485,28 @@ def parse_forwarded_request(
         include_client_ip=False,
         signature_version=signature_version,
     )
-    primary_signature_valid = signature is not None and hmac.compare_digest(signature, expected_signature)
-    signature_without_client_ip_valid = signature is not None and hmac.compare_digest(
-        signature,
-        signature_without_client_ip,
-    )
-    client_ip_signature_valid = client_ip_signature is not None and hmac.compare_digest(
-        client_ip_signature,
-        expected_signature,
-    )
+    primary_signature_valid = _signature_matches(signature, expected_signature)
+    signature_without_client_ip_valid = _signature_matches(signature, signature_without_client_ip)
+    client_ip_signature_valid = _signature_matches(client_ip_signature, expected_signature)
     signature_valid = primary_signature_valid or (
         signature_without_client_ip_valid and (client_ip is None or client_ip_signature_valid)
     )
     if not signature_valid:
         return None, _invalid_bridge_forward_signature_error()
     return HTTPBridgeForwardedRequest(context=context), None
+
+
+def _signature_matches(received: str | None, expected: str) -> bool:
+    """Constant-time comparison of a received signature header with a hex digest.
+
+    ``hmac.compare_digest`` raises ``TypeError`` for a ``str`` holding
+    non-ASCII characters, and header values arrive latin-1 decoded, so a
+    forged or garbled header would surface as a 500 instead of the invalid
+    signature response. A non-ASCII value can never equal a hex digest.
+    """
+    if received is None or not received.isascii():
+        return False
+    return hmac.compare_digest(received, expected)
 
 
 def _invalid_bridge_forward_signature_error() -> ProxyResponseError:

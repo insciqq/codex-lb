@@ -1802,3 +1802,52 @@ async def test_iter_sse_event_blocks_receive_timeout_is_scheduler_owned() -> Non
     await scheduler.cancel_owned_tasks()
     assert scheduler.owned_tasks == frozenset()
     assert scheduler.pending_timers == 0
+
+
+def _non_ascii(value: str) -> str:
+    # Header values reach the parser latin-1 decoded, so any byte >= 0x80
+    # arrives as a non-ASCII character.
+    return "é" + value[1:]
+
+
+@pytest.mark.parametrize(
+    "header",
+    [HTTP_BRIDGE_SIGNATURE_HEADER, HTTP_BRIDGE_CLIENT_IP_SIGNATURE_HEADER],
+)
+def test_parse_forwarded_request_rejects_non_ascii_legacy_signature(header: str) -> None:
+    payload = _payload()
+    context = HTTPBridgeForwardContext(
+        origin_instance="instance-a",
+        target_instance="instance-b",
+        codex_session_affinity=True,
+        downstream_turn_state="http_turn_123",
+        client_ip="203.0.113.9",
+    )
+    headers = build_owner_forward_headers(headers={}, payload=payload, context=context)
+    _use_legacy_forward_signature(headers, payload=payload, context=context)
+    headers[header] = _non_ascii(headers[header])
+
+    forwarded, error = parse_forwarded_request(headers, payload=payload, current_instance="instance-b")
+
+    assert forwarded is None
+    assert error is not None
+    assert error.status_code == 400
+    assert error.payload["error"]["code"] == "bridge_forward_invalid"
+
+
+def test_parse_forwarded_request_non_ascii_v2_signature_falls_through_to_primary() -> None:
+    payload = _payload()
+    context = HTTPBridgeForwardContext(
+        origin_instance="instance-a",
+        target_instance="instance-b",
+        codex_session_affinity=True,
+        downstream_turn_state="http_turn_123",
+    )
+    headers = build_owner_forward_headers(headers={}, payload=payload, context=context)
+    headers[HTTP_BRIDGE_SIGNATURE_V2_HEADER] = _non_ascii(headers[HTTP_BRIDGE_SIGNATURE_V2_HEADER])
+
+    forwarded, error = parse_forwarded_request(headers, payload=payload, current_instance="instance-b")
+
+    assert error is None
+    assert forwarded is not None
+    assert forwarded.context == context
