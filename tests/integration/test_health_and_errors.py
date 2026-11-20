@@ -184,10 +184,21 @@ async def test_assets_js_served_as_javascript_despite_poisoned_registry(async_cl
     ],
 )
 async def test_unresolvable_static_path_returns_not_found(async_client, path):
-    """A path the filesystem rejects as too long is a 404, not a 500."""
-    response = await async_client.get(path)
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Not Found"
+    """A path the filesystem rejects as too long is a 404, not a 500 and not the dashboard."""
+    # With the dashboard build present the long segment is looked up inside an
+    # existing directory, which is where ENAMETOOLONG (not ENOENT) is raised.
+    index = _STATIC_DIR / "index.html"
+    created = not index.exists()
+    if created:
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("<!doctype html><html></html>")
+    try:
+        response = await async_client.get(path)
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Not Found"
+    finally:
+        if created:
+            index.unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio
