@@ -1,0 +1,1807 @@
+[registry]
+upstream = "Soju06/codex-lb"
+base = "72630bbfeee9e3b0d9acfb95e2b1e706b8b0188e"
+snapshot = 2026-11-20
+closed_since = 2026-10-16
+
+[pr.1528]
+title = "feat(accounts): add per-account usage limits"
+state = "open"
+status = "pending"
+
+[pr.1903]
+title = "fix(proxy): bound memory used by paused bridge streams"
+state = "open"
+status = "pending"
+
+[pr.1905]
+title = "fix(proxy): preserve continuation ownership across source routing"
+state = "open"
+status = "pending"
+
+[pr.1922]
+title = "chore(main): release 1.25.0"
+state = "open"
+status = "pending"
+
+[pr.1932]
+title = "feat(db): add safe SQLite compaction"
+state = "open"
+status = "pending"
+
+[pr.1938]
+title = "feat(accounts): add encrypted portable account bundles"
+state = "open"
+status = "pending"
+
+[pr.1952]
+title = "fix(proxy): preserve tool search pairs through replay"
+state = "open"
+status = "pending"
+
+[pr.1962]
+title = "fix(proxy): preserve half-open probe ownership during cleanup"
+state = "open"
+status = "pending"
+
+[pr.2001]
+title = "fix(proxy): release payload owner after pre-visible quota rejection"
+state = "open"
+status = "pending"
+
+[pr.2048]
+title = "fix(proxy): preserve exhausted sticky failover"
+state = "open"
+status = "pending"
+
+[pr.2069]
+title = "fix(proxy): recover unanchored quota replay"
+state = "open"
+status = "pending"
+
+[pr.2075]
+title = "fix(proxy): keep frameless bridge drops account neutral"
+state = "open"
+status = "pending"
+
+[pr.2085]
+title = "feat(models): add gpt-6 astra catalog support"
+state = "open"
+status = "pending"
+
+[pr.2088]
+title = "fix(http-bridge): wait for aborted bridge owner before retrying admission"
+state = "open"
+status = "pending"
+
+[pr.2097]
+title = "feat(proxy): enforce Astra configuration-update policy"
+state = "open"
+status = "pending"
+
+[pr.2098]
+title = "fix(docker): isolate host OAuth callback port by default"
+state = "open"
+status = "pending"
+
+[pr.2099]
+title = "feat(proxy): preserve async tool results across continuations"
+state = "open"
+status = "pending"
+
+[pr.2101]
+title = "fix(proxy): add native history and notes routes with account-local ownership"
+state = "open"
+status = "rejected"
+reason = "Concurrent first writes can pin different owners, the stale-session sweep retires history owners, and the session identity may diverge from the scoped cache identity; no evidence yet of the 405 responses it targets."
+
+[pr.2102]
+title = "feat(proxy): support Codex history and notes across account pools"
+state = "open"
+status = "pending"
+
+[pr.2112]
+title = "fix(observability): record HTTP upstream phase timings"
+state = "open"
+status = "pending"
+
+[pr.2115]
+title = "feat(proxy): support Astra steering with transport-owned dispatch"
+state = "open"
+status = "pending"
+
+[pr.2117]
+title = "fix(proxy): retire revoked stream accounts"
+state = "open"
+status = "pending"
+
+[pr.2118]
+title = "feat(ui): add Japanese dashboard localization"
+state = "open"
+status = "pending"
+
+[pr.2120]
+title = "fix(auth): retain unexpired access on refresh preflight failure"
+state = "open"
+status = "pending"
+
+[pr.2121]
+title = "fix(proxy): recover tool-complete goal followups from unavailable owners"
+state = "open"
+status = "pending"
+
+[pr.2122]
+title = "fix(warmup): restore reset usage threshold"
+state = "open"
+status = "pending"
+
+[pr.2133]
+title = "fix(proxy): isolate bridge heartbeat from maintenance"
+state = "open"
+status = "pending"
+
+[pr.2146]
+title = "feat(dashboard): add request heatmap on dashboard"
+state = "open"
+status = "pending"
+
+[pr.2276]
+title = "fix(proxy): preserve newer quarantine during response cleanup"
+state = "open"
+status = "pending"
+
+[pr.2277]
+title = "fix(proxy): preserve continuation anchors during input normalization"
+state = "open"
+status = "pending"
+
+[pr.2278]
+title = "fix(proxy): count incomplete responses toward bridge retries"
+state = "open"
+status = "pending"
+
+[pr.2280]
+title = "fix(proxy): preserve newer retry state during scheduled cleanup"
+state = "open"
+status = "pending"
+
+[pr.2294]
+title = "feat(telemetry): expand anonymous telemetry to schema v2 with summable day aggregates and histograms"
+state = "open"
+status = "pending"
+
+[pr.2303]
+title = "perf(http-bridge): drain queued transcript batches without interval waits"
+state = "open"
+status = "pending"
+
+[pr.2305]
+title = "feat(model-sources): discover CPA catalogs and retain unavailable ownership"
+state = "closed"
+status = "pending"
+
+[pr.2307]
+title = "feat(db): log per-revision migration progress"
+state = "open"
+status = "pending"
+
+[pr.2308]
+title = "fix(proxy): project pooled quotas into Codex rate-limit events"
+state = "closed"
+status = "pending"
+
+[pr.2310]
+title = "docs: align agent instructions with Astra prompt guidance"
+state = "open"
+status = "pending"
+
+[pr.2312]
+title = "docs: use GPT-6 Astra in current client examples"
+state = "open"
+status = "pending"
+
+[pr.2317]
+title = "fix(proxy): align compact budget with responses stream"
+state = "open"
+status = "pending"
+
+[pr.2319]
+title = "fix(proxy): contain post-terminal health write failures"
+state = "open"
+status = "pending"
+
+[pr.2321]
+title = "fix(accounts): preserve observed monthly quota across plans"
+state = "open"
+status = "pending"
+
+[pr.2322]
+title = "feat(db): explain guarded migration recovery stamping"
+state = "open"
+status = "pending"
+
+[pr.2323]
+title = "feat(cli): add targeted session metadata preview and repair"
+state = "open"
+status = "pending"
+
+[pr.2324]
+title = "feat(proxy): forward explicit compact requests to model sources"
+state = "open"
+status = "pending"
+
+[pr.2325]
+title = "feat(cli): bound whole-home retag planning and report progress"
+state = "open"
+status = "pending"
+
+[pr.2326]
+title = "fix(warmup): preserve live reset evidence across skipped polls"
+state = "open"
+status = "pending"
+
+[pr.2332]
+title = "fix(proxy): fail over account-local model rejection"
+state = "open"
+status = "pending"
+
+[pr.2344]
+title = "feat(health): expose request-persistence ownership during drain"
+state = "open"
+status = "pending"
+
+[pr.2345]
+title = "fix(proxy): preserve local quarantine evidence during completion"
+state = "open"
+status = "pending"
+
+[pr.2377]
+title = "fix(dashboard): calm the telemetry consent dialog"
+state = "open"
+status = "pending"
+
+[pr.2391]
+title = "feat(proxy): shape the failover decision around the pool and render its terminal"
+state = "open"
+status = "pending"
+
+[pr.2398]
+title = "fix(proxy): prepare portable WebSocket full resends for quota replay"
+state = "open"
+status = "pending"
+
+[pr.2403]
+title = "feat(proxy): classify usage-limit rejections and answer pool-walk exclusion"
+state = "open"
+status = "pending"
+
+[pr.2421]
+title = "chore: release v1.25.0-beta.10"
+state = "open"
+status = "pending"
+
+[pr.2423]
+title = "fix(proxy): reject a dead client anchor instead of asking for a retry"
+state = "open"
+status = "pending"
+
+[pr.2428]
+title = "feat(proxy): decide relocation once, and rebuild a conversation from the durable spool"
+state = "open"
+status = "pending"
+
+[pr.2429]
+title = "refactor(auth): preserve fixed guardian idle keepalive"
+state = "open"
+status = "pending"
+
+[pr.2430]
+title = "feat(proxy): add transcript core storage"
+state = "open"
+status = "pending"
+
+[pr.2439]
+title = "fix(proxy): preserve upstream quota reset metadata on terminal errors"
+state = "open"
+status = "pending"
+
+[pr.2444]
+title = "fix(metrics): separate observed generation timing from request latency"
+state = "open"
+status = "pending"
+
+[pr.2445]
+title = "feat(proxy): forward the Codex plugin catalog upstream so chatgpt_base_url can point at codex-lb"
+state = "closed"
+status = "pending"
+
+[pr.2448]
+title = "feat(proxy): diversify subagents from parent accounts"
+state = "open"
+status = "pending"
+
+[pr.2451]
+title = "fix(proxy): refuse remote compaction for model-source models before account selection"
+state = "open"
+status = "pending"
+
+[pr.2457]
+title = "fix(proxy): classify Windows route errors 1231/1232 as host network loss"
+state = "open"
+status = "pending"
+
+[pr.2458]
+title = "fix(proxy): release a bridge-bypassed turn-state owner on quota evidence"
+state = "open"
+status = "pending"
+
+[pr.2463]
+title = "feat(api-keys): add estimated usage-share limits"
+state = "open"
+status = "pending"
+
+[pr.2464]
+title = "feat(ui): add compact and fullscreen dashboard account views"
+state = "open"
+status = "pending"
+
+[pr.2467]
+title = "fix(proxy-responses): retire tombstoned injected anchors"
+state = "closed"
+status = "pending"
+
+[pr.2472]
+title = "fix(proxy): surface native transport give-up terminals"
+state = "open"
+status = "rejected"
+reason = "No matching production evidence for the native give-up terminal, and several edge cases remain unresolved in review."
+
+[pr.2486]
+title = "fix(balancer): admit a hard continuity owner serving its own transient backoff"
+state = "open"
+status = "pending"
+
+[pr.2487]
+title = "fix(auth): reject non-ASCII TOTP digits safely"
+state = "open"
+status = "pending"
+
+[pr.2488]
+title = "fix(proxy): handle CRLF and malformed UTF-8 in owner forwarding"
+state = "open"
+status = "pending"
+
+[pr.2490]
+title = "fix(auth): add secret-safe refresh failure diagnostics"
+state = "closed"
+status = "pending"
+
+[pr.2497]
+title = "feat(accounts): show reset credits for paused accounts"
+state = "open"
+status = "pending"
+
+[pr.2502]
+title = "MySQL / MariaDB support"
+state = "open"
+status = "pending"
+
+[pr.2503]
+title = "fix(http-bridge): keep replayed history images on the bridge"
+state = "open"
+status = "pending"
+
+[pr.2504]
+title = "fix(usage): account for cache-write tokens"
+state = "open"
+status = "pending"
+
+[pr.2506]
+title = "fix(shutdown): let DB-owning background tasks finish before cancelling them"
+state = "open"
+status = "rejected"
+reason = "A stop can return before the leader election registers a detached body, so the lease is released while the old leader's work still runs, and fresh post-cancel waits can exhaust the cleanup reserve."
+
+[pr.2507]
+title = "feat(cli): add --log-level and --log-file; stop the metrics server resetting logging"
+state = "open"
+status = "pending"
+
+[pr.2508]
+title = "fix(proxy): reuse bridge sessions for inline images"
+state = "open"
+status = "pending"
+
+[pr.2512]
+title = "fix(accounts): normalize business prolite plan alias"
+state = "open"
+status = "pending"
+
+[pr.2515]
+title = "fix(chat): keep the JSON instruction in input for json_object requests"
+state = "closed"
+status = "pending"
+
+[pr.2518]
+title = "test(db): cover the SCIM/overflow merge revision's single-head convergence"
+state = "closed"
+status = "pending"
+
+[pr.2519]
+title = "fix(http-bridge): parse multi-line upstream websocket frames"
+state = "closed"
+status = "pending"
+
+[pr.2520]
+title = "refactor(proxy): extract streaming response entrypoint"
+state = "closed"
+status = "pending"
+
+[pr.2521]
+title = "fix(model-sources): validate optional usage and preserve streamed telemetry"
+state = "closed"
+status = "pending"
+
+[pr.2522]
+title = "perf(db): request_logs facet indexes and loose-scan probes (stacked on #2502)"
+state = "closed"
+status = "pending"
+
+[pr.2523]
+title = "fix(metrics): publish fresh account pool gauges on scrape"
+state = "closed"
+status = "pending"
+
+[pr.2526]
+title = "fix(model-sources): preserve declared collaboration namespaces"
+state = "closed"
+status = "pending"
+
+[pr.2529]
+title = "fix(metrics): stop the metrics server from reconfiguring process logging"
+state = "closed"
+status = "pending"
+
+[pr.2530]
+title = "fix(http-bridge): parse multiline websocket JSON messages"
+state = "open"
+status = "pending"
+
+[pr.2531]
+title = "fix(proxy): normalize parallel_tool_calls for Responses-Lite upstream"
+state = "open"
+status = "pending"
+
+[pr.2534]
+title = "feat(proxy): admit bounded inline images on the HTTP responses bridge"
+state = "open"
+status = "pending"
+
+[pr.2537]
+title = "fix(images): route image requests through compatible host"
+state = "closed"
+status = "pending"
+
+[pr.2539]
+title = "fix(proxy): treat websocket close 1009 as terminal payload_too_large"
+state = "open"
+status = "pending"
+
+[pr.2543]
+title = "docs(codex): enable API-key model discovery in setup examples"
+state = "open"
+status = "pending"
+
+[pr.2546]
+title = "feat(accounts): support Pro Max routing and quota coverage"
+state = "open"
+status = "pending"
+
+[pr.2547]
+title = "fix(usage): account for Astra ultrafast token pricing"
+state = "open"
+status = "pending"
+
+[pr.2548]
+title = "fix(auth): honor configured admin session lifetime"
+state = "open"
+status = "pending"
+
+[pr.2549]
+title = "feat(proxy): serve GET /v1/models/{model_id} for OpenAI-compatible clients"
+state = "closed"
+status = "pending"
+
+[pr.2550]
+title = "fix(logging): redact non-Basic authorization values to end of line"
+state = "closed"
+status = "pending"
+
+[pr.2553]
+title = "feat(helm): make startup probe configurable"
+state = "open"
+status = "pending"
+
+[pr.2555]
+title = "fix(http-bridge): leave the terminal append running at its bound"
+state = "closed"
+status = "pending"
+
+[pr.2558]
+title = "fix(balancer): express lease pressure in percentage points and keep relative availability ranked by persisted usage"
+state = "closed"
+status = "pending"
+
+[pr.2561]
+title = "fix(proxy): honor dashboard caps on warm bridge admission"
+state = "closed"
+status = "pending"
+
+[pr.2562]
+title = "docs: explain Codex Desktop voice endpoint configuration"
+state = "closed"
+status = "pending"
+
+[pr.2565]
+title = "feat(accounts): show account distributions by plan and status"
+state = "closed"
+status = "pending"
+
+[pr.2566]
+title = "feat(api-keys): add compact list view and unused key filtering"
+state = "closed"
+status = "pending"
+
+[pr.2567]
+title = "feat(accounts): configure warm-up enrollment for new accounts"
+state = "closed"
+status = "pending"
+
+[pr.2568]
+title = "feat(model-sources): add configurable upstream model aliases"
+state = "closed"
+status = "pending"
+
+[pr.2569]
+title = "fix(proxy): keep developer input messages in input"
+state = "closed"
+status = "pending"
+
+[pr.2570]
+title = "feat(model-sources): preserve durable reference ownership"
+state = "closed"
+status = "pending"
+
+[pr.2571]
+title = "feat(model-sources): add native Responses WebSocket transport"
+state = "closed"
+status = "pending"
+
+[pr.2575]
+title = "fix(proxy): keep the prewarm anchor on websocket replay"
+state = "closed"
+status = "pending"
+
+[pr.2576]
+title = "fix(api-keys): expose supported image models in key picker"
+state = "closed"
+status = "pending"
+
+[pr.2577]
+title = "feat(accounts): highlight reset credits expiring within three days"
+state = "closed"
+status = "pending"
+
+[pr.2579]
+title = "fix(proxy): fence HTTP bridge writes by dispatch generation"
+state = "open"
+status = "pending"
+
+[pr.2581]
+title = "fix(proxy): preserve agent context across HTTP bridge reconnects"
+state = "closed"
+status = "pending"
+
+[pr.2583]
+title = "fix(proxy): retire a policy-excluded continuity owner that cannot return in time"
+state = "closed"
+status = "pending"
+
+[pr.2589]
+title = "fix(proxy): recognize CCodex native fingerprints"
+state = "closed"
+status = "pending"
+
+[pr.2591]
+title = "fix(proxy): preserve required-owner WebSocket connect errors"
+state = "closed"
+status = "pending"
+
+[pr.2593]
+title = "fix(images): allow GPT Image 2 transparent PNG and WebP"
+state = "open"
+status = "pending"
+
+[pr.2597]
+title = "feat(desktop): bridge ChatGPT auth to local CodexLB"
+state = "open"
+status = "pending"
+
+[pr.2599]
+title = "feat(archive): re-encode closed conversation archive hours as zstd"
+state = "closed"
+status = "pending"
+
+[pr.2600]
+title = "fix(db): finalize SQLite cursors after cancelled writes"
+state = "open"
+status = "pending"
+
+[pr.2604]
+title = "fix(ui): keep password-manager suggestions clickable over dialogs"
+state = "open"
+status = "pending"
+
+[pr.2614]
+title = "feat(model-sources): route decisions and systemone to capable sources"
+state = "open"
+status = "pending"
+
+[pr.2616]
+title = "fix(proxy): release the account lease when a stream wrapper is closed early"
+state = "closed"
+status = "pending"
+
+[pr.2617]
+title = "fix(proxy): allow prefix-settled replay outputs"
+state = "closed"
+status = "pending"
+
+[pr.2618]
+title = "fix(http-bridge): recover from draining owner rejection"
+state = "closed"
+status = "pending"
+
+[pr.2623]
+title = "chore(deps): bump the python-minor-patch group across 1 directory with 22 updates"
+state = "closed"
+status = "pending"
+
+[pr.2624]
+title = "fix(proxy): record the resolved upstream transport, not auto"
+state = "closed"
+status = "pending"
+
+[pr.2625]
+title = "fix(api-keys): expire elapsed samples in the /v1/usage aggregate"
+state = "open"
+status = "pending"
+
+[pr.2626]
+title = "fix(proxy): preserve quota reset evidence in retry health"
+state = "closed"
+status = "pending"
+
+[pr.2627]
+title = "fix(proxy): recover owned HTTP sessions during transient backoff"
+state = "closed"
+status = "pending"
+
+[pr.2628]
+title = "fix(proxy): honor poisoned fallback keys before bridge anchor planning"
+state = "open"
+status = "pending"
+
+[pr.2630]
+title = "fix(shutdown): bound managed HTTP client close"
+state = "open"
+status = "pending"
+
+[pr.2631]
+title = "fix(deploy): forward startup migration termination signals"
+state = "open"
+status = "pending"
+
+[pr.2632]
+title = "fix(auth): bind trusted-header identity to raw socket peer"
+state = "open"
+status = "pending"
+
+[pr.2633]
+title = "fix(health): authorize internal drain from raw socket peer"
+state = "open"
+status = "pending"
+
+[pr.2634]
+title = "fix(proxy): reject paused accounts on open WebSockets"
+state = "open"
+status = "pending"
+
+[pr.2635]
+title = "fix(native): preserve bounded WebSocket bursts"
+state = "open"
+status = "pending"
+
+[pr.2636]
+title = "fix(proxy): notify Codex clients when idle upstream context is lost"
+state = "open"
+status = "pending"
+
+[pr.2638]
+title = "fix(accounts): recognize the promax plan with Pro-equivalent capacity"
+state = "open"
+status = "pending"
+
+[pr.2639]
+title = "fix(oauth): map auth-server transport failures to OAuthError"
+state = "open"
+status = "pending"
+
+[pr.2640]
+title = "fix(usage): lift the 429 cooldown after an upstream-confirmed reset credit"
+state = "open"
+status = "pending"
+
+[pr.2641]
+title = "docs(auth): document v1.24 Docker password recovery"
+state = "open"
+status = "pending"
+
+[pr.2642]
+title = "fix(oauth): follow account routes during targeted reauthentication"
+state = "open"
+status = "pending"
+
+[pr.2643]
+title = "fix(accounts): honor proxy routes in probes and quota warmup"
+state = "open"
+status = "pending"
+
+[pr.2644]
+title = "chore(docker): bump rust from 1.99.0-slim-bookworm to 1.99.1-slim-bookworm"
+state = "closed"
+status = "pending"
+
+[pr.2645]
+title = "chore(deps): bump vitest from 5.0.3 to 5.0.5 in /frontend in the vitest group"
+state = "closed"
+status = "pending"
+
+[pr.2646]
+title = "chore(docker): bump astral-sh/uv from 0.13.1 to 0.13.2"
+state = "closed"
+status = "pending"
+
+[pr.2647]
+title = "chore(ci): bump github/codeql-action/upload-sarif from 4.38.3 to 4.39.0"
+state = "closed"
+status = "pending"
+
+[pr.2648]
+title = "chore(deps): bump the frontend-minor-patch group in /frontend with 17 updates"
+state = "closed"
+status = "pending"
+
+[pr.2649]
+title = "chore(deps): bump msw from 2.15.0 to 3.0.3 in /frontend"
+state = "closed"
+status = "pending"
+
+[pr.2650]
+title = "chore(deps): bump the python-minor-patch group across 1 directory with 24 updates"
+state = "closed"
+status = "pending"
+
+[pr.2651]
+title = "chore(deps): bump aiohttp from 3.14.3 to 3.14.4"
+state = "closed"
+status = "pending"
+
+[pr.2653]
+title = "chore(metadata): refresh model pricing and Codex version"
+state = "open"
+status = "pending"
+
+[pr.2654]
+title = "fix(api-keys): bound expired-limit sweep progress"
+state = "open"
+status = "pending"
+
+[pr.2656]
+title = "chore(deps): require certifi 2026.10.19 for compromised CA fix"
+state = "closed"
+status = "pending"
+
+[pr.2657]
+title = "chore(deps): fix rustls-webpki, tokio, certifi, and aiohttp security advisories"
+state = "closed"
+status = "pending"
+
+[pr.2659]
+title = "perf(dashboard): precompute durable dashboard and report snapshots"
+state = "open"
+status = "pending"
+
+[pr.2660]
+title = "chore(deps): bump certifi from 2026.7.22 to 2026.10.19"
+state = "closed"
+status = "pending"
+
+[pr.2661]
+title = "chore(deps): bump opentelemetry-api from 1.44.0 to 1.45.1"
+state = "closed"
+status = "pending"
+
+[pr.2662]
+title = "chore(deps): bump virtualenv from 21.7.13 to 21.14.9"
+state = "closed"
+status = "pending"
+
+[pr.2665]
+title = "fix(proxy): use configuration_update reasoning effort"
+state = "open"
+status = "rejected"
+reason = "An enforced-model alias masks disallowed efforts, compact trimming drops the authorizing update, and model-source egress changes the cache-sensitive starting effort."
+
+[pr.2666]
+title = "fix(proxy): recover complete native HTTP tool resends"
+state = "open"
+status = "rejected"
+reason = "The owner-bound replay proof can accept incomplete history and relocate owner content; socket-bound anchoring of native full histories replaces it."
+
+[pr.2667]
+title = "fix(proxy): classify controlled interruptions as cancelled"
+state = "open"
+status = "pending"
+
+[pr.2668]
+title = "chore(async): own OAuth and refresh completion tasks"
+state = "open"
+status = "pending"
+
+[pr.2670]
+title = "feat(dashboard): add overview tab with activity, plan quota, and live requests"
+state = "closed"
+status = "pending"
+
+[pr.2671]
+title = "chore(deps): bump Python and Rust dependencies for security advisories"
+state = "closed"
+status = "pending"
+
+[pr.2672]
+title = "chore(docker): bump oven/bun from 1.4.3-alpine to 1.4.4-alpine"
+state = "closed"
+status = "pending"
+
+[pr.2673]
+title = "chore(docker): bump python from 3.14-slim-bookworm to 3.15-slim-bookworm"
+state = "open"
+status = "pending"
+
+[pr.2674]
+title = "chore(docker): bump astral-sh/uv from 0.13.1 to 0.13.5"
+state = "closed"
+status = "pending"
+
+[pr.2675]
+title = "chore(ci): bump github/codeql-action/upload-sarif from 4.38.3 to 4.39.1"
+state = "closed"
+status = "pending"
+
+[pr.2676]
+title = "chore(ci): bump pypa/gh-action-pypi-publish from 1.14.2 to 1.14.3"
+state = "closed"
+status = "pending"
+
+[pr.2677]
+title = "chore(ci): bump docker/login-action from 4.6.0 to 4.7.0"
+state = "closed"
+status = "pending"
+
+[pr.2678]
+title = "chore(deps): bump the frontend-minor-patch group across 1 directory with 21 updates"
+state = "closed"
+status = "pending"
+
+[pr.2679]
+title = "chore(ci): bump astral-sh/setup-uv from 10.3.0 to 10.3.2"
+state = "closed"
+status = "pending"
+
+[pr.2680]
+title = "chore(deps): bump the python-minor-patch group across 1 directory with 26 updates"
+state = "closed"
+status = "pending"
+
+[pr.2681]
+title = "fix(sse): propagate source timeouts instead of spinning heartbeats"
+state = "open"
+status = "pending"
+
+[pr.2682]
+title = "fix(proxy): accept encrypted output in Responses include"
+state = "open"
+status = "pending"
+
+[pr.2683]
+title = "chore(deps): bump brotli from 1.2.0 to 1.2.1"
+state = "closed"
+status = "pending"
+
+[pr.2685]
+title = "chore(deps): bump filelock from 3.29.0 to 4.2.1"
+state = "closed"
+status = "pending"
+
+[pr.2686]
+title = "fix(api-keys): accrue and enforce credit limits"
+state = "open"
+status = "pending"
+
+[pr.2687]
+title = "chore(deps): bump dnspython from 2.8.0 to 2.9.0"
+state = "closed"
+status = "pending"
+
+[pr.2689]
+title = "feat(routing): add account diagnostic controls"
+state = "open"
+status = "pending"
+
+[pr.2690]
+title = "chore(deps): refresh Python, Rust, frontend and CI/Docker dependencies"
+state = "open"
+status = "pending"
+
+[pr.2692]
+title = "fix(chat): preserve non-strict tool defaults during conversion"
+state = "open"
+status = "pending"
+
+[pr.2694]
+title = "chore(docker): bump oven/bun from 1.4.3-alpine to 1.4.4-alpine"
+state = "closed"
+status = "pending"
+
+[pr.2695]
+title = "chore(deps): bump vitest from 5.0.3 to 5.0.5 in /frontend in the vitest group"
+state = "closed"
+status = "pending"
+
+[pr.2696]
+title = "chore(ci): bump astral-sh/setup-uv from 10.3.0 to 10.3.3"
+state = "closed"
+status = "pending"
+
+[pr.2697]
+title = "chore(deps): bump the frontend-minor-patch group in /frontend with 22 updates"
+state = "closed"
+status = "pending"
+
+[pr.2698]
+title = "chore(deps): bump @hookform/resolvers from 5.9.1 to 6.0.2 in /frontend"
+state = "closed"
+status = "pending"
+
+[pr.2699]
+title = "chore(deps): bump the python-minor-patch group with 29 updates"
+state = "closed"
+status = "pending"
+
+[pr.2700]
+title = "fix(proxy): recover stateless quota failover"
+state = "open"
+status = "pending"
+
+[pr.2701]
+title = "fix(egress): enable TCP and HTTP/2 keepalive in native client pool"
+state = "open"
+status = "rejected"
+issues = [2471]
+reason = "A late HTTP/2 PING ack makes the pinned Hyper close the shared connection and fail every stream of every account on it, and the test covers HTTP/1.1 only."
+
+[pr.2702]
+title = "fix(usage): recover accounts after confirmed quota resets"
+state = "open"
+status = "pending"
+
+[pr.2704]
+title = "fix(proxy): mark proven pre-dispatch selector refusals"
+state = "open"
+status = "pending"
+
+[pr.2705]
+title = "fix(docker): upgrade apt runtime packages"
+state = "open"
+status = "pending"
+
+[pr.2707]
+title = "feat(proxy): automatically route Daybreak Blue requests per API key"
+state = "open"
+status = "pending"
+
+[pr.2708]
+title = "feat(request-logs): add upstream facet to dashboard request logs"
+state = "open"
+status = "pending"
+
+[pr.2709]
+title = "fix(proxy): preserve bounded native websocket bursts"
+state = "open"
+status = "pending"
+
+[pr.2710]
+title = "fix(usage): align reset recovery baseline timestamp precision"
+state = "open"
+status = "pending"
+
+[pr.2711]
+title = "fix(proxy): prevent native websocket burst drops and preserve diagnostics"
+state = "open"
+status = "pending"
+
+[pr.2712]
+title = "fix(proxy): retry zero-event bridge socket drops once"
+state = "open"
+status = "pending"
+
+[pr.2713]
+title = "docs: add optional desktop Dot recipe for codex-lb routing"
+state = "open"
+status = "pending"
+
+[pr.2714]
+title = "chore(ci): bump softprops/action-gh-release from 3.0.3 to 3.0.4"
+state = "open"
+status = "pending"
+
+[pr.2715]
+title = "chore(ci): bump docker/login-action from 4.6.0 to 4.8.0"
+state = "open"
+status = "pending"
+
+[pr.2716]
+title = "chore(deps): bump vitest from 5.0.3 to 5.1.0 in /frontend in the vitest group"
+state = "closed"
+status = "pending"
+
+[pr.2717]
+title = "chore(ci): bump github/codeql-action/upload-sarif from 4.38.3 to 4.39.3"
+state = "open"
+status = "pending"
+
+[pr.2718]
+title = "chore(docker): bump astral-sh/uv from 0.13.1 to 0.13.7"
+state = "open"
+status = "pending"
+
+[pr.2719]
+title = "chore(deps): bump the frontend-minor-patch group in /frontend with 24 updates"
+state = "closed"
+status = "pending"
+
+[pr.2720]
+title = "chore(deps): bump jsdom from 30.1.2 to 31.0.0 in /frontend"
+state = "open"
+status = "pending"
+
+[pr.2721]
+title = "chore(deps): bump msw from 2.15.0 to 3.0.4 in /frontend"
+state = "open"
+status = "pending"
+
+[pr.2722]
+title = "chore(deps): bump @hookform/resolvers from 5.9.1 to 7.0.3 in /frontend"
+state = "open"
+status = "pending"
+
+[pr.2723]
+title = "chore(deps): bump the python-minor-patch group with 31 updates"
+state = "open"
+status = "pending"
+
+[pr.2724]
+title = "fix(model-sources): preserve client collaboration namespace when source declares multi-agent support"
+state = "open"
+status = "pending"
+
+[pr.2725]
+title = "feat(accounts): redeem all eligible reset credits in one action"
+state = "open"
+status = "pending"
+
+[pr.2726]
+title = "chore(deps): bump opentelemetry-api from 1.44.0 to 1.45.2"
+state = "open"
+status = "pending"
+
+[pr.2727]
+title = "chore(deps): bump dnspython from 2.8.0 to 2.9.2"
+state = "open"
+status = "pending"
+
+[pr.2728]
+title = "fix(proxy): retain upstream usage-limit reset deadline in deferred keyed health penalties"
+state = "open"
+status = "pending"
+
+[pr.2729]
+title = "fix(core): harden proxy trust and restore client compatibility"
+state = "closed"
+status = "pending"
+
+[pr.2731]
+title = "fix(proxy): do not replay an unknown WebSocket anchor's delta without the anchor"
+state = "open"
+status = "pending"
+
+[pr.2732]
+title = "fix(proxy): bounded inline images on the HTTP responses bridge"
+state = "open"
+status = "pending"
+
+[pr.2733]
+title = "docs(images): clarify model discovery and direct API usage"
+state = "open"
+status = "pending"
+
+[pr.2734]
+title = "chore(docker): bump pgautoupgrade/pgautoupgrade from 18-alpine to 18-alpine"
+state = "open"
+status = "pending"
+
+[pr.2735]
+title = "chore(deps): bump the frontend-minor-patch group across 1 directory with 23 updates"
+state = "open"
+status = "pending"
+
+[pr.2738]
+title = "test(native): use a closed port for the refused fallback probes"
+state = "open"
+status = "pending"
+
+[pr.2739]
+title = "fix(usage): price gpt-6.2 astra and sol"
+state = "open"
+status = "pending"
+
+[issue.578]
+title = "[design] Reconsider budget-safe routing gate vs health-tier overlap and per-window thresholds"
+state = "open"
+status = "pending"
+
+[issue.620]
+title = "Complete deferred Images API fan-out and observability tasks"
+state = "open"
+status = "pending"
+
+[issue.631]
+title = "Account limit restriction"
+state = "open"
+status = "pending"
+
+[issue.850]
+title = "[Feature] Full Account Backup & Restore"
+state = "open"
+status = "pending"
+
+[issue.956]
+title = "feat: pace-aware throttling to land exactly on reset boundaries"
+state = "open"
+status = "pending"
+
+[issue.986]
+title = "feat: optional sticky account switchover only after compaction boundary"
+state = "open"
+status = "pending"
+
+[issue.1130]
+title = "feat: support for (personal) access token accounts (for business/enterprise)"
+state = "open"
+status = "pending"
+
+[issue.1208]
+title = "feat: Improve upstream transport parity and eliminate the easily identifiable codex-lb fingerprint"
+state = "open"
+status = "pending"
+
+[issue.1304]
+title = "WebSocket clean-close handoff can consume a queued turn"
+state = "open"
+status = "pending"
+
+[issue.1307]
+title = "feat: subagent prompt-cache affinity TTL"
+state = "open"
+status = "pending"
+
+[issue.1367]
+title = "bug(accounts): Team 30d quota is displayed as 5h"
+state = "open"
+status = "pending"
+
+[issue.1413]
+title = "feat(accounts): support explicit access-token-only credential imports"
+state = "open"
+status = "pending"
+
+[issue.1415]
+title = "perf(balancer): optimize low-TTFT routing for large account pools under bursts"
+state = "open"
+status = "pending"
+
+[issue.1467]
+title = "bug: gpt-5.3-codex-spark works on Pro but is missing from /v1/models"
+state = "open"
+status = "pending"
+
+[issue.1470]
+title = "feat(db): make data-backfill migrations non-blocking, resumable, and observable"
+state = "open"
+status = "pending"
+
+[issue.1471]
+title = "ci(db): gate long-running migrations with a production-scale duration check"
+state = "open"
+status = "pending"
+
+[issue.1572]
+title = "feat: support CODEX_LB_ENCRYPTION_KEY for stateless replicas"
+state = "open"
+status = "pending"
+
+[issue.1576]
+title = "feat: add strict model-to-ChatGPT OAuth account routing"
+state = "open"
+status = "pending"
+
+[issue.1595]
+title = "feat: try fuzzing for testing"
+state = "open"
+status = "pending"
+
+[issue.1636]
+title = "Add safe targeted Codex session metadata repair"
+state = "open"
+status = "pending"
+
+[issue.1682]
+title = "bug: leader lease loss on single-instance SQLite causes a self-sustaining 17-minute `database is locked` stall that blocks leader re-election"
+state = "open"
+status = "pending"
+
+[issue.1707]
+title = "bug: existing Codex thread can remain unusable on dead hard-affinity owner while fresh/side chat works"
+state = "open"
+status = "pending"
+
+[issue.1708]
+title = "ux/docs: make routing, sticky affinity, quota thresholds, warm-up, and account eligibility understandable in the dashboard"
+state = "open"
+status = "pending"
+
+[issue.1758]
+title = "http-bridge: evicting an inflight waiter does not cancel its creator, so multiple creators race one session key"
+state = "open"
+status = "pending"
+
+[issue.1793]
+title = "feat: weekly limits estimation in $"
+state = "open"
+status = "pending"
+
+[issue.1799]
+title = "bug: HTTP responses session bridge returns 503: \"preserving an incompatible admission handoff\""
+state = "open"
+status = "pending"
+
+[issue.1844]
+title = "Telemetry opt-out: close the consent/send race and follow-up hardening"
+state = "open"
+status = "pending"
+
+[issue.1870]
+title = "feat: add an upstream facet to dashboard request logs"
+state = "open"
+status = "pending"
+
+[issue.1895]
+title = "bug(warmup): /v1/warmup fails with 404 (compact payload) and account probe fails with 400 (max_output_tokens=1) — windows cannot be auto-started"
+state = "open"
+status = "pending"
+
+[issue.1898]
+title = "fix(proxy): persist complete HTTP bridge replay transcripts"
+state = "open"
+status = "pending"
+
+[issue.1901]
+title = "bug(reports): /api/reports takes ~120 s for a 7-day window (~543k rows) while equivalent raw SQL finishes in ~2.5 s"
+state = "open"
+status = "pending"
+
+[issue.1924]
+title = "bug(proxy): inline-image 429 can prevent prompt-cache failover"
+state = "open"
+status = "pending"
+
+[issue.1935]
+title = "feat: retry upstream model-capacity responses for Codex goals"
+state = "open"
+status = "pending"
+
+[issue.1946]
+title = "UI account section bug"
+state = "open"
+status = "pending"
+
+[issue.1950]
+title = "bug(compact): hosted computer screenshots can still hard-fail compaction and wedge image-heavy threads"
+state = "open"
+status = "pending"
+
+[issue.1959]
+title = "feat: Would you be interested in an optional auto re-login feature?"
+state = "open"
+status = "pending"
+
+[issue.1975]
+title = "bug(warmup): live usage ingestion can consume reset evidence without invoking limit warm-up"
+state = "open"
+status = "pending"
+
+[issue.1976]
+title = "bug(warmup): staggered idle slots can be unreachable for sliding reset_at"
+state = "open"
+status = "pending"
+
+[issue.1979]
+title = "feat(automations): add an opt-in verified weekly-window prestart preset"
+state = "open"
+status = "pending"
+
+[issue.1981]
+title = "bug: wedged-teardown interrupt fails with \"Cannot operate on a closed database\", then the process holds the SQLite write lock permanently (55 min of database-is-locked while /health stays 200)"
+state = "open"
+status = "pending"
+
+[issue.2028]
+title = "fix(logging): shared log-redaction patterns leave credential tails for auth-param lists, quoted keys, and whitespace-separated tokens"
+state = "open"
+status = "pending"
+
+[issue.2033]
+title = "proxy: a failing post-terminal health write emits a second terminal stream frame"
+state = "open"
+status = "pending"
+
+[issue.2038]
+title = "Visual Studio Copilot requires GET /v1/models/{model_id}"
+state = "open"
+status = "pending"
+
+[issue.2064]
+title = "bug(proxy): revoked access tokens repeatedly re-enter reauth routing"
+state = "open"
+status = "pending"
+
+[issue.2068]
+title = "bug(proxy): quota failover stalls unanchored full-resend threads"
+state = "open"
+status = "pending"
+
+[issue.2074]
+title = "bug: post-output frame-less bridge drops still penalize account health"
+state = "open"
+status = "pending"
+
+[issue.2076]
+title = "bug: default Docker port 1455 mapping can intercept Codex Desktop OAuth callbacks"
+state = "open"
+status = "pending"
+
+[issue.2081]
+title = "bug: direct websocket terminal failures lose transport and owner evidence"
+state = "open"
+status = "pending"
+
+[issue.2090]
+title = "fix(proxy): reconcile reservations after late HTTP-bridge anchor injection"
+state = "open"
+status = "pending"
+
+[issue.2108]
+title = "bug: HTTP Responses logs omit observed upstream phase timings"
+state = "open"
+status = "pending"
+
+[issue.2128]
+title = "bug(proxy): standalone web search fails on v1 and duplicates native Content-Type"
+state = "open"
+status = "pending"
+
+[issue.2169]
+title = "test: make native SSE fallback refusal fixture portable on macOS"
+state = "open"
+status = "pending"
+
+[issue.2262]
+title = "feat(proxy): preserve built-in OpenAI provider when routing ChatGPT-authenticated Codex Desktop through codex-lb"
+state = "open"
+status = "pending"
+
+[issue.2266]
+title = "bug: paused streams can keep growing worker memory"
+state = "open"
+status = "pending"
+
+[issue.2268]
+title = "bug: old bridge requests can clear a newer session's quarantine"
+state = "open"
+status = "pending"
+
+[issue.2269]
+title = "bug: forwarded continuations can lose required conversation history"
+state = "open"
+status = "pending"
+
+[issue.2270]
+title = "bug: retry cleanup can delete state changed by a newer request"
+state = "open"
+status = "pending"
+
+[issue.2271]
+title = "bug: retry claims can stay locked after their owner exits"
+state = "open"
+status = "pending"
+
+[issue.2272]
+title = "bug: bridge retries can stay blocked after cooldown ends"
+state = "open"
+status = "pending"
+
+[issue.2273]
+title = "bug: incomplete responses can bypass bridge retry limits"
+state = "open"
+status = "pending"
+
+[issue.2274]
+title = "bug: continuations can be routed to the wrong account"
+state = "open"
+status = "pending"
+
+[issue.2290]
+title = "feat(model-sources): discover CLIProxyAPI catalogs and retain unavailable ownership"
+state = "open"
+status = "pending"
+
+[issue.2291]
+title = "bug: queued transcript batches wait between flushes"
+state = "open"
+status = "pending"
+
+[issue.2292]
+title = "feat(db): gate PostgreSQL-only support on a verified SQLite migration path"
+state = "open"
+status = "pending"
+
+[issue.2302]
+title = "fix(a11y): name model-source capability checkboxes"
+state = "open"
+status = "pending"
+
+[issue.2304]
+title = "feat(images): support GPT Image 2.5 Flare and Sunburst in the Images API"
+state = "open"
+status = "pending"
+
+[issue.2309]
+title = "docs: align agent instructions with Astra prompt guidance"
+state = "open"
+status = "pending"
+
+[issue.2311]
+title = "docs: use GPT-6 Astra in current client examples"
+state = "open"
+status = "pending"
+
+[issue.2314]
+title = "ci: reconcile issue and PR status-label ownership and lifecycle"
+state = "open"
+status = "pending"
+
+[issue.2318]
+title = "feat(proxy): forward explicit compact requests to Responses model sources"
+state = "open"
+status = "pending"
+
+[issue.2327]
+title = "fix(accounts): recover stale holds after verified matching operator probes"
+state = "open"
+status = "pending"
+
+[issue.2343]
+title = "feat(health): expose request-persistence ownership during drain"
+state = "open"
+status = "pending"
+
+[issue.2356]
+title = "bug(proxy): experimental context management returns 405 for native notes v2 calls"
+state = "open"
+status = "pending"
+
+[issue.2388]
+title = "bug(proxy): other HTTP-bridge local refusals still reach native Codex clients as an empty 200"
+state = "open"
+status = "pending"
+
+[issue.2389]
+title = "bug(http-bridge): a model-transition fork rescues one turn, then re-derives the same owner conflict"
+state = "open"
+status = "pending"
+
+[issue.2409]
+title = "bug(proxy): intermittent cache misses on Astra/SOL with the same Pro account across HTTP and WebSocket (195k–777k input)"
+state = "open"
+status = "pending"
+
+[issue.2413]
+title = "feat: Luna Reserve (gpt-reserve) fallback when chat quota is exhausted"
+state = "open"
+status = "pending"
+
+[issue.2420]
+title = "bug(accounts): Hard-coded Pro and Pro Lite credit capacities disagree with observed quota consumption, distorting pooled credit reporting"
+state = "open"
+status = "pending"
+
+[issue.2425]
+title = "bug: input_image requests still fail ~35% during overload on beta.8 — the HTTP bridge bypass, not the upstream transport, is the cause (follow-up to #2363/#2386)"
+state = "open"
+status = "pending"
+
+[issue.2426]
+title = "bug(metrics): populate account counts and expose availability for alerting"
+state = "open"
+status = "pending"
+
+[issue.2442]
+title = "bug(proxy): early token_expired reauth account poisons fresh Codex HTTP routing"
+state = "open"
+status = "pending"
+
+[issue.2443]
+title = "bug(metrics): dashboard/report TPS uses post-settlement latency and reasoning-inclusive TTFT"
+state = "open"
+status = "pending"
+
+[issue.2455]
+title = "bug(proxy): bridge payload bypass blocks verified quota failover"
+state = "open"
+status = "pending"
+
+[issue.2456]
+title = "bug(proxy): Windows route errors 1231/1232 bypass shared-client recovery"
+state = "open"
+status = "pending"
+
+[issue.2465]
+title = "bug: beta.9 sticky bridge lineages wedge permanently; image+tools path sends invalid parallel_tool_calls"
+state = "open"
+status = "pending"
+
+[issue.2470]
+title = "bug(proxy): direct-HTTP stream that dies with \"Native upstream transport ended before a terminal event\" never releases its account stream lease → per-account cap wedges (every request waits, then `account_stream_cap`) until restart"
+state = "open"
+status = "pending"
+
+[issue.2471]
+title = "bug(proxy): with upstream_stream_transport=http the native egress multiplexes every account's streams onto ONE shared HTTP/2 connection — one transport failure kills all in-flight streams of all accounts, is logged with no reason/status, and is never retried"
+state = "open"
+status = "pending"
+
+[issue.2492]
+title = "feat: Reset API key limit usage from dashboard without regenerating keys"
+state = "open"
+status = "pending"
+
+[issue.2493]
+title = "bug: Beta.9 HTTP bridge can close native stream without terminal event after proxy-injected anchor rejection"
+state = "open"
+status = "pending"
+
+[issue.2499]
+title = "bug(model-sources): multi-agent capability does not preserve client collaboration tools"
+state = "open"
+status = "pending"
+
+[issue.2500]
+title = "bug: #1968 shield-loop livelock still ships in latest stable 1.24.0; please cut a stable patch with #1969"
+state = "open"
+status = "pending"
+
+[issue.2501]
+title = "bug: native HTTP upstream regressed in 1.25.0-beta.7 with native upstream request failures"
+state = "open"
+status = "pending"
+
+[issue.2505]
+title = "bug: shutdown cancels schedulers and the leader-lease keeper mid-DB-work (SQLite pool CancelledError, unreleased lease, unclean run-state)"
+state = "open"
+status = "pending"
+
+[issue.2511]
+title = "bug(accounts): self_serve_business_prolite usage plan is rejected as unknown"
+state = "open"
+status = "pending"
+
+[issue.2514]
+title = "feat(accounts): redeem all eligible reset credits in one action"
+state = "open"
+status = "pending"
+
+[issue.2538]
+title = "bug(http-bridge): upstream error responses silently swallowed as timeouts — pretty JSON parsing + Responses-Lite parallel_tool_calls"
+state = "open"
+status = "pending"
+
+[issue.2551]
+title = "feat: option to auto redeem reset on quota exceeded"
+state = "open"
+status = "pending"
+
+[issue.2552]
+title = "feat: add blacklisted models for an api key"
+state = "open"
+status = "pending"
+
+[issue.2554]
+title = "bug(routing): leased-token pressure divides tokens by plan credits, so one open stream makes a Plus account look 100% used"
+state = "open"
+status = "pending"
+
+[issue.2556]
+title = "bug(api-keys): `credits` limits never accrue usage, so they are never enforced. Bug, or manual override by design?"
+state = "open"
+status = "pending"
+
+[issue.2557]
+title = "bug(accounts): plan capacity constants are unmeasured; every weekly value is 5h × 33.6"
+state = "open"
+status = "pending"
+
+[issue.2559]
+title = "feat: not a feature request, can you check discussions?"
+state = "open"
+status = "pending"
+
+[issue.2560]
+title = "bug: CCodex gateway traffic (originator ccodex-internal) is treated as non-native and rewritten to codex_cli_rs/0.144.0, so OpenAI rejects gpt-6 models"
+state = "open"
+status = "pending"
+
+[issue.2563]
+title = "DATA LOSS: codex-lb silently drops developer messages from chained requests (moves them into `instructions`, which `previous_response_id` does not carry)"
+state = "open"
+status = "pending"
+
+[issue.2574]
+title = "DATA LOSS: WebSocket replay drops the prewarm anchor and sends the first Codex turn without its context"
+state = "open"
+status = "pending"
+
+[issue.2580]
+title = "Daybreak toggle in Codex Desktop disappears when model_provider = \"codex-lb\""
+state = "open"
+status = "pending"
+
+[issue.2582]
+title = "bug(proxy): subagent messages block recovery after HTTP bridge reconnect"
+state = "open"
+status = "pending"
+
+[issue.2594]
+title = "Native WebSocket queue aborts valid bursts at 65 pending messages"
+state = "open"
+status = "pending"
+
+[issue.2596]
+title = "CODEX_LB_CONVERSATION_ARCHIVE_ENABLED doesn't work with k8s / multiple instances"
+state = "open"
+status = "pending"
+
+[issue.2601]
+title = "bug(oauth): outbound connection failures return unhandled 500 in PKCE callback and device start"
+state = "open"
+status = "pending"
+
+[issue.2602]
+title = "bug(accounts): self_serve_business_prolite weekly-only accounts stay rate_limited after early reset; plan not recognized"
+state = "open"
+status = "pending"
+
+[issue.2603]
+title = "bug: Apple Passwords suggestions can't be chosen inside dashboard dialogs in Chrome (TOTP, step-up, password)"
+state = "open"
+status = "pending"
+
+[issue.2605]
+title = "feat: expose subscription renewal and cancellation state separately from period end"
+state = "open"
+status = "pending"
+
+[issue.2637]
+title = "bug(accounts): promax plan is not recognized, so Pro Max accounts get free-tier capacity and are skipped by routing"
+state = "open"
+status = "pending"
+
+[issue.2652]
+title = "bug: `ApiKeysRepository.reset_expired_limits` busy-loops forever on SQLite when `reset_at` is stored without microseconds"
+state = "open"
+status = "pending"
+
+[issue.2655]
+title = "bug: cross-replica owner forwarding always fails with bridge_forward_invalid because thread affinity keys start with LF"
+state = "open"
+status = "pending"
+
+[issue.2658]
+title = "HTTP bridge reuses prompt-cache upstream websocket past the 60-minute limit → 400 websocket_connection_limit_reached"
+state = "open"
+status = "pending"
+
+[issue.2663]
+title = "feat: Add configurable daily active hours to the Weekly credits pace forecast"
+state = "open"
+status = "pending"
+
+[issue.2664]
+title = "bug(proxy): configuration_update effort is ignored"
+state = "open"
+status = "pending"
+
+[issue.2669]
+title = "docs: verified workaround for missing desktop Dot while keeping codex-lb routing"
+state = "open"
+status = "pending"
+
+[issue.2684]
+title = "bug: Codex desktop app requests rejected with \"Invalid request payload\" (param=include) — `output.encrypted_content` not in include allowlist"
+state = "open"
+status = "pending"
+
+[issue.2688]
+title = "bug: one client's large response.create requests can OOM-kill the whole proxy"
+state = "open"
+status = "pending"
+
+[issue.2691]
+title = "bug: chat-to-Responses conversion loses non-strict tool defaults"
+state = "open"
+status = "pending"
+
+[issue.2693]
+title = "bug(accounts): overview reports 0 reset credits while the dashboard shows the live count (per-replica snapshot vs live fetch)"
+state = "open"
+status = "pending"
+
+[issue.2703]
+title = "Automatically route Daybreak requests to Trusted Cyber accounts"
+state = "open"
+status = "pending"
+
+[issue.2730]
+title = "bug(proxy): WebSocket replay sends a delta without its anchor after an interrupted turn or any anchor the connection did not complete"
+state = "open"
+status = "pending"
+
+[issue.2736]
+title = "feat: per-account cutoff to avoid paid credits"
+state = "open"
+status = "pending"
+
+[issue.2737]
+title = "bug: Codex repeats proposed plan and remains in Plan mode"
+state = "open"
+status = "pending"
