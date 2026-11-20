@@ -28,6 +28,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    # SIGTERM starts a graceful drain (CODEX_LB_SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
+    # 30 s by default) followed by up to 25 s of bounded cleanup. Docker's
+    # default 10 s grace would SIGKILL that drain whenever a stream is in flight.
+    stop_grace_period: 65s
     restart: unless-stopped
     deploy:
       resources:
