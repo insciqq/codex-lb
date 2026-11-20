@@ -34,15 +34,41 @@ def _is_internal_client_host(client_host: str | None) -> bool:
     return address.is_loopback
 
 
+# Headers a reverse proxy adds when it relays a client request. A same-host
+# proxy connects over loopback, so their presence means the real caller is
+# somewhere else.
+_FORWARDING_EVIDENCE_HEADERS = frozenset(
+    {
+        "forwarded",
+        "x-real-ip",
+        "x-client-ip",
+        "x-cluster-client-ip",
+        "true-client-ip",
+        "cf-connecting-ip",
+        "fastly-client-ip",
+        "x-envoy-external-address",
+        "via",
+    }
+)
+
+
+def _carries_forwarding_evidence(request: Request) -> bool:
+    return any(
+        name in _FORWARDING_EVIDENCE_HEADERS or name.startswith("x-forwarded-") for name in request.headers.keys()
+    )
+
+
 def _require_internal_client(request: Request) -> None:
-    """Authorize drain control from the transport peer, not the projected client.
+    """Authorize drain control from a direct local caller only.
 
     ``request.client`` carries Uvicorn's forwarded projection, so a remote
     caller can present a loopback address here whenever ``FORWARDED_ALLOW_IPS``
     trusts its peer. These endpoints are unauthenticated, so they resolve the
-    launcher-preserved socket peer and fail closed when it is unavailable.
+    launcher-preserved socket peer and fail closed when it is unavailable. A
+    loopback peer that relays forwarding headers is a same-host reverse proxy
+    acting for another client, so it is rejected as well.
     """
-    if not _is_internal_client_host(raw_socket_peer_host(request)):
+    if not _is_internal_client_host(raw_socket_peer_host(request)) or _carries_forwarding_evidence(request):
         raise HTTPException(status_code=403, detail="Internal access required")
 
 

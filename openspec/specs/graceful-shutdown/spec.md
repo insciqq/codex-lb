@@ -53,7 +53,7 @@ The project-owned Uvicorn server MUST commit graceful drain before Uvicorn close
 
 ### Requirement: Internal drain control authorizes the raw socket peer
 
-The unauthenticated `/internal/drain/start`, `/internal/drain/stop`, and `/internal/drain/status` endpoints MUST authorize the caller against the launcher-preserved raw socket peer. A forwarded-client projection MUST NOT satisfy that authorization, regardless of which peers `FORWARDED_ALLOW_IPS` trusts. A request whose raw peer is not a loopback address MUST be rejected with 403, and MUST NOT begin drain, commit the shutdown barrier, or report drain state. If raw-peer capture is unavailable the request MUST be rejected on the same terms. A loopback raw peer MUST remain authorized even when the request also carries a forwarded client address.
+The unauthenticated `/internal/drain/start`, `/internal/drain/stop`, and `/internal/drain/status` endpoints MUST authorize the caller against the launcher-preserved raw socket peer. A forwarded-client projection MUST NOT satisfy that authorization, regardless of which peers `FORWARDED_ALLOW_IPS` trusts. A request whose raw peer is not a loopback address MUST be rejected with 403, and MUST NOT begin drain, commit the shutdown barrier, or report drain state. If raw-peer capture is unavailable the request MUST be rejected on the same terms. A loopback raw peer MUST be rejected on the same terms when the request carries forwarding evidence (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `X-Client-IP`, `X-Cluster-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `Fastly-Client-IP`, `X-Envoy-External-Address` or `Via`), because a same-host reverse proxy connects over loopback on behalf of another client. A relay that adds no forwarding header is indistinguishable from a direct local caller, so same-host public proxies MUST NOT expose `/internal/drain/*`.
 
 #### Scenario: Spoofed loopback from a remote peer is rejected
 
@@ -71,12 +71,18 @@ The unauthenticated `/internal/drain/start`, `/internal/drain/stop`, and `/inter
 - **THEN** the drain-stop endpoint responds 403
 - **AND** the drain-status endpoint responds 403
 
-#### Scenario: Loopback caller stays authorized when a forwarded address is present
+#### Scenario: Direct loopback caller is authorized
 
-- **WHEN** forwarding projection trusts every peer
-- **AND** a loopback caller requests drain status with a remote forwarded client address
+- **WHEN** a loopback caller without forwarding headers requests drain status
 - **THEN** the request is authorized
 - **AND** the response reports current drain state
+
+#### Scenario: Same-host reverse proxy cannot relay drain control
+
+- **WHEN** a request arrives from a loopback transport peer
+- **AND** it carries a forwarded client address or another forwarding header
+- **THEN** the drain-start, drain-stop and drain-status endpoints respond 403
+- **AND** the process is not draining
 
 #### Scenario: Missing raw-peer capture fails closed
 

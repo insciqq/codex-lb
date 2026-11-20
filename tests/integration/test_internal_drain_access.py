@@ -69,21 +69,68 @@ async def test_drain_stop_and_status_reject_spoofed_loopback_from_remote_peer(ap
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("raw_peer", ["127.0.0.1", "::1", "::ffff:127.0.0.1"])
-@pytest.mark.parametrize("forwarded", [False, True])
-async def test_drain_control_allows_loopback_transport_peer(app_instance, monkeypatch, raw_peer, forwarded):
+async def test_drain_control_allows_direct_loopback_transport_peer(app_instance, monkeypatch, raw_peer):
     _trust_every_forwarding_peer(monkeypatch)
-    headers = {"X-Forwarded-For": "203.0.113.24"} if forwarded else {}
 
     async with _client(app_instance, (raw_peer, 50000)) as client:
-        started = await client.post("/internal/drain/start", headers=headers)
-        response = await client.get("/internal/drain/status", headers=headers)
-        stopped = await client.post("/internal/drain/stop", headers=headers)
+        started = await client.post("/internal/drain/start")
+        response = await client.get("/internal/drain/status")
+        stopped = await client.post("/internal/drain/stop")
 
     assert started.status_code == 200
     assert response.status_code == 200
     assert response.json()["checks"]["draining"] == "true"
     assert stopped.status_code == 200
     assert shutdown_state.is_draining() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_peer", ["127.0.0.1", "::1"])
+@pytest.mark.parametrize(
+    "forwarding_headers",
+    [
+        {"X-Forwarded-For": "203.0.113.24"},
+        {"X-Forwarded-For": "127.0.0.1"},
+        {"Forwarded": "for=203.0.113.24"},
+        {"X-Real-IP": "203.0.113.24"},
+        {"X-Forwarded-Proto": "https"},
+        {"Via": "1.1 proxy"},
+        {"X-Client-IP": "203.0.113.24"},
+        {"X-Cluster-Client-IP": "203.0.113.24"},
+        {"Fastly-Client-IP": "203.0.113.24"},
+        {"X-Envoy-External-Address": "203.0.113.24"},
+        {"True-Client-IP": "203.0.113.24"},
+        {"CF-Connecting-IP": "203.0.113.24"},
+    ],
+)
+@pytest.mark.parametrize("trust_forwarding", [True, False])
+async def test_drain_control_rejects_loopback_peer_relaying_forwarded_client(
+    app_instance, monkeypatch, raw_peer, forwarding_headers, trust_forwarding
+):
+    # A same-host reverse proxy connects over loopback; the client it relays
+    # must not gain drain authority from that transport.
+    if trust_forwarding:
+        _trust_every_forwarding_peer(monkeypatch)
+    mark_draining = AsyncMock()
+    snapshot = Mock(return_value={})
+    app_instance.state.proxy_service = SimpleNamespace(
+        mark_http_bridge_draining=mark_draining,
+        http_bridge_activity_snapshot_nowait=snapshot,
+    )
+
+    async with _client(app_instance, (raw_peer, 50000)) as client:
+        started = await client.post(
+            "/internal/drain/start",
+            headers={**forwarding_headers, DRAIN_DEADLINE_HEADER: "1.0"},
+        )
+        status_response = await client.get("/internal/drain/status", headers=forwarding_headers)
+        stopped = await client.post("/internal/drain/stop", headers=forwarding_headers)
+
+    assert (started.status_code, status_response.status_code, stopped.status_code) == (403, 403, 403)
+    assert shutdown_state.is_draining() is False
+    assert shutdown_state.is_shutdown_committed() is False
+    mark_draining.assert_not_awaited()
+    snapshot.assert_not_called()
 
 
 @pytest.mark.asyncio
