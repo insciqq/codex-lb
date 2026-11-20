@@ -404,6 +404,42 @@ def _log_non_multiproc_metrics_bind_conflict(port: int) -> None:
     )
 
 
+# Left unused before the shared shutdown deadline so the server can finish
+# after the lifespan returns instead of forcing the process to exit.
+_RESPONSE_CREATE_DUMP_SHUTDOWN_MARGIN_SECONDS = 1.0
+
+
+async def _finish_response_create_dumps_for_shutdown() -> None:
+    """Give pending debug dumps only the time left after essential teardown.
+
+    Dumps are written to disk in a worker thread and touch nothing else, so
+    they run last: the API-key flush, leader release and database close are
+    never starved by them. They get what remains before the shared shutdown
+    deadline (drain deadline plus post-drain reserve) minus a safety margin.
+    """
+    shutdown_state = import_module("app.core.shutdown")
+    remaining = shutdown_state.remaining_post_drain_cleanup_timeout_seconds()
+    if remaining is None:
+        remaining = shutdown_state.remaining_drain_timeout_seconds() or 0.0
+    budget = max(0.0, remaining - _RESPONSE_CREATE_DUMP_SHUTDOWN_MARGIN_SECONDS)
+    try:
+        outcome = await drain_response_create_dumps(budget)
+    except Exception:
+        logger.warning("Failed to settle response.create debug dumps during shutdown", exc_info=True)
+        return
+    if outcome.abandoned_request_ids:
+        logger.warning(
+            "%s queued response.create debug dumps were not written before shutdown",
+            len(outcome.abandoned_request_ids),
+        )
+    for request_id in outcome.writing_request_ids:
+        logger.warning(
+            "A response.create debug dump was still being written at shutdown request_id=%s; "
+            "it is lost if the process exits before the write completes",
+            request_id,
+        )
+
+
 async def _close_db_and_record_clean_shutdown(
     *,
     database_tasks_drained: bool,
@@ -883,20 +919,6 @@ async def lifespan(app: FastAPI):
             failure_message="Failed to drain proxy persistence tasks during shutdown",
         )
         database_tasks_drained = database_tasks_drained and final_proxy_persistence_drained
-        # Debug dumps of rejected response.create payloads are written one at a
-        # time in a worker thread. Give queued ones what is left of the drain
-        # deadline or, like the recovery-settlement pre-drain, of the
-        # post-drain reserve; a write already running completes anyway because
-        # loop teardown joins its thread.
-        unwritten_dumps = await drain_response_create_dumps(
-            max(
-                shutdown_state.remaining_drain_timeout_seconds() or 0.0,
-                shutdown_state.remaining_post_drain_cleanup_timeout_seconds() or 0.0,
-            )
-        )
-        if unwritten_dumps:
-            logger.warning("%s queued response.create debug dumps were not written before shutdown", unwritten_dumps)
-
         # Cancel heartbeat and age the shared ring row near expiry.
         if heartbeat_task is not None:
             heartbeat_task.cancel()
@@ -1011,7 +1033,10 @@ async def lifespan(app: FastAPI):
                         leader_lease_release_completed=leader_lease_release_completed,
                     )
                 finally:
-                    shutdown_state.mark_lifespan_completed()
+                    try:
+                        await _finish_response_create_dumps_for_shutdown()
+                    finally:
+                        shutdown_state.mark_lifespan_completed()
 
 
 def create_app() -> FastAPI:

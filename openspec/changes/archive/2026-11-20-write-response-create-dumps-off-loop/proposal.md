@@ -21,9 +21,11 @@ stalled for as long as each dump took.
   holds the GIL and so stalls the loop even from a worker thread. Dumps of
   payloads over the upstream limit therefore never carry it; derive it offline
   from the `.gz` file.
-- Graceful shutdown waits for pending dumps within the remaining drain deadline
-  or post-drain reserve. A started write completes; each queued dump that is
-  not written is logged with its request id, plus a warning with their count.
+- Graceful shutdown settles pending dumps last, after the API-key flush,
+  leader release and database close, and only within what remains of the
+  shared shutdown deadline minus a 1 s margin. At the cutoff each queued dump
+  is stopped and logged with its request id, a warning gives their count, and
+  a write still running is reported with its request id.
 - Fingerprint dedup, retention, and the dump location are unchanged. No setting
   enables or disables dumps.
 

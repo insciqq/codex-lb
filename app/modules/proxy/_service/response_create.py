@@ -89,6 +89,16 @@ class _PendingResponseCreateDump:
     # Memory the dump pins, released when its task finishes in any way.
     retained_bytes: int
     started: bool = False
+    # Set when shutdown stops the dump before it started; it is logged then.
+    abandoned: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseCreateDumpShutdown:
+    """What shutdown did with the dumps still pending at its cutoff."""
+
+    abandoned_request_ids: tuple[str, ...]
+    writing_request_ids: tuple[str, ...]
 
 
 _response_create_pending_dumps: dict[asyncio.Task[bool], _PendingResponseCreateDump] = {}
@@ -842,25 +852,37 @@ async def _write_response_create_dump_after(
     return bool(await asyncio.to_thread(write_response_create_dump, source, **kwargs))
 
 
-async def drain_response_create_dumps(timeout_seconds: float, *, scheduler: Scheduler = REAL_SCHEDULER) -> int:
-    """Wait for pending background dumps; return how many never started writing.
+async def drain_response_create_dumps(
+    timeout_seconds: float, *, scheduler: Scheduler = REAL_SCHEDULER
+) -> ResponseCreateDumpShutdown:
+    """Let pending dumps finish within ``timeout_seconds``, then stop the queued ones.
 
-    Shutdown calls this so the process does not exit with dumps still queued.
-    A dump already being written completes even past the deadline: its worker
-    thread cannot be cancelled and loop teardown joins it. A dump still queued
-    when the deadline passes is cancelled with the loop and logged then.
+    At the cutoff every dump that has not started writing is cancelled, so it
+    can no longer write, and logged with its request id. A dump whose write has
+    started cannot be stopped (it runs in a worker thread); it is reported so
+    the caller can say it may be interrupted if the process exits first.
     """
-    pending = set(_response_create_dump_tasks)
-    if not pending:
-        return 0
-    if timeout_seconds > 0:
-        await scheduler.wait(pending, timeout=timeout_seconds)
-    unstarted = 0
+    pending = list(_response_create_dump_tasks)
+    if pending and timeout_seconds > 0:
+        await scheduler.wait(set(pending), timeout=timeout_seconds)
+    abandoned: list[str] = []
+    writing: list[str] = []
     for task in pending:
         record = _response_create_pending_dumps.get(task)
-        if not task.done() and record is not None and not record.started:
-            unstarted += 1
-    return unstarted
+        if task.done() or record is None:
+            continue
+        if record.started:
+            writing.append(record.request_id)
+            continue
+        record.abandoned = True
+        task.cancel()
+        abandoned.append(record.request_id)
+        logger.warning(
+            "Dropped %s response.create dump request_id=%s: not written before shutdown",
+            record.log_prefix,
+            record.request_id,
+        )
+    return ResponseCreateDumpShutdown(tuple(abandoned), tuple(writing))
 
 
 def _forget_response_create_dump(task: asyncio.Task[bool]) -> _PendingResponseCreateDump | None:
@@ -874,13 +896,14 @@ def _finish_response_create_dump(task: asyncio.Task[bool]) -> None:
     request_id = record.request_id if record is not None else None
     log_prefix = record.log_prefix if record is not None else "queued"
     if task.cancelled():
-        if record is None or not record.started:
+        if record is None or not (record.started or record.abandoned):
             logger.warning(
                 "Dropped %s response.create dump request_id=%s: cancelled before it was written",
                 log_prefix,
                 request_id,
             )
-        # A started write keeps running in its worker thread and completes.
+        # A started write keeps running in its worker thread; an abandoned one
+        # was logged when shutdown stopped it.
         return
     exc = task.exception()
     if exc is not None:

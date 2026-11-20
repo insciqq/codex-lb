@@ -178,25 +178,27 @@ async def test_large_payload_dump_skips_the_whole_payload_summary(dump_dir, monk
     assert meta["request"]["request_text_bytes"] == len(text)
 
 
-async def test_drain_counts_queued_dumps_and_logs_each_one_cancelled(dump_dir, held_writer, caplog) -> None:
+async def test_shutdown_cutoff_stops_queued_dumps_and_reports_the_running_one(dump_dir, held_writer, caplog) -> None:
     caplog.set_level(logging.WARNING, logger=response_create.logger.name)
     _reject("req_writing", _payload("h"))
     _reject("req_queued", _payload("j"))
     writing, queued = list(response_create._response_create_dump_tasks)
     await asyncio.sleep(0.05)  # let the first dump start its write
 
-    # The running write is not counted: loop teardown joins its thread.
-    assert await response_create.drain_response_create_dumps(0.05) == 1
+    outcome = await response_create.drain_response_create_dumps(0.05)
 
-    queued.cancel()
-    await asyncio.gather(queued, return_exceptions=True)
-    cancelled = [r.getMessage() for r in caplog.records if "cancelled before it was written" in r.getMessage()]
-    assert len(cancelled) == 1 and "req_queued" in cancelled[0]
-
+    assert outcome.abandoned_request_ids == ("req_queued",)
+    assert outcome.writing_request_ids == ("req_writing",)
+    # What was reported is what happens: the running write completes, the
+    # stopped one never writes even though the writer is free again.
     held_writer.release.set()
-    await asyncio.wait_for(writing, timeout=_WRITER_HOLD_SECONDS)
-    assert await response_create.drain_response_create_dumps(0) == 0
+    await asyncio.wait_for(asyncio.gather(writing, queued, return_exceptions=True), timeout=_WRITER_HOLD_SECONDS)
+    assert len(held_writer.threads) == 1
     assert len(list(dump_dir.glob("*.meta.json"))) == 1
+    dropped = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Dropped")]
+    assert dropped == ["Dropped guarded response.create dump request_id=req_queued: not written before shutdown"]
+    assert not response_create._response_create_pending_dumps
+    assert await response_create.drain_response_create_dumps(0) == response_create.ResponseCreateDumpShutdown((), ())
 
 
 async def test_writer_failure_outside_its_own_handler_is_logged_with_the_request(dump_dir, monkeypatch, caplog) -> None:
