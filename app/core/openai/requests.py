@@ -1604,6 +1604,11 @@ def _compact_state_anchor_indices(input_value: list[JsonValue]) -> set[int]:
             preserved_indices.add(index)
         if _compact_item_is_state_anchor(item_mapping):
             preserved_indices.add(index)
+        if item_mapping.get("type") == "configuration_update":
+            # A configuration_update applies until a later one overrides it.
+            # Dropping a later item would bring an earlier effort back into
+            # effect, so every one is kept.
+            preserved_indices.add(index)
     return preserved_indices
 
 

@@ -660,6 +660,142 @@ def test_responses_websocket_route_rejects_disallowed_reasoning_before_upstream(
     assert event["error"]["code"] == "reasoning_effort_not_allowed"
 
 
+def _configuration_update_response_create(*item_efforts: str) -> dict[str, Any]:
+    input_items: list[dict[str, Any]] = [{"role": "user", "content": [{"type": "input_text", "text": "start"}]}]
+    for effort in item_efforts:
+        input_items.append({"type": "configuration_update", "reasoning": {"effort": effort}})
+        input_items.append({"role": "user", "content": [{"type": "input_text", "text": "continue"}]})
+    return {
+        "type": "response.create",
+        "model": "model-alpha",
+        "instructions": "hi",
+        "input": input_items,
+        "reasoning": {"effort": "low"},
+        "stream": True,
+    }
+
+
+def _install_configuration_update_websocket(monkeypatch, *, allowed_reasoning_efforts, enforced_reasoning_effort):
+    """Route a policy key's WebSocket turns to one fake upstream that answers every turn."""
+    upstream = _SequencedUpstreamWebSocket(
+        _websocket_response_batch("resp_ws_configuration_update_1"),
+        # Each send pops one batch: the second turn's events arrive after its own send.
+        deferred_message_batches=[[], _websocket_response_batch("resp_ws_configuration_update_2")],
+    )
+    connects: list[str] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def fake_connect_proxy_websocket(self, *_args, **_kwargs):
+        del self
+        connects.append("connect")
+        return SimpleNamespace(id="acct_ws_configuration_update", codex_installation_id=None), upstream
+
+    async def create_key():
+        async with SessionLocal() as session:
+            service = ApiKeysService(ApiKeysRepository(session))
+            created = await service.create_key(
+                ApiKeyCreateData(
+                    name="websocket-configuration-update-policy",
+                    allowed_models=None,
+                    allowed_reasoning_efforts=allowed_reasoning_efforts,
+                    enforced_reasoning_effort=enforced_reasoning_effort,
+                    limits=[
+                        LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1_000_000),
+                    ],
+                )
+            )
+            return created.key, await service.get_key_by_id(created.id)
+
+    async def list_reservations(key_id: str):
+        async with SessionLocal() as session:
+            result = await session.execute(
+                select(ApiKeyUsageReservation).where(ApiKeyUsageReservation.api_key_id == key_id)
+            )
+            return list(result.scalars().all())
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
+
+    def bind_key(client):
+        key, api_key = client.portal.call(create_key)
+
+        async def allow_proxy_api_key(_authorization: str | None, *, request: object | None = None):
+            del request
+            return api_key
+
+        monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+        return key, api_key
+
+    return upstream, connects, bind_key, list_reservations
+
+
+@pytest.mark.parametrize("route", ["/backend-api/codex/responses", "/v1/responses"])
+def test_responses_websocket_allowlist_judges_configuration_update_per_response_create(
+    app_instance, monkeypatch, route
+):
+    upstream, _connects, bind_key, list_reservations = _install_configuration_update_websocket(
+        monkeypatch, allowed_reasoning_efforts=["low", "high"], enforced_reasoning_effort=None
+    )
+    # An older disallowed item that a later allowed one overrides passes.
+    first_request = _configuration_update_response_create("max", "high")
+    second_request = _configuration_update_response_create("high", "max")
+
+    with TestClient(app_instance) as client:
+        assert client.portal is not None
+        key, api_key = bind_key(client)
+        with client.websocket_connect(route, headers={"Authorization": f"Bearer {key}"}) as websocket:
+            websocket.send_text(json.dumps(first_request))
+            first_events = [json.loads(websocket.receive_text()) for _ in range(2)]
+            websocket.send_text(json.dumps(second_request))
+            rejected = json.loads(websocket.receive_text())
+        reservations = client.portal.call(list_reservations, api_key.id)
+
+    assert [event["type"] for event in first_events] == ["response.created", "response.completed"]
+    assert len(upstream.sent_text) == 1
+    expected_input_bytes = '"input":' + json.dumps(first_request["input"], ensure_ascii=True, separators=(",", ":"))
+    assert expected_input_bytes in upstream.sent_text[0]
+    assert json.loads(upstream.sent_text[0])["reasoning"]["effort"] == "low"
+    assert rejected["type"] == "error"
+    assert rejected["status"] == 403
+    assert rejected["error"]["code"] == "reasoning_effort_not_allowed"
+    assert rejected["error"]["param"] == "input[3].reasoning.effort"
+    # Only the first turn reserved quota.
+    assert len(reservations) == 1
+
+
+@pytest.mark.parametrize("route", ["/backend-api/codex/responses", "/v1/responses"])
+def test_responses_websocket_pin_rewrites_configuration_update_items_identically_each_turn(
+    app_instance, monkeypatch, route
+):
+    upstream, _connects, bind_key, _list_reservations = _install_configuration_update_websocket(
+        monkeypatch, allowed_reasoning_efforts=None, enforced_reasoning_effort="high"
+    )
+    request_payload = _configuration_update_response_create("max", "low")
+    expected_input = _configuration_update_response_create("high", "high")["input"]
+
+    with TestClient(app_instance) as client:
+        assert client.portal is not None
+        key, _api_key = bind_key(client)
+        with client.websocket_connect(route, headers={"Authorization": f"Bearer {key}"}) as websocket:
+            for _turn in range(2):
+                websocket.send_text(json.dumps(request_payload))
+                events = [json.loads(websocket.receive_text()) for _ in range(2)]
+                assert [event["type"] for event in events] == ["response.created", "response.completed"]
+
+    assert len(upstream.sent_text) == 2
+    expected_input_bytes = '"input":' + json.dumps(expected_input, ensure_ascii=True, separators=(",", ":"))
+    for frame in upstream.sent_text:
+        assert expected_input_bytes in frame
+        assert json.loads(frame)["reasoning"]["effort"] == "high"
+
+
 def _websocket_response_batch(
     response_id: str,
     *,

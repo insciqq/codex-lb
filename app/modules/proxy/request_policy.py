@@ -132,7 +132,18 @@ def validate_model_access(api_key: ApiKeyData | None, model: str | None) -> None
     raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
 
 
-def validate_reasoning_effort_access(api_key: ApiKeyData | None, effort: str | None) -> None:
+def validate_reasoning_effort_access(
+    api_key: ApiKeyData | None,
+    effort: str | None,
+    *,
+    configuration_update_index: int | None = None,
+) -> None:
+    """Reject an effort outside the key's ``allowedReasoningEfforts``.
+
+    ``configuration_update_index`` names the input item that selected the
+    effort; the error then points at that item instead of the request-level
+    ``reasoning.effort``.
+    """
     if api_key is None:
         return
     allowed_reasoning_efforts = getattr(api_key, "allowed_reasoning_efforts", None)
@@ -141,16 +152,89 @@ def validate_reasoning_effort_access(api_key: ApiKeyData | None, effort: str | N
     normalized_effort = effort.strip().lower()
     if normalized_effort in allowed_reasoning_efforts:
         return
+    if configuration_update_index is None:
+        param = "reasoning.effort"
+        message = f"This API key does not have access to reasoning effort '{normalized_effort}'"
+    else:
+        param = f"input[{configuration_update_index}].reasoning.effort"
+        message = (
+            f"This API key does not have access to reasoning effort '{normalized_effort}' "
+            "set by a configuration_update input item"
+        )
     logger.info(
-        "api_key_reasoning_effort_not_allowed request_id=%s key_id=%s reasoning_effort=%s",
+        "api_key_reasoning_effort_not_allowed request_id=%s key_id=%s reasoning_effort=%s param=%s",
         get_request_id(),
         api_key.id,
         normalized_effort,
+        param,
     )
-    raise ProxyReasoningEffortNotAllowed(
-        f"This API key does not have access to reasoning effort '{normalized_effort}'",
-        param="reasoning.effort",
-    )
+    raise ProxyReasoningEffortNotAllowed(message, param=param)
+
+
+def api_key_pins_reasoning_effort(api_key: ApiKeyData | None) -> bool:
+    """Whether the key fixes the effort: an enforced effort or an effort-bearing enforced model alias."""
+    if api_key is None:
+        return False
+    if api_key.enforced_reasoning_effort is not None:
+        return True
+    return bool(api_key.enforced_model) and _client_reasoning_effort_from_model(api_key.enforced_model) is not None
+
+
+def _effective_configuration_update_effort(input_value: JsonValue) -> tuple[int, str] | None:
+    """Return the index and normalized effort of the last effort-bearing ``configuration_update`` item.
+
+    Clients change reasoning effort mid-conversation with
+    ``{"type": "configuration_update", "reasoning": {"effort": ...}}`` input
+    items and keep the request-level ``reasoning.effort`` at the starting
+    value. An item applies until a later item overrides it, so the last one
+    selects the effort of the current turn. Compact trimming keeps every such
+    item (see ``_compact_state_anchor_indices``), so trimming cannot drop the
+    last item and bring an earlier one back into effect.
+    """
+    if not is_json_list(input_value):
+        return None
+    effective: tuple[int, str] | None = None
+    for index, item in enumerate(input_value):
+        if not is_json_mapping(item) or item.get("type") != "configuration_update":
+            continue
+        item_reasoning = item.get("reasoning")
+        if not is_json_mapping(item_reasoning):
+            continue
+        item_effort = item_reasoning.get("effort")
+        if isinstance(item_effort, str) and item_effort.strip():
+            effective = (index, item_effort.strip().lower())
+    return effective
+
+
+def pin_configuration_update_efforts(input_value: JsonValue, request_effort: JsonValue) -> JsonValue:
+    """Set every ``configuration_update`` item's effort to the body's request-level effort.
+
+    Used only when the API key pins the effort. Callers pass the request-level
+    ``reasoning.effort`` of the exact body they send, after every rewrite for
+    that destination (model alias, unsupported-effort fallback, wire alias,
+    source restore and overrides), so the items always select the effort the
+    request-level field selects. The rewrite is deterministic, so the prompt
+    prefix stays identical across turns. An item whose ``reasoning`` is not an
+    object is replaced by ``{"effort": <pin>}``; an item without ``reasoning``
+    selects no effort and is left alone. Other item fields are untouched.
+    """
+    if not is_json_list(input_value) or not isinstance(request_effort, str) or not request_effort.strip():
+        return input_value
+    pinned_items: list[JsonValue] = []
+    changed = False
+    for item in input_value:
+        if is_json_mapping(item) and item.get("type") == "configuration_update" and "reasoning" in item:
+            item_reasoning = item.get("reasoning")
+            pinned_reasoning: dict[str, JsonValue] = (
+                {**item_reasoning, "effort": request_effort}
+                if is_json_mapping(item_reasoning)
+                else {"effort": request_effort}
+            )
+            if pinned_reasoning != item_reasoning:
+                item = {**item, "reasoning": pinned_reasoning}
+                changed = True
+        pinned_items.append(item)
+    return pinned_items if changed else input_value
 
 
 def _client_reasoning_effort(payload: ResponsesRequest | ResponsesCompactRequest) -> str | None:
@@ -343,7 +427,20 @@ def apply_api_key_enforcement(
             and payload.reasoning.effort.strip().lower() == client_reasoning_effort
         ):
             payload.reasoning.effort = client_reasoning_effort
+    effort_pinned = api_key_pins_reasoning_effort(api_key)
+    if not effort_pinned:
+        effective_update = _effective_configuration_update_effort(payload.input)
+        if effective_update is not None:
+            validate_reasoning_effort_access(
+                api_key,
+                effective_update[1],
+                configuration_update_index=effective_update[0],
+            )
     pre_normalization_effort = normalize_unsupported_reasoning_effort(payload, registry=registry)
+    if effort_pinned and payload.reasoning is not None:
+        # The pin replaces item efforts exactly as it replaces the request-level
+        # one. Model-source egress re-pins them to its own final effort.
+        payload.input = pin_configuration_update_efforts(payload.input, payload.reasoning.effort)
 
     service_tier_was_enforced = False
     if api_key.enforced_service_tier is not None:

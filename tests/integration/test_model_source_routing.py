@@ -3675,6 +3675,103 @@ async def test_source_responses_preserves_client_plane_reasoning_effort(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("policy", "source_effort"),
+    [
+        ({"enforcedModel": "gpt-5.1-xhigh"}, "xhigh"),
+        ({"enforcedReasoningEffort": "minimal"}, "minimal"),
+    ],
+)
+async def test_source_responses_pins_configuration_update_items_to_the_source_effort(
+    async_client, source_upstream, policy, source_effort
+):
+    await _enable_api_key_auth(async_client)
+    captured: list[dict[str, object]] = []
+
+    async def responses(request: web.Request) -> web.Response:
+        captured.append(await request.json())
+        return web.json_response(
+            {"id": "resp_source_pin", "object": "response", "status": "completed", "model": "gpt-5.1", "output": []}
+        )
+
+    base_url = await source_upstream(responses)
+    source_id = await _create_model_source(
+        async_client,
+        name="source-configuration-update-pin",
+        model="gpt-5.1",
+        base_url=base_url,
+        supports_responses=True,
+    )
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "source-configuration-update-pin-key", "assignedSourceIds": [source_id], **policy},
+    )
+    assert created.status_code == 200
+
+    def update(effort: str) -> dict[str, object]:
+        return {"type": "configuration_update", "reasoning": {"effort": effort}}
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+        json={
+            "model": "gpt-5.1",
+            "instructions": "hi",
+            "input": [
+                {"role": "user", "content": "start"},
+                update("high"),
+                {"role": "user", "content": "continue"},
+                update(source_effort),
+            ],
+            "reasoning": {"effort": "low"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    assert captured[0]["reasoning"] == {"effort": source_effort}
+    assert captured[0]["input"] == [
+        {"role": "user", "content": "start"},
+        update(source_effort),
+        {"role": "user", "content": "continue"},
+        update(source_effort),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_source_chat_omits_input_discarded_by_messages(async_client, source_upstream):
+    await _enable_api_key_auth(async_client)
+    captured: dict[str, object] = {}
+
+    async def completion(request: web.Request) -> web.Response:
+        captured.update(await request.json())
+        return web.json_response(_chat_completion_body("source-chat-discarded-input"))
+
+    base_url = await source_upstream(completion)
+    model = "source-chat-discarded-input"
+    source_id = await _create_model_source(async_client, name=model, model=model, base_url=base_url)
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": f"{model}-key", "assignedSourceIds": [source_id], "allowedReasoningEfforts": ["low"]},
+    )
+    assert created.status_code == 200
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "input": [{"type": "configuration_update", "reasoning": {"effort": "max"}}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["messages"] == [{"role": "user", "content": "hi"}]
+    assert "input" not in captured
+
+
+@pytest.mark.asyncio
 async def test_source_responses_reasoning_allowlist_strips_conflicting_aliases(async_client, source_upstream):
     await _enable_api_key_auth(async_client)
     captured: dict[str, object] = {}

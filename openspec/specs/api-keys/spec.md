@@ -989,6 +989,12 @@ The dashboard API key CRUD surface MUST allow callers to persist optional
 enforced reasoning efforts advertised by the model catalog, including extended
 GPT-5.6 efforts `max` and `ultra`.
 
+An enforced reasoning effort, or an enforced model alias that carries an
+effort, MUST govern the whole request: the proxy replaces the request-level
+`reasoning.effort` and also sets the effort of every `configuration_update`
+input item to the same outgoing wire value, as specified in the
+`responses-api-compat` configuration_update policy requirement.
+
 #### Scenario: API key accepts extended enforced reasoning effort on create
 
 - **WHEN** a dashboard client creates an API key with `enforcedReasoningEffort: "ultra"`
@@ -1000,6 +1006,14 @@ GPT-5.6 efforts `max` and `ultra`.
 - **WHEN** a dashboard client updates an API key with `enforcedReasoningEffort: "max"`
 - **THEN** the request is accepted
 - **AND** the response returns `enforcedReasoningEffort: "max"`
+
+#### Scenario: Enforced effort also governs configuration_update items
+
+- **GIVEN** an API key with `enforcedReasoningEffort: "high"`
+- **WHEN** a Responses request carries a `configuration_update` input item
+  selecting `low`
+- **THEN** upstream receives the item with `reasoning.effort: "high"`
+- **AND** the request is not rejected
 
 ### Requirement: Per-key transport policy override
 

@@ -302,6 +302,7 @@ from app.modules.proxy.images_observability import (
     record_images_route_observability,
 )
 from app.modules.proxy.request_policy import (
+    api_key_pins_reasoning_effort,
     apply_api_key_enforcement,
     apply_api_key_enforcement_to_chat_payload,
     apply_enforced_service_tier_model_fallback,
@@ -313,6 +314,7 @@ from app.modules.proxy.request_policy import (
     normalize_source_reasoning_aliases,
     openai_client_payload_error,
     openai_validation_error,
+    pin_configuration_update_efforts,
     resolve_model_alias,
     resolve_wire_reasoning_effort,
     responses_source_route_excluded,
@@ -5378,6 +5380,14 @@ def _shape_source_responses_payload(
         source_payload,
         supported_tool_types=source_model_supported_tool_types(source, payload.model),
     )
+    source_reasoning = source_payload.get("reasoning")
+    if api_key_pins_reasoning_effort(api_key) and is_json_mapping(source_reasoning) and "input" in source_payload:
+        # The source's final effort can differ from the subscription wire value
+        # the items were pinned to (restored ``minimal``, an alias's ``xhigh``,
+        # operator overrides), so re-pin them to this body's effort.
+        source_payload["input"] = pin_configuration_update_efforts(
+            source_payload["input"], source_reasoning.get("effort")
+        )
     return source_payload
 
 
@@ -5637,6 +5647,10 @@ async def _source_chat_completion_response(
     prohibit_fast_mode: bool = False,
 ) -> Response:
     source_payload = payload.model_dump(mode="json", exclude_none=True)
+    if payload.messages:
+        # ``messages`` takes precedence: the Responses conversion that policy
+        # judged discarded ``input``, so it must not reach the source either.
+        source_payload.pop("input", None)
     source_payload["model"] = model
     source_payload["stream"] = bool(payload.stream)
     apply_api_key_enforcement_to_chat_payload(

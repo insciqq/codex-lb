@@ -10543,6 +10543,108 @@ their unrelated fields do not participate in effort authorization.
 - **THEN** the source receives both the authorized canonical effort and the
   original `thinking` object
 
+### Requirement: API-key reasoning policy covers configuration_update input items
+
+Clients can change reasoning effort mid-conversation with
+`{"type": "configuration_update", "reasoning": {"effort": "..."}}` input items
+while the request-level `reasoning.effort` keeps the starting value. An item
+applies until a later item overrides it, and clients persist the items in the
+conversation history they resend.
+
+When an authenticated API key pins the effort, through
+`enforcedReasoningEffort` or an enforced model alias that carries an effort,
+the proxy MUST set `reasoning.effort` of every `configuration_update` input
+item to the effort the outgoing request-level `reasoning.effort` carries for
+that destination, after model-alias normalization, the unsupported-effort
+fallback, the `ultra` to `max` wire alias, and, for model-source routing, the
+source's own effort shaping. Items and the request-level field MUST be pinned
+from the same outgoing body so they cannot diverge. A pinned key MUST NOT
+reject a request because of an item effort. An item whose `reasoning` is
+present but is not an object, or whose effort is null, blank or not a string,
+MUST be pinned the same way; an item without `reasoning` and all other item
+fields MUST be left unchanged. The rewrite MUST be deterministic so the same
+history serializes to the same bytes on every turn.
+
+When the key has an `allowedReasoningEfforts` policy and does not pin the
+effort, the proxy MUST judge the request-level effort as before and the
+effective item: the last `configuration_update` item whose `reasoning.effort`
+is a non-blank string, trimmed and case-normalized, as an exact client-plane
+choice. Earlier items that a later item overrides MUST NOT cause a rejection.
+A disallowed effective item MUST be rejected before quota reservation, account
+or source selection, and upstream dispatch with HTTP 403, OpenAI error type
+`permission_error`, code `reasoning_effort_not_allowed`, parameter
+`input[<index>].reasoning.effort` naming the item in the forwarded input, and a
+message stating that a `configuration_update` input item set the effort.
+Accepted items MUST be forwarded unchanged.
+
+Compact trimming MUST retain every `configuration_update` item, with or
+without an API key, so that dropping a later item cannot bring an earlier
+effort back into effect. The policy MUST apply to Responses, compact Responses,
+Responses-shaped chat completions, and every WebSocket `response.create` frame.
+When a chat completions request carries non-empty `messages`, the `input` that
+the Responses conversion discards MUST NOT be forwarded to a model source
+either. Requests without such items, and keys without a reasoning policy, MUST
+keep their existing behavior.
+
+#### Scenario: Pinned effort rewrites every item
+
+- **GIVEN** an API key with `enforcedReasoningEffort: "high"`
+- **WHEN** the input carries `configuration_update` items selecting `max` and
+  then `low`
+- **THEN** upstream receives both items with `reasoning.effort: "high"` and the
+  request-level `reasoning.effort: "high"`
+- **AND** the next turn with the same history sends the same input bytes
+
+#### Scenario: Pinned item follows the destination's wire effort
+
+- **GIVEN** an API key with `enforcedReasoningEffort: "minimal"` for a
+  subscription model whose lowest supported effort is `medium`
+- **WHEN** the input carries a `configuration_update` item
+- **THEN** the item and the request-level field both carry `medium`
+- **AND** for a model source the same key sends `minimal` in both
+
+#### Scenario: Enforced model alias pins the items
+
+- **GIVEN** an API key with `enforcedModel: "gpt-5.1-xhigh"`
+- **WHEN** the input carries a `configuration_update` item selecting `low`
+- **THEN** a subscription request carries `high` in the item and the
+  request-level field
+- **AND** a model-source request carries `xhigh` in both
+
+#### Scenario: Last disallowed item is rejected before reservation
+
+- **GIVEN** an API key with `allowedReasoningEfforts: ["low", "medium"]` and a
+  usage limit
+- **WHEN** the input carries a `configuration_update` item selecting `low` at
+  index 1 and one selecting `max` at index 3
+- **THEN** the proxy returns `403` with code `reasoning_effort_not_allowed` and
+  parameter `input[3].reasoning.effort`
+- **AND** no API-key quota reservation or upstream request is created
+
+#### Scenario: Overridden disallowed item is history
+
+- **GIVEN** an API key with `allowedReasoningEfforts: ["low", "high"]`
+- **WHEN** the input carries a `configuration_update` item selecting `max`
+  followed by one selecting `high`
+- **THEN** upstream receives the input byte-identical to the client input
+- **AND** the request-level `reasoning.effort` is unchanged
+
+#### Scenario: Each WebSocket turn is judged on its own
+
+- **GIVEN** an open WebSocket for an API key with
+  `allowedReasoningEfforts: ["low", "high"]`
+- **WHEN** a first `response.create` has an allowed effective item and a second
+  one's effective item selects `max`
+- **THEN** the first turn is forwarded and the second receives an error event
+  with status `403` and parameter `input[<index>].reasoning.effort`
+- **AND** the second turn reserves no quota and sends nothing upstream
+
+#### Scenario: Compact trimming keeps every item
+
+- **WHEN** an oversized compact input carries a `configuration_update` item
+  selecting `max` and a later one selecting `low`
+- **THEN** the trimmed upstream input still contains both items in order
+
 ### Requirement: Verified full resend can recover from selection-time owner loss
 
 An HTTP bridge request MAY move from an unavailable continuity owner to another account only after a typed pre-visible `continuity_owner_unavailable` account-selection result, which the HTTP bridge maps to `previous_response_owner_unavailable`, and positive durable proof that the request contains the complete retained input history. A missing durable owner is not a selector result and MUST fail closed without replay. The durable row MUST provide a positive input-item count and full fingerprint, and the corresponding raw prefix of the incoming list-shaped input MUST match both before any projection occurs.

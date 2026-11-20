@@ -2712,6 +2712,194 @@ async def test_api_key_reasoning_allowlist_rejects_compact_before_upstream(async
     assert response.json()["error"]["code"] == "reasoning_effort_not_allowed"
 
 
+async def _create_configuration_update_policy_key(async_client, name: str, **policy) -> tuple[str, str]:
+    enabled = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert enabled.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": name,
+            "limits": [{"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 1_000_000}],
+            **policy,
+        },
+    )
+    assert created.status_code == 200
+    return created.json()["key"], created.json()["id"]
+
+
+def _configuration_update_request(model: str, request_effort: str, *item_efforts: str) -> dict:
+    input_items: list[dict] = [{"role": "user", "content": [{"type": "input_text", "text": "start"}]}]
+    for effort in item_efforts:
+        input_items.append({"type": "configuration_update", "reasoning": {"effort": effort}})
+        input_items.append({"role": "user", "content": [{"type": "input_text", "text": "continue"}]})
+    return {
+        "model": model,
+        "instructions": "hi",
+        "input": input_items,
+        "reasoning": {"effort": request_effort},
+        "stream": True,
+    }
+
+
+async def _usage_reservations(key_id: str) -> list[ApiKeyUsageReservation]:
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(ApiKeyUsageReservation).where(ApiKeyUsageReservation.api_key_id == key_id)
+        )
+        return list(result.scalars().all())
+
+
+_CONFIGURATION_UPDATE_ENDPOINTS = [
+    "/backend-api/codex/responses",
+    "/v1/responses",
+    "/backend-api/codex/responses/compact",
+    "/v1/responses/compact",
+    "/v1/chat/completions",
+]
+
+
+async def _post_configuration_update_request(
+    async_client, monkeypatch, endpoint: str, key: str, request_payload: dict
+) -> tuple[object, list[str]]:
+    """Send one request through ``endpoint`` and return the response and the serialized upstream bodies."""
+    seen: list[str] = []
+
+    async def fake_stream(payload, _headers, _access_token, _account_id, base_url=None, raise_for_status=False):
+        seen.append(json.dumps(payload.to_payload()))
+        usage = {"input_tokens": 3, "output_tokens": 2}
+        event = {"type": "response.completed", "response": {"id": "resp_configuration_update", "usage": usage}}
+        yield f"data: {json.dumps(event)}\n\n"
+
+    async def fake_compact(payload, _headers, _access_token, _account_id):
+        seen.append(json.dumps(payload.to_payload()))
+        return OpenAIResponsePayload.model_validate(
+            {
+                "id": "resp_configuration_update_compact",
+                "model": payload.model,
+                "status": "completed",
+                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+                "output": [],
+            }
+        )
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+    body = dict(request_payload)
+    if endpoint.endswith("/compact"):
+        body.pop("stream")
+        response = await async_client.post(endpoint, headers={"Authorization": f"Bearer {key}"}, json=body)
+        return response, seen
+    async with async_client.stream("POST", endpoint, headers={"Authorization": f"Bearer {key}"}, json=body) as response:
+        _ = [line async for line in response.aiter_lines() if line]
+    return response, seen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", _CONFIGURATION_UPDATE_ENDPOINTS)
+@pytest.mark.parametrize("item_efforts", [("max", "high"), ()])
+async def test_api_key_allowlist_forwards_configuration_update_items_unchanged(
+    async_client, monkeypatch, endpoint, item_efforts
+):
+    await _populate_test_registry()
+    key, key_id = await _create_configuration_update_policy_key(
+        async_client, "configuration-update-allowed", allowedReasoningEfforts=["low", "high"]
+    )
+    await _import_account(async_client, "acc_configuration_update_allowed", "configuration-update@example.com")
+    # An older disallowed item that a later allowed item overrides is history,
+    # not the effort of this turn.
+    request_payload = _configuration_update_request(_TEST_MODELS[0], "low", *item_efforts)
+
+    response, seen = await _post_configuration_update_request(async_client, monkeypatch, endpoint, key, request_payload)
+
+    assert response.status_code == 200
+    assert len(seen) == 1
+    upstream_body = json.loads(seen[0])
+    assert json.dumps(upstream_body["input"]) == json.dumps(request_payload["input"])
+    assert upstream_body["reasoning"]["effort"] == "low"
+    assert [reservation.status for reservation in await _usage_reservations(key_id)] == ["finalized"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", _CONFIGURATION_UPDATE_ENDPOINTS)
+async def test_api_key_allowlist_rejects_the_last_configuration_update_item_before_reservation(
+    async_client, monkeypatch, endpoint
+):
+    await _populate_test_registry()
+    key, key_id = await _create_configuration_update_policy_key(
+        async_client, "configuration-update-blocked", allowedReasoningEfforts=["low", "medium"]
+    )
+    await _import_account(async_client, "acc_configuration_update_blocked", "configuration-update@example.com")
+
+    async def fail_upstream(*_args, **_kwargs):
+        raise AssertionError("upstream was reached after policy rejection")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fail_upstream)
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fail_upstream)
+    request_payload = _configuration_update_request(_TEST_MODELS[0], "low", "low", "max")
+    if endpoint.endswith("/compact"):
+        request_payload.pop("stream")
+
+    response = await async_client.post(endpoint, headers={"Authorization": f"Bearer {key}"}, json=request_payload)
+
+    assert response.status_code == 403
+    assert response.json()["error"] == {
+        "message": (
+            "This API key does not have access to reasoning effort 'max' set by a configuration_update input item"
+        ),
+        "type": "permission_error",
+        "code": "reasoning_effort_not_allowed",
+        "param": "input[3].reasoning.effort",
+    }
+    assert await _usage_reservations(key_id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", _CONFIGURATION_UPDATE_ENDPOINTS)
+@pytest.mark.parametrize(
+    ("policy", "wire_model", "wire_effort"),
+    [
+        ({"enforcedReasoningEffort": "high"}, _TEST_MODELS[0], "high"),
+        # ``model-alpha`` advertises only ``medium``, so ``minimal`` falls back to it.
+        ({"enforcedReasoningEffort": "minimal"}, _TEST_MODELS[0], "medium"),
+        ({"enforcedReasoningEffort": "ultra"}, _TEST_MODELS[0], "max"),
+        # The subscription wire form of the ``-xhigh`` alias is ``high``.
+        ({"enforcedModel": "gpt-5.1-xhigh"}, "gpt-5.1", "high"),
+    ],
+)
+async def test_api_key_pin_rewrites_configuration_update_items_to_the_wire_effort(
+    async_client, monkeypatch, endpoint, policy, wire_model, wire_effort
+):
+    await _populate_test_registry()
+    key, _key_id = await _create_configuration_update_policy_key(async_client, "configuration-update-pin", **policy)
+    await _import_account(async_client, "acc_configuration_update_pin", "configuration-update@example.com")
+    request_payload = _configuration_update_request(_TEST_MODELS[0], "low", "max", "low")
+    expected_input = _configuration_update_request(_TEST_MODELS[0], "low", wire_effort, wire_effort)["input"]
+
+    bodies: list[str] = []
+    for _turn in range(2):
+        response, seen = await _post_configuration_update_request(
+            async_client, monkeypatch, endpoint, key, request_payload
+        )
+        assert response.status_code == 200
+        assert len(seen) == 1
+        bodies.append(seen[0])
+
+    upstream_body = json.loads(bodies[0])
+    assert upstream_body["model"] == wire_model
+    assert upstream_body["reasoning"]["effort"] == wire_effort
+    assert json.dumps(upstream_body["input"]) == json.dumps(expected_input)
+    # Deterministic rewrite: the next turn sends the same bytes.
+    assert json.dumps(json.loads(bodies[1])["input"]) == json.dumps(upstream_body["input"])
+
+
 @pytest.mark.asyncio
 async def test_api_key_reasoning_allowlist_rejects_chat_completions_before_upstream(async_client, monkeypatch):
     enabled = await async_client.put(

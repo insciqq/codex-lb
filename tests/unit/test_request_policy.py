@@ -10,6 +10,7 @@ from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.model_registry import ModelRegistry
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
 from app.core.types import JsonValue
+from app.db.models import ModelSource
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.proxy.request_policy import (
     apply_api_key_enforcement,
@@ -423,6 +424,161 @@ def test_reasoning_effort_allowlist_is_idempotent_after_wire_normalization() -> 
 
     apply_api_key_enforcement(request, api_key)
     apply_api_key_enforcement(request, api_key)
+
+
+def _configuration_update_policy_key(
+    *,
+    enforced_model: str | None = None,
+    enforced_reasoning_effort: str | None = None,
+    allowed_reasoning_efforts: list[str] | None = None,
+) -> ApiKeyData:
+    return cast(
+        ApiKeyData,
+        SimpleNamespace(
+            id="key-configuration-update-policy",
+            enforced_model=enforced_model,
+            enforced_reasoning_effort=enforced_reasoning_effort,
+            allowed_reasoning_efforts=allowed_reasoning_efforts,
+            enforced_service_tier=None,
+        ),
+    )
+
+
+def _configuration_update_input(*efforts: JsonValue) -> list[JsonValue]:
+    items: list[JsonValue] = [{"role": "user", "content": "start"}]
+    for effort in efforts:
+        items.append({"type": "configuration_update", "reasoning": {"effort": effort}})
+        items.append({"role": "user", "content": "continue"})
+    return items
+
+
+@pytest.mark.parametrize("request_type", [ResponsesRequest, ResponsesCompactRequest])
+@pytest.mark.parametrize(
+    ("api_key", "item_efforts", "rejected_index"),
+    [
+        (_configuration_update_policy_key(allowed_reasoning_efforts=["low", "medium"]), ("low", "max"), 3),
+        (_configuration_update_policy_key(allowed_reasoning_efforts=["low", "medium"]), (" MAX ",), 1),
+        # An enforced model alias without an effort does not pin, so the item is judged.
+        (_configuration_update_policy_key(enforced_model="gpt-5.1", allowed_reasoning_efforts=["low"]), ("max",), 1),
+    ],
+)
+def test_allowlist_rejects_the_effective_configuration_update_item(
+    request_type: type[ResponsesRequest] | type[ResponsesCompactRequest],
+    api_key: ApiKeyData,
+    item_efforts: tuple[str, ...],
+    rejected_index: int,
+) -> None:
+    request = request_type.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "",
+            "input": _configuration_update_input(*item_efforts),
+            "reasoning": {"effort": "low"},
+        }
+    )
+
+    with pytest.raises(ProxyReasoningEffortNotAllowed, match="set by a configuration_update input item") as raised:
+        apply_api_key_enforcement(request, api_key)
+
+    assert raised.value.code == "reasoning_effort_not_allowed"
+    assert raised.value.param == f"input[{rejected_index}].reasoning.effort"
+
+
+@pytest.mark.parametrize(
+    "item_efforts",
+    [
+        # An older disallowed item that a later allowed one overrides is history.
+        ("max", "high"),
+        # Items without a usable effort select nothing.
+        ("high", "", None, 3),
+    ],
+)
+def test_allowlist_forwards_an_allowed_effective_item_unchanged(item_efforts: tuple[JsonValue, ...]) -> None:
+    input_items = _configuration_update_input(*item_efforts)
+    request = ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "", "input": input_items, "reasoning": {"effort": "low"}}
+    )
+    api_key = _configuration_update_policy_key(allowed_reasoning_efforts=["low", "high"])
+
+    apply_api_key_enforcement(request, api_key)
+
+    assert request.input == input_items
+    assert request.reasoning is not None
+    assert request.reasoning.effort == "low"
+
+
+@pytest.mark.parametrize("request_type", [ResponsesRequest, ResponsesCompactRequest])
+@pytest.mark.parametrize(
+    ("api_key", "wire_effort"),
+    [
+        (_configuration_update_policy_key(enforced_reasoning_effort="low"), "low"),
+        (_configuration_update_policy_key(enforced_reasoning_effort="ultra"), "max"),
+        # The unsupported-effort fallback without registry metadata.
+        (_configuration_update_policy_key(enforced_reasoning_effort="minimal"), "low"),
+        (_configuration_update_policy_key(enforced_model="gpt-5.1-xhigh"), "high"),
+        # The pin wins over the allowlist for items, as it does for the request.
+        (_configuration_update_policy_key(enforced_model="gpt-5.1-low", allowed_reasoning_efforts=["low"]), "low"),
+    ],
+)
+def test_pinned_effort_rewrites_every_configuration_update_item_to_the_wire_effort(
+    request_type: type[ResponsesRequest] | type[ResponsesCompactRequest],
+    api_key: ApiKeyData,
+    wire_effort: str,
+) -> None:
+    input_items: list[JsonValue] = [
+        {"role": "user", "content": "start"},
+        {"type": "configuration_update", "reasoning": {"effort": "max", "summary": "auto"}, "id": "cu_1"},
+        {"type": "configuration_update", "reasoning": {"effort": None}},
+        {"type": "configuration_update", "reasoning": "high"},
+        {"type": "configuration_update", "other": True},
+        {"role": "user", "content": "continue"},
+    ]
+    request = request_type.model_validate(
+        {"model": "gpt-5.1", "instructions": "", "input": input_items, "reasoning": {"effort": "high"}}
+    )
+
+    apply_api_key_enforcement(request, api_key)
+    first_input = request.input
+    apply_api_key_enforcement(request, api_key)
+
+    assert request.reasoning is not None
+    assert request.reasoning.effort == wire_effort
+    assert request.input == first_input
+    assert request.input == [
+        {"role": "user", "content": "start"},
+        {"type": "configuration_update", "reasoning": {"effort": wire_effort, "summary": "auto"}, "id": "cu_1"},
+        {"type": "configuration_update", "reasoning": {"effort": wire_effort}},
+        {"type": "configuration_update", "reasoning": {"effort": wire_effort}},
+        {"type": "configuration_update", "other": True},
+        {"role": "user", "content": "continue"},
+    ]
+
+
+def test_pinned_effort_item_matches_the_source_wire_effort() -> None:
+    from app.modules.proxy.api import _shape_source_responses_payload
+
+    api_key = _configuration_update_policy_key(enforced_model="gpt-5.1-xhigh")
+    request = ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "", "input": _configuration_update_input("low")}
+    )
+
+    apply_api_key_enforcement(request, api_key)
+    wire = _shape_source_responses_payload(request, cast(ModelSource, SimpleNamespace(models=[])), api_key=api_key)
+
+    assert wire["reasoning"] == {"effort": "xhigh"}
+    assert wire["input"] == _configuration_update_input("xhigh")
+
+
+def test_configuration_update_items_without_key_policy_are_forwarded_unchanged() -> None:
+    input_items = _configuration_update_input("max", "minimal")
+    request = ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "", "input": input_items, "reasoning": {"effort": "low"}}
+    )
+
+    apply_api_key_enforcement(request, _configuration_update_policy_key())
+    apply_api_key_enforcement(request, None)
+
+    assert request.input == input_items
 
 
 @pytest.mark.parametrize(

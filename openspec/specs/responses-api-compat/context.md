@@ -491,3 +491,13 @@ keep explicitly, so the request state marks native history:
 - A recovery checkpoint does not fence it. A checkpoint written by an older
   anchored attempt never settles once its session is gone, and it used to
   refuse every identical retry until the body changed.
+
+## Reasoning policy for configuration_update items
+
+Mid-conversation effort changes arrive as `configuration_update` input items, so a policy that reads only the request-level `reasoning.effort` and model aliases lets an item select any effort. Clients persist the items in the history they resend, so a policy that rejects a thread for one historical item would break it for good: a user who toggles effort under a pinned key, or a thread that recorded an item before this policy existed, would fail on every later turn, and compaction could not recover it. See the configuration_update policy requirement in [spec.md](spec.md).
+
+A pinned key therefore rewrites the items, just as it already replaces the request-level effort. Both are taken from the same outgoing body for each destination, so they stay equal: with `enforcedReasoningEffort: "minimal"` a subscription model whose lowest effort is `medium` receives `medium` in both, while a model source receives `minimal`; with `enforcedModel: "gpt-5.1-xhigh"` a subscription receives `high` and a source `xhigh`. The rewrite is deterministic, so the prompt prefix is identical on every turn. A thread whose earlier turns were forwarded with unrewritten items changes its prefix once.
+
+An allowlist key without a pin judges only the effective item, the last one with a usable effort, because an overridden item no longer selects anything. For example, with an allowlist of `low` and `high`, `max` followed by `high` passes and is forwarded unchanged, while `low` followed by `max` is rejected with `param` `input[3].reasoning.effort`. The index refers to the input as forwarded, after system and developer messages are lifted into `instructions`. This is safe only because compact trimming keeps every `configuration_update` item; without that, trimming could drop the later item and revive `max`, which also silently changed effort for clients without an API key.
+
+This covers policy enforcement only. Request logs, accounting, TTFT cohorts and the request-level effort sent to model sources for keys without a pin still ignore the items; that remains open in issue 2664.
