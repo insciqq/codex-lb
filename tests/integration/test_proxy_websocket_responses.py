@@ -3130,13 +3130,8 @@ def test_backend_responses_websocket_lite_restated_delta_is_not_replayed_after_p
             ],
         ],
     )
-    recovered_upstream = _SequencedUpstreamWebSocket(
-        [],
-        deferred_message_batches=[
-            _response_batch("resp_ws_lite_replay"),
-            _response_batch("resp_ws_lite_b2"),
-        ],
-    )
+    # Would serve an anchorless replay; it must stay unused.
+    recovered_upstream = _SequencedUpstreamWebSocket([])
     connect_count = 0
 
     class _FakeSettingsCache:
@@ -3212,27 +3207,15 @@ def test_backend_responses_websocket_lite_restated_delta_is_not_replayed_after_p
             "client_metadata": {marker: "true"},
             "stream": True,
         },
-        # Restates the previous delta plus new items. The anchor's stored
-        # prefix came from a client-anchored delta, so this input does not
-        # restate the tool bundle and "hi" from the first turn: it must not be
-        # replayed without the anchor after previous_response_not_found.
+        # Restates the previous delta plus new items under the client's own
+        # anchor; it is never replayed without that anchor after
+        # previous_response_not_found.
         {
             "type": "response.create",
             "model": "gpt-5.6-sol",
             "instructions": "",
             "previous_response_id": "resp_ws_lite_a2",
             "input": [user_continue, assistant_ok, user_more],
-            "client_metadata": {marker: "true"},
-            "stream": True,
-        },
-        # The marker-stripped replay was accepted as a non-Lite request, so a
-        # later frame referencing the replay's response id must NOT be trusted.
-        {
-            "type": "response.create",
-            "model": "gpt-5.6-sol",
-            "instructions": "",
-            "previous_response_id": "resp_ws_lite_replay",
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": "after replay"}]}],
             "client_metadata": {marker: "true"},
             "stream": True,
         },

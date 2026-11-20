@@ -26716,7 +26716,10 @@ async def test_websocket_lite_incremental_requires_previous_response_linkage(
 
 
 @pytest.mark.asyncio
-async def test_websocket_lite_fresh_replay_strips_trusted_marker(monkeypatch):
+async def test_websocket_lite_frames_on_client_anchors_keep_no_anchorless_replay(monkeypatch):
+    # Neither a trusted marker-only Lite delta after an accepted prewarm nor
+    # a body-Lite frame carries a fresh body: a client-supplied anchor is
+    # never replayed without it.
     service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
     api_key = ApiKeyData(
         id="key_ws_lite_replay",
@@ -26770,8 +26773,7 @@ async def test_websocket_lite_fresh_replay_strips_trusted_marker(monkeypatch):
     trusted_payload = json.loads(trusted.text_data)
     assert trusted_payload["client_metadata"][marker] == "true"
     assert trusted_payload["reasoning"] == {"context": "all_turns", "effort": "high"}
-    # The user-only delta after an accepted prewarm does not restate
-    # the prewarm's context, so it must never be replayed without its anchor.
+    # The user-only delta after an accepted prewarm keeps its anchor.
     assert trusted.request_state.fresh_upstream_request_is_retry_safe is False
     assert trusted.request_state.fresh_upstream_request_text is None
     assert trusted.request_state.responses_lite_model == "gpt-5.6-sol"
@@ -26810,8 +26812,8 @@ async def test_websocket_lite_fresh_replay_strips_trusted_marker(monkeypatch):
         "summary": "auto",
         "vendor_hint": 9,
     }
-    # An anchor this connection never completed is not replayed
-    # anchorless, even when the body carries the Lite tool bundle.
+    # A client anchor is not replayed anchorless, even when the body
+    # carries the Lite tool bundle.
     assert body_lite.request_state.fresh_upstream_request_is_retry_safe is False
     assert body_lite.request_state.fresh_upstream_request_text is None
 

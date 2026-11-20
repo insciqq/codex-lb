@@ -6164,11 +6164,10 @@ class _WebSocketMixin:
                 if not (
                     request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
                 ):
-                    # A short continuation depends entirely on the upstream
-                    # anchor. Replaying the same lost previous_response_id on a
-                    # new websocket just re-surfaces the raw upstream 400; only
-                    # full-resend payloads with a prepared fresh body can be
-                    # transparently retried.
+                    # Only a request whose anchor the proxy injected keeps a
+                    # fresh body (the client's own unanchored input). A
+                    # client-supplied anchor has none: replaying it would only
+                    # re-surface the miss, so it reaches the client instead.
                     retry_error_code = None
                 else:
                     replay_text = _install_verified_fresh_replay(

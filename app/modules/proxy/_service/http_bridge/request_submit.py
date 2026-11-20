@@ -3954,16 +3954,11 @@ class _HTTPBridgeRequestSubmitMixin:
                 # Account-scoped uploaded files cannot be replayed on a
                 # different owner. Keep the preferred account mandatory for
                 # both silent recovery and clean-close recovery.
-                uses_fresh_body = bool(
-                    request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
-                )
                 candidate_text = (
-                    request_state.fresh_upstream_request_text if uses_fresh_body else request_state.request_text
+                    request_state.fresh_upstream_request_text
+                    if request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
+                    else request_state.request_text
                 )
-                if uses_fresh_body and candidate_text is not None and request_state.previous_response_id is not None:
-                    # A body that replaces an anchored one goes out without
-                    # tool-search ids; judge and compare what is sent.
-                    candidate_text = _anchor_free_replay_wire_text(candidate_text)
                 # The send boundary decorates durable operations with
                 # codex_lb_operation_id after selection. Keep that operation
                 # identity on its owner unless a dedicated rebind path has
