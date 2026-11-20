@@ -1002,9 +1002,7 @@ class SubprocessNativeEgressClient:
             reader_task = self._reader_task
             generation = self._generation
             if process is not None and process.stdin is not None:
-                process.stdin.close()
-                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-                    await process.stdin.wait_closed()
+                await self._close_helper_stdin(process, process.stdin)
             if process is not None:
                 try:
                     await asyncio.wait_for(process.wait(), timeout=_NATIVE_CANCEL_TIMEOUT_SECONDS)
@@ -1021,6 +1019,31 @@ class SubprocessNativeEgressClient:
             )
             self._process = None
             self._reader_task = None
+
+    async def _close_helper_stdin(self, process: asyncio.subprocess.Process, stdin: asyncio.StreamWriter) -> None:
+        """Close the helper's stdin once the command being written is complete.
+
+        A body command is written in slices, so closing under a sender
+        suspended between slices would hand the helper EOF in the middle of a
+        command. Taking the write lock lets that sender finish its line, and
+        senders queued behind it see ``_closed`` and write nothing. A helper
+        that stopped reading cannot hold shutdown: after a bounded wait for the
+        lock or for the flush it is terminated.
+        """
+        try:
+            await asyncio.wait_for(self._write_lock.acquire(), timeout=_NATIVE_CANCEL_TIMEOUT_SECONDS)
+        except TimeoutError:
+            await _stop_process(process)
+            stdin.close()
+            return
+        try:
+            stdin.close()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await asyncio.wait_for(stdin.wait_closed(), timeout=_NATIVE_CANCEL_TIMEOUT_SECONDS)
+        except TimeoutError:
+            await _stop_process(process)
+        finally:
+            self._write_lock.release()
 
     async def _ensure_process(self) -> tuple[asyncio.subprocess.Process, int]:
         async with self._start_lock:
@@ -1100,7 +1123,12 @@ class SubprocessNativeEgressClient:
         base64_body: bytes | None = None,
     ) -> None:
         async with self._write_lock:
-            if process is not self._process or generation != self._generation or process.returncode is not None:
+            if (
+                self._closed
+                or process is not self._process
+                or generation != self._generation
+                or process.returncode is not None
+            ):
                 raise NativeEgressTransportError("native helper exited before command dispatch")
             stdin = process.stdin
             if stdin is None:

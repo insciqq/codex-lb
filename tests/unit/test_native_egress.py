@@ -1449,3 +1449,99 @@ async def test_cancelled_body_command_still_queues_the_whole_line(tmp_path: Path
     assert base64.b64decode(decoded.pop("body"), validate=True) == body
     assert decoded == command
     assert not client._write_lock.locked()
+
+
+_SLOW_READER_HELPER = r"""#!/usr/bin/env python3
+import json
+import sys
+import time
+
+stdin = sys.stdin.buffer
+marker = open(sys.argv[0] + ".lines", "a", encoding="utf-8")
+hello = json.loads(stdin.readline())
+assert hello["type"] == "client_hello"
+print(json.dumps({
+    "type": "server_hello",
+    "protocol_version": 1,
+    "capabilities": [
+        "failure_provenance_v1", "http", "http2_profile_v1", "http_compact_collect_v1",
+        "http_compact_sse_v1", "http_sse_v1", "http_responses_events_v1",
+        "http_responses_completion_v1", "websocket", "websocket_responses_events_v1",
+        "websocket_responses_routing_v1", "websocket_send_ack",
+    ],
+}), flush=True)
+READ_BYTES = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+pending = b""
+while True:
+    if READ_BYTES == 0:
+        time.sleep(3600)
+    chunk = stdin.read1(READ_BYTES)
+    if not chunk:
+        if pending:
+            marker.write("partial\n")
+        break
+    pending += chunk
+    while b"\n" in pending:
+        line, pending = pending.split(b"\n", 1)
+        try:
+            json.loads(line)
+        except ValueError:
+            marker.write("invalid\n")
+        else:
+            marker.write("ok\n")
+        marker.flush()
+    time.sleep(0.005)
+marker.close()
+"""
+
+
+def _write_slow_reader_helper(path: Path, read_bytes: int) -> None:
+    path.write_text(_SLOW_READER_HELPER.replace("int(sys.argv[1]) if len(sys.argv) > 1 else 0", str(read_bytes)))
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+@pytest.mark.asyncio
+async def test_close_lets_the_body_being_written_finish_before_eof(tmp_path: Path) -> None:
+    helper = tmp_path / "native-helper"
+    _write_slow_reader_helper(helper, 64 * 1024)
+    client = SubprocessNativeEgressClient(helper)
+    body = os.urandom(2 * 1024 * 1024)
+    first = asyncio.create_task(client.request(NativeEgressRequest("POST", "https://example.test/one", {}, body=body)))
+    while not client._write_lock.locked():
+        await asyncio.sleep(0.001)
+    # A second request waits for the write lock behind the body in flight.
+    second = asyncio.create_task(
+        client.request(NativeEgressRequest("POST", "https://example.test/two", {}, body=b"{}"))
+    )
+    await asyncio.sleep(0.02)
+    process = client._process
+    assert process is not None
+
+    await client.aclose()
+    await asyncio.wait_for(process.wait(), timeout=10)
+
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    assert all(isinstance(result, NativeEgressError) for result in results)
+    # The helper read the in-flight command whole, then EOF; the queued one was never written.
+    assert (tmp_path / "native-helper.lines").read_text() == "ok\n"
+
+
+@pytest.mark.asyncio
+async def test_close_terminates_a_helper_that_stopped_reading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(native_egress_module, "_NATIVE_CANCEL_TIMEOUT_SECONDS", 0.2)
+    helper = tmp_path / "native-helper"
+    _write_slow_reader_helper(helper, 0)
+    client = SubprocessNativeEgressClient(helper)
+    request = asyncio.create_task(
+        client.request(NativeEgressRequest("POST", "https://example.test", {}, body=os.urandom(2 * 1024 * 1024)))
+    )
+    while not client._write_lock.locked():
+        await asyncio.sleep(0.001)
+    process = client._process
+    assert process is not None
+
+    await asyncio.wait_for(client.aclose(), timeout=10)
+
+    assert process.returncode is not None
+    (result,) = await asyncio.gather(request, return_exceptions=True)
+    assert isinstance(result, NativeEgressError)
