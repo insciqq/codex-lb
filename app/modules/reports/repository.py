@@ -365,6 +365,16 @@ def _daily_speed_medians_stmt(
     useragent_group: str | None,
     api_key_ids: list[str] | None = None,
 ):
+    """Exact daily TTFT, TPS and queue medians from one scan of the window.
+
+    The window's ``request_logs`` rows are read once into a narrow projection
+    (report day, TTFT, TPS, queue wait) that has exactly one consumer: a
+    single ranking step that numbers every metric within its day. No CTE over
+    ``request_logs`` is shared between consumers, so neither SQLite nor
+    PostgreSQL can turn the projection back into one scan per metric. The
+    report day comes from the range join against the day list, which also
+    leaves the planner free to start from the most selective filter index.
+    """
     useragent_group_clause = _useragent_group_filter_clause(useragent_group)
     day_ranges_cte = _day_ranges_cte(day_ranges)
     traffic_join = day_ranges_cte.join(
@@ -380,126 +390,75 @@ def _daily_speed_medians_stmt(
         ),
     )
     token_count = RequestLog.output_tokens - func.coalesce(RequestLog.reasoning_tokens, 0)
-    ttft_values_cte = (
+    tps = case(
+        (
+            and_(
+                token_count.is_not(None),
+                token_count > 0,
+                RequestLog.latency_ms.is_not(None),
+                RequestLog.latency_first_token_ms.is_not(None),
+                RequestLog.latency_ms > RequestLog.latency_first_token_ms,
+            ),
+            token_count * 1000.0 / (RequestLog.latency_ms - RequestLog.latency_first_token_ms),
+        ),
+        else_=None,
+    )
+    samples = (
         select(
             day_ranges_cte.c.report_date,
             RequestLog.latency_first_token_ms.label("ttft_ms"),
-        )
-        .select_from(traffic_join)
-        .where(RequestLog.latency_first_token_ms.is_not(None))
-        .cte("daily_ttft_values")
-    )
-    tps_values_cte = (
-        select(
-            day_ranges_cte.c.report_date,
-            (token_count * 1000.0 / (RequestLog.latency_ms - RequestLog.latency_first_token_ms)).label("tps"),
-        )
-        .select_from(traffic_join)
-        .where(
-            token_count.is_not(None),
-            token_count > 0,
-            RequestLog.latency_ms.is_not(None),
-            RequestLog.latency_first_token_ms.is_not(None),
-            RequestLog.latency_ms > RequestLog.latency_first_token_ms,
-        )
-        .cte("daily_tps_values")
-    )
-    queue_values_cte = (
-        select(
-            day_ranges_cte.c.report_date,
+            tps.label("tps"),
             RequestLog.latency_queue_ms.label("queue_ms"),
         )
         .select_from(traffic_join)
-        .where(RequestLog.latency_queue_ms.is_not(None))
-        .cte("daily_queue_values")
+        .where(
+            # A valid TPS sample implies a TTFT sample, so these two cover all three metrics.
+            or_(RequestLog.latency_first_token_ms.is_not(None), RequestLog.latency_queue_ms.is_not(None)),
+        )
+        .subquery("speed_samples")
     )
-    ttft_count = func.count().over(partition_by=ttft_values_cte.c.report_date)
-    ttft_ranked_cte = select(
-        ttft_values_cte.c.report_date,
-        ttft_values_cte.c.ttft_ms,
-        ttft_count.label("sample_count"),
-        func.row_number()
-        .over(partition_by=ttft_values_cte.c.report_date, order_by=ttft_values_cte.c.ttft_ms)
-        .label("ttft_rank"),
-    ).cte("daily_ttft_ranks")
-    tps_count = func.count().over(partition_by=tps_values_cte.c.report_date)
-    tps_ranked_cte = select(
-        tps_values_cte.c.report_date,
-        tps_values_cte.c.tps,
-        tps_count.label("sample_count"),
-        func.row_number()
-        .over(partition_by=tps_values_cte.c.report_date, order_by=tps_values_cte.c.tps)
-        .label("tps_rank"),
-    ).cte("daily_tps_ranks")
-    queue_count = func.count().over(partition_by=queue_values_cte.c.report_date)
-    queue_ranked_cte = select(
-        queue_values_cte.c.report_date,
-        queue_values_cte.c.queue_ms,
-        queue_count.label("sample_count"),
-        func.row_number()
-        .over(partition_by=queue_values_cte.c.report_date, order_by=queue_values_cte.c.queue_ms)
-        .label("queue_rank"),
-    ).cte("daily_queue_ranks")
+    metrics = ("ttft_ms", "tps", "queue_ms")
+    ranking_columns = []
+    for name in metrics:
+        value = samples.c[name]
+        # NULLs sort after every sample, so a metric's samples hold ranks
+        # 1..count. NULLS LAST needs SQLite 3.30 or later.
+        rank = func.row_number().over(partition_by=samples.c.report_date, order_by=value.nulls_last())
+        ranking_columns.append(rank.label(f"{name}_rank"))
+        ranking_columns.append(func.count(value).over(partition_by=samples.c.report_date).label(f"{name}_count"))
+    ranked = select(samples.c.report_date, *(samples.c[name] for name in metrics), *ranking_columns).subquery(
+        "speed_sample_ranks"
+    )
 
-    # A median contains the one center row for odd samples and both center rows
-    # for even samples. Multiplication avoids dialect-specific integer division.
-    ttft_is_middle = and_(
-        ttft_ranked_cte.c.ttft_rank * 2 >= ttft_ranked_cte.c.sample_count,
-        ttft_ranked_cte.c.ttft_rank * 2 <= ttft_ranked_cte.c.sample_count + 2,
-    )
-    tps_is_middle = and_(
-        tps_ranked_cte.c.tps_rank * 2 >= tps_ranked_cte.c.sample_count,
-        tps_ranked_cte.c.tps_rank * 2 <= tps_ranked_cte.c.sample_count + 2,
-    )
-    queue_is_middle = and_(
-        queue_ranked_cte.c.queue_rank * 2 >= queue_ranked_cte.c.sample_count,
-        queue_ranked_cte.c.queue_rank * 2 <= queue_ranked_cte.c.sample_count + 2,
-    )
-    ttft_medians_cte = (
+    def is_middle(name: str):
+        rank = ranked.c[f"{name}_rank"]
+        sample_count = ranked.c[f"{name}_count"]
+        # A median contains the one center row for odd samples and both center
+        # rows for even samples. Multiplication avoids dialect-specific integer
+        # division. A day without samples selects only a NULL row: no median.
+        return and_(rank * 2 >= sample_count, rank * 2 <= sample_count + 2)
+
+    medians = (
         select(
-            ttft_ranked_cte.c.report_date,
-            func.avg(case((ttft_is_middle, ttft_ranked_cte.c.ttft_ms), else_=None)).label("median_ttft_ms"),
+            ranked.c.report_date,
+            *(
+                func.avg(case((is_middle(name), ranked.c[name]), else_=None)).label(f"median_{name}")
+                for name in metrics
+            ),
         )
-        .group_by(ttft_ranked_cte.c.report_date)
-        .cte("daily_ttft_medians")
-    )
-    tps_medians_cte = (
-        select(
-            tps_ranked_cte.c.report_date,
-            func.avg(case((tps_is_middle, tps_ranked_cte.c.tps), else_=None)).label("median_tps"),
-        )
-        .group_by(tps_ranked_cte.c.report_date)
-        .cte("daily_tps_medians")
-    )
-    queue_medians_cte = (
-        select(
-            queue_ranked_cte.c.report_date,
-            func.avg(case((queue_is_middle, queue_ranked_cte.c.queue_ms), else_=None)).label("median_queue_ms"),
-        )
-        .group_by(queue_ranked_cte.c.report_date)
-        .cte("daily_queue_medians")
+        # Only center rows reach the grouping, so it never re-sorts the window.
+        .where(or_(*(is_middle(name) for name in metrics)))
+        .group_by(ranked.c.report_date)
+        .subquery("daily_speed_medians")
     )
     return (
         select(
             day_ranges_cte.c.report_date,
-            func.coalesce(ttft_medians_cte.c.median_ttft_ms, 0.0).label("median_ttft_ms"),
-            func.coalesce(tps_medians_cte.c.median_tps, 0.0).label("median_tps"),
-            func.coalesce(queue_medians_cte.c.median_queue_ms, 0.0).label("median_queue_ms"),
+            func.coalesce(medians.c.median_ttft_ms, 0.0).label("median_ttft_ms"),
+            func.coalesce(medians.c.median_tps, 0.0).label("median_tps"),
+            func.coalesce(medians.c.median_queue_ms, 0.0).label("median_queue_ms"),
         )
-        .select_from(
-            day_ranges_cte.outerjoin(
-                ttft_medians_cte,
-                ttft_medians_cte.c.report_date == day_ranges_cte.c.report_date,
-            )
-            .outerjoin(
-                tps_medians_cte,
-                tps_medians_cte.c.report_date == day_ranges_cte.c.report_date,
-            )
-            .outerjoin(
-                queue_medians_cte,
-                queue_medians_cte.c.report_date == day_ranges_cte.c.report_date,
-            )
-        )
+        .select_from(day_ranges_cte.outerjoin(medians, medians.c.report_date == day_ranges_cte.c.report_date))
         .order_by(day_ranges_cte.c.report_date)
     )
 

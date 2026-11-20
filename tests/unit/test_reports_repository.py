@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from datetime import date, datetime, timedelta, timezone
 from typing import TypedDict
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
 from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -713,22 +715,56 @@ async def test_daily_speed_medians_stmt_returns_only_one_row_per_populated_day_a
     assert len(rows) == len(day_ranges)
 
 
-def test_daily_speed_medians_stmt_compiles_to_portable_window_sql() -> None:
-    statement = _daily_speed_medians_stmt(
-        [("2026-06-01", datetime(2026, 6, 1), datetime(2026, 6, 2))],
-        None,
-        None,
-        None,
-    )
+def _week_of_day_ranges() -> list[tuple[str, datetime, datetime]]:
+    return [
+        ((date(2026, 6, 1) + timedelta(days=day)).isoformat(), datetime(2026, 6, 1 + day), datetime(2026, 6, 2 + day))
+        for day in range(7)
+    ]
+
+
+def test_daily_speed_medians_stmt_compiles_to_portable_single_scan_sql() -> None:
+    statement = _daily_speed_medians_stmt(_week_of_day_ranges(), ["acc"], "gpt-5.1", "opencode", ["key"])
 
     for dialect in (sqlite_dialect(), postgresql_dialect()):
         sql = str(statement.compile(dialect=dialect, compile_kwargs={"literal_binds": True})).lower()
 
-        assert "row_number() over" in sql
-        assert "count(*) over" in sql
-        assert "group by daily_ttft_ranks.report_date" in sql
-        assert "group by daily_tps_ranks.report_date" in sql
+        assert sql.count("row_number() over") == 3
+        assert "nulls last" in sql
+        assert sql.count("request_logs on") == 1
+        # The window projection is an inline subquery with one consumer, never
+        # a CTE that a planner could evaluate once per reference.
+        assert sql.count(") as speed_samples") == 1
+        assert "speed_samples as" not in sql
+        assert "materialized" not in sql
         assert "percentile_cont" not in sql
+
+
+@pytest.mark.parametrize(
+    ("filters", "index_pattern"),
+    [
+        pytest.param((None, None, None, None), r"\S+ \(requested_at>\? AND requested_at<\?\)", id="unfiltered"),
+        # A rare User-Agent group combined with common API keys and model must
+        # still start from the User-Agent index instead of walking every row
+        # of both keys in the window.
+        pytest.param(
+            (None, "gpt", "opencode", ["0", "3"]), r"idx_logs_useragent_group \(useragent_group=\?\)", id="skewed"
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_daily_speed_medians_stmt_reads_request_logs_once_on_sqlite(
+    async_session: AsyncSession,
+    filters: tuple[list[str] | None, str | None, str | None, list[str] | None],
+    index_pattern: str,
+) -> None:
+    statement = _daily_speed_medians_stmt(_week_of_day_ranges(), *filters)
+    sql = str(statement.compile(dialect=sqlite_dialect(), compile_kwargs={"literal_binds": True}))
+
+    plan = (await async_session.execute(text(f"EXPLAIN QUERY PLAN {sql}"))).all()
+
+    log_reads = [row.detail for row in plan if "request_logs" in row.detail]
+    assert len(log_reads) == 1
+    assert re.match(rf"SEARCH (TABLE )?request_logs USING (COVERING )?INDEX {index_pattern}", log_reads[0])
 
 
 @pytest.mark.asyncio
