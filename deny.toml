@@ -1,6 +1,11 @@
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # Unmaintained, not vulnerable; reached only through hyper 1.8.1, which stays
+    # pinned to the Codex release family (test_native_egress_lockfile_pins_codex_release_family).
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils is archived with no safe upgrade; hyper is pinned to the Codex release family" },
+]
 
 [bans]
 multiple-versions = "warn"
