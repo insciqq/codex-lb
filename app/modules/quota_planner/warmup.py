@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime
+from typing import cast
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +18,7 @@ from app.core.config.dashboard_overrides import dashboard_overrides_bound, effec
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
+from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import ResponsesRequest
 from app.core.resilience.toggles import bind_resilience_toggles
@@ -77,12 +81,43 @@ class WarmupExecutionResult:
     executed_at: datetime | None = None
 
 
+_TERMINAL_FAILURE_EVENTS = frozenset({"response.failed", "response.incomplete", "error"})
+
+
+class WarmupProbeFailedError(RuntimeError):
+    """The warmup stream ended without ``response.completed``.
+
+    ``stream_responses`` reports non-replayable transport failures, idle
+    timeouts and upstream failures as terminal SSE events instead of raising,
+    so the probe has to read the terminal to tell success from failure.
+    """
+
+    def __init__(self, code: str, message: str | None = None) -> None:
+        super().__init__(f"{code}: {message}" if message else code)
+        self.code = code
+
+
 @dataclass(frozen=True, slots=True)
 class WarmupUsage:
     input_tokens: int
     output_tokens: int
     cached_input_tokens: int
     reasoning_tokens: int | None
+
+
+def _warmup_usage_from_event(event: OpenAIEvent, current: WarmupUsage) -> WarmupUsage:
+    if event.response is None or event.response.usage is None:
+        return current
+    raw_usage = event.response.usage
+    return WarmupUsage(
+        input_tokens=raw_usage.input_tokens or 0,
+        output_tokens=raw_usage.output_tokens or 0,
+        cached_input_tokens=(raw_usage.input_tokens_details.cached_tokens if raw_usage.input_tokens_details else 0)
+        or 0,
+        reasoning_tokens=(
+            raw_usage.output_tokens_details.reasoning_tokens if raw_usage.output_tokens_details else None
+        ),
+    )
 
 
 class QuotaWarmupService:
@@ -638,36 +673,44 @@ class QuotaWarmupService:
                 route_trace.record_direct()
             else:
                 route_trace.record(route=route, fallback_used=False)
-        async for event_block in stream_responses(
-            payload,
-            headers,
-            access_token,
-            upstream_account_id,
-            raise_for_status=True,
-            route=route,
-            route_trace=route_trace,
-            allow_direct_egress=route is None,
-            # The probe's own live signals must not pre-write fresh usage
-            # rows: _record_warmup_effect measures the post-probe window via
-            # its controlled refresh, which would otherwise skip as fresh
-            # and downgrade the observation to unknown.
-            suppress_live_usage=True,
-        ):
-            event = parse_sse_event(event_block)
-            if event is None or event.response is None or event.response.usage is None:
-                continue
-            raw_usage = event.response.usage
-            usage = WarmupUsage(
-                input_tokens=raw_usage.input_tokens or 0,
-                output_tokens=raw_usage.output_tokens or 0,
-                cached_input_tokens=(
-                    raw_usage.input_tokens_details.cached_tokens if raw_usage.input_tokens_details else 0
-                )
-                or 0,
-                reasoning_tokens=(
-                    raw_usage.output_tokens_details.reasoning_tokens if raw_usage.output_tokens_details else None
+        completed = False
+        # ``stream_responses`` is an async generator annotated as an iterator;
+        # close it explicitly when a terminal failure stops the read early.
+        async with contextlib.aclosing(
+            cast(
+                "AsyncGenerator[str, None]",
+                stream_responses(
+                    payload,
+                    headers,
+                    access_token,
+                    upstream_account_id,
+                    raise_for_status=True,
+                    route=route,
+                    route_trace=route_trace,
+                    allow_direct_egress=route is None,
+                    # The probe's own live signals must not pre-write fresh usage
+                    # rows: _record_warmup_effect measures the post-probe window via
+                    # its controlled refresh, which would otherwise skip as fresh
+                    # and downgrade the observation to unknown.
+                    suppress_live_usage=True,
                 ),
             )
+        ) as events:
+            async for event_block in events:
+                event = parse_sse_event(event_block)
+                if event is None:
+                    continue
+                if event.type in _TERMINAL_FAILURE_EVENTS:
+                    error = event.error or (event.response.error if event.response is not None else None)
+                    raise WarmupProbeFailedError(
+                        (error.code if error is not None else None) or event.type,
+                        error.message if error is not None else None,
+                    )
+                if event.type == "response.completed":
+                    completed = True
+                usage = _warmup_usage_from_event(event, usage)
+        if not completed:
+            raise WarmupProbeFailedError("stream_incomplete", "Warmup stream ended without a terminal event")
         return usage
 
     async def _record_warmup_effect(

@@ -230,15 +230,14 @@ async def test_quota_warmup_routes_and_logs_local_seat(db_setup, transports, mon
         assert row.upstream_proxy_endpoint_id == ("bound-endpoint" if route else None)
 
 
-@pytest.mark.parametrize("failure", ["pool", "endpoint", "transport"])
-async def test_quota_warmup_failure_is_routed_and_recorded(db_setup, transports, monkeypatch, failure):
+@pytest.mark.parametrize("failure", ["pool", "endpoint"])
+async def test_quota_warmup_route_failure_is_recorded_before_dispatch(db_setup, transports, monkeypatch, failure):
     await _seed(broken=failure)
     seen = []
 
     async def stream(*args, **kwargs):
         seen.append(kwargs)
-        raise CodexTransportError("Proxy connection failed")
-        yield  # pragma: no cover - async-generator contract
+        yield 'data: {"type":"response.completed","response":{}}\n\n'
 
     monkeypatch.setattr(warmup, "stream_responses", stream)
     async with SessionLocal() as session:
@@ -247,17 +246,76 @@ async def test_quota_warmup_failure_is_routed_and_recorded(db_setup, transports,
         )
 
     assert result.status == "failed", result
+    assert not seen
     async with SessionLocal() as session:
         row = await session.scalar(select(RequestLog).where(RequestLog.request_id == result.request_id))
         decision = await session.get(QuotaPlannerDecision, result.decision_id)
         assert row is not None and row.status == "error"
         assert decision is not None and decision.status == "failed"
-        if failure == "transport":
-            assert len(seen) == 1
-            assert seen[0]["route"].pool_id == "bound-pool"
-            assert seen[0]["allow_direct_egress"] is False
-            assert row.upstream_proxy_endpoint_id == "bound-endpoint"
-        else:
-            assert not seen
-            expected = "pool_unavailable" if failure == "pool" else "pool_has_no_active_endpoints"
-            assert row.upstream_proxy_fail_closed_reason == expected
+        expected = "pool_unavailable" if failure == "pool" else "pool_has_no_active_endpoints"
+        assert row.upstream_proxy_fail_closed_reason == expected
+
+
+@pytest.mark.parametrize("retryable", [False, True])
+async def test_quota_warmup_routed_transport_failure_is_failed(async_client, transports, monkeypatch, retryable):
+    """Drive the real stream client: a non-replayable routed transport error
+    comes back as a synthetic ``response.failed`` event rather than an
+    exception, and must still fail the warmup instead of recording success."""
+    await _seed()
+    routes = []
+
+    async def fail(self, method_or_url, *args, route, **kwargs):
+        routes.append(route)
+        raise CodexTransportError(
+            "Proxy connection failed",
+            retryable_same_contract=retryable,
+            failure_phase="connect" if retryable else "request",
+        )
+
+    monkeypatch.setattr("app.core.clients.codex.CodexClient.request_with_route_metadata", fail)
+    monkeypatch.setattr("app.core.clients.codex.CodexClient.open_ws_with_route_metadata", fail)
+    async with SessionLocal() as session:
+        result = await warmup.QuotaWarmupService(session).warm_now(
+            account_id="bound-seat", model="gpt-5.4-mini", force_probe=True
+        )
+
+    assert routes and all(route.pool_id == "bound-pool" for route in routes)
+    assert result.status == "failed", result
+    async with SessionLocal() as session:
+        row = await session.scalar(select(RequestLog).where(RequestLog.request_id == result.request_id))
+        decision = await session.get(QuotaPlannerDecision, result.decision_id)
+        assert row is not None and row.status == "error"
+        assert row.upstream_proxy_pool_id == "bound-pool"
+        assert decision is not None and decision.status == "failed"
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        ['data: {"type":"response.failed","response":{"error":{"code":"server_error","message":"boom"}}}\n\n'],
+        ['data: {"type":"response.incomplete","response":{}}\n\n'],
+        ['data: {"type":"error","error":{"code":"rate_limit_exceeded","message":"slow down"}}\n\n'],
+        ['data: {"type":"response.created","response":{}}\n\n'],
+        [],
+    ],
+    ids=["failed", "incomplete", "error", "no-terminal", "empty"],
+)
+async def test_quota_warmup_requires_completed_terminal(db_setup, transports, monkeypatch, events):
+    await _seed()
+
+    async def stream(*args, **kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(warmup, "stream_responses", stream)
+    async with SessionLocal() as session:
+        result = await warmup.QuotaWarmupService(session).warm_now(
+            account_id="direct-seat", model="gpt-5.4-mini", force_probe=True
+        )
+
+    assert result.status == "failed", result
+    async with SessionLocal() as session:
+        row = await session.scalar(select(RequestLog).where(RequestLog.request_id == result.request_id))
+        decision = await session.get(QuotaPlannerDecision, result.decision_id)
+        assert row is not None and row.status == "error"
+        assert decision is not None and decision.status == "failed"

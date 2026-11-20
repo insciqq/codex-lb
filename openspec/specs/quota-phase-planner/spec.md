@@ -437,3 +437,23 @@ malformed times MUST remain available.
 
 - **WHEN** an operator supplies `00:00` and `23:59`
 - **THEN** both values are saved and returned unchanged
+
+### Requirement: Warmup execution requires a completed response
+
+A warmup probe MUST count as executed only when its upstream stream delivers
+`response.completed`. A `response.failed`, `response.incomplete` or `error`
+terminal, including the synthetic failure event the stream client emits for a
+transport error it does not raise, and a stream that ends without any terminal
+MUST follow the failed-execution path: the usage reservation is released, the
+request log records an error and the decision is marked `failed`.
+
+#### Scenario: Routed transport failure fails the warmup
+
+- **GIVEN** a warmup for an account bound to a proxy pool
+- **WHEN** the proxy transport fails and the stream client yields `response.failed`
+- **THEN** the decision is marked `failed` and its request log records an error
+
+#### Scenario: Stream without a terminal fails the warmup
+
+- **WHEN** the warmup stream ends without `response.completed`
+- **THEN** the decision is marked `failed` rather than `executed`

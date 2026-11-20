@@ -154,3 +154,11 @@ Working-hour writes accept real ASCII 24-hour times from `00:00` through
 `23:59`. For example, `24:00` returns HTTP 422 without saving accompanying
 fields. Null and omitted fields keep the saved time. Legacy malformed values
 remain readable and use the existing scheduler defaults until corrected.
+
+## Warmup terminal events
+
+The stream client reports non-replayable transport failures, idle timeouts and
+upstream failures as terminal SSE events instead of raising. The warmup probe
+therefore reads the terminal itself: only `response.completed` settles the
+reservation and marks the decision executed. Anything else raises
+`WarmupProbeFailedError`, which takes the existing failure path.
