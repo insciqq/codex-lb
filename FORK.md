@@ -78,3 +78,9 @@ Upstream PRs reviewed and rejected, one line each with the reason.
   by socket-bound anchoring of native full histories.
 * 2472: native give-up terminal; no matching production evidence and several unresolved
   edge cases in review.
+* 2101: native history/notes routes; concurrent first writes can pin different owners,
+  the stale-session sweep retires history owners, possible session-identity mismatch
+  with scoped cache identity; no production evidence of 405s yet.
+* 2665: configuration_update effort; enforced-model alias masks disallowed efforts,
+  compact trimming drops the authorizing update, model-source egress changes the
+  cache-sensitive starting effort.
