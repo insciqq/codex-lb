@@ -1439,6 +1439,36 @@ async def test_stream_request_shape_400_surfaces_without_failover_or_account_pen
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["/backend-api/codex/responses", "/v1/responses"])
+async def test_stream_false_request_shape_400_surfaces_without_failover_or_account_penalty(
+    async_client, monkeypatch, route
+):
+    """The production trigger: a ``stream: false`` request whose stream mode is forwarded upstream."""
+    account_ids = [
+        await _import_account(async_client, f"acc_stream_false_{suffix}", f"stream_false_{suffix}@example.com")
+        for suffix in "abc"
+    ]
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        raise _upstream_400(_STREAM_REQUIRED_WIRE_BODY)
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    response = await async_client.post(
+        route,
+        json={"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": False},
+    )
+
+    assert response.status_code == 400
+    assert "Stream must be set to true" in response.text
+    assert len(seen_account_ids) == 1, seen_account_ids
+    _assert_no_account_health_change(async_client, account_ids)
+
+
+@pytest.mark.asyncio
 async def test_post_refresh_request_shape_400_surfaces_without_failover_or_account_penalty(async_client, monkeypatch):
     """The redispatch after a forced token refresh classifies the same rejection the same way."""
     account_ids = [

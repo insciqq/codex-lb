@@ -64,14 +64,15 @@ _MODEL_UNSUPPORTED_MESSAGE_RE = re.compile(
     r"^The '.+' model is not supported when using Codex with a ChatGPT account\.$"
 )
 # Request-shape rejections: an HTTP 400 whose whole message says the request's
-# own transport flag is wrong. ``stream`` is a property of the request alone --
-# no account, plan or model makes upstream accept a non-streaming Codex request
-# -- so every account answers the same way. They arrive with no code at all
-# (normalized to ``upstream_error``) or as ``invalid_request_error``. Keep this
-# list to sentences proven account independent: a rejection that names a
-# parameter some accounts or models support (``Unsupported parameter: ...``)
-# must keep failing over. Matched against the entire message so a sentence
-# quoted back inside a longer message cannot qualify.
+# own transport flag is wrong. codex-lb forwards a client's ``stream: false``
+# upstream on purpose, and ``stream`` is a property of the request alone, so
+# when upstream answers with this sentence, every account does. They arrive with
+# no code at all (normalized to ``upstream_error``) or as
+# ``invalid_request_error``. Keep this list to sentences proven account
+# independent: a rejection that names a parameter some accounts or models
+# support (``Unsupported parameter: ...``) must keep failing over. Matched
+# against the entire message so a sentence quoted back inside a longer message
+# cannot qualify.
 _REQUEST_SHAPE_REJECTION_CODES = frozenset({"upstream_error", "invalid_request_error"})
 _REQUEST_SHAPE_REJECTION_MESSAGE_RE = re.compile(r"Stream must be set to true\.?")
 
