@@ -10,6 +10,11 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 
 ![codex-lb](docs/screenshots/banner.jpg)
 
+> **Maintained fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb).** Scope: bug fixes, security,
+> compatibility with current Codex clients and the OpenAI backend, and dependency updates. No new features.
+> The database schema stays identical to upstream, so switching between upstream and the fork is an image swap.
+> What happened to each upstream PR and issue: [fork/REGISTRY.md](fork/REGISTRY.md). Policy: [FORK.md](FORK.md).
+
 **English** | [简体中文](./README.zh-CN.md)
 
 Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, view everything in a dashboard.
