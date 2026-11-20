@@ -101,7 +101,11 @@ _OIDC_CALLBACK_CREDENTIAL_KEYS = frozenset({"code", "state"})
 # suffix (``client_secret``, ``x-api-key``); the short words ``key``, ``auth``
 # and ``sig`` only as a whole word or after a separator, so ``monkey`` or
 # ``author`` stay readable. Keys are matched decoded, as for the OIDC callback.
-_QUERY_STRING_PATTERN = re.compile(r"\?([^\s\"'<>#]+)")
+# The query runs to the end of the request-line token: quotes and ``;`` are
+# part of a value for Starlette (``parse_qsl`` splits on ``&`` only), so
+# stopping or splitting there would leave the tail of a secret readable.
+_QUERY_STRING_PATTERN = re.compile(r"\?(\S+)")
+_QUERY_PARAMETER_SPLIT = re.compile(r"(&)")
 _QUERY_CREDENTIAL_KEY_PATTERN = re.compile(
     r"(?:password|passwd|pwd|token|secret|api[_-]?key|apikey|authorization|credentials?|signature)$"
     r"|(?:^|[_.-])(?:key|auth|sig)$"
@@ -174,7 +178,7 @@ def _redact_query_credential_parameter(parameter: str) -> str:
 
 
 def _redact_query_credentials(match: re.Match[str]) -> str:
-    parts = _OIDC_CALLBACK_PARAMETER_SPLIT.split(match.group(1))
+    parts = _QUERY_PARAMETER_SPLIT.split(match.group(1))
     query = "".join(part if index % 2 else _redact_query_credential_parameter(part) for index, part in enumerate(parts))
     return f"?{query}"
 

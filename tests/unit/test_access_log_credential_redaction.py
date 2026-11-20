@@ -62,12 +62,16 @@ def test_browser_and_api_invite_paths_are_redacted(full_path: str, expected: str
         (f"key={_SECRET}", "key=[REDACTED]"),
         (f"probe=1&access_token={_SECRET}", "probe=1&access_token=[REDACTED]"),
         (f"api%5Fkey={_SECRET}", "api%5Fkey=[REDACTED]"),
-        (f"X-Api-Key={_SECRET};client_secret={_SECRET}", "X-Api-Key=[REDACTED];client_secret=[REDACTED]"),
+        (f"X-Api-Key={_SECRET}&client_secret={_SECRET}", "X-Api-Key=[REDACTED]&client_secret=[REDACTED]"),
+        # ``;`` and quotes belong to the value for Starlette: the whole value goes.
+        (f"api_key={_SECRET};TAIL&model=gpt", "api_key=[REDACTED]&model=gpt"),
+        (f"api_key={_SECRET}'TAIL", "api_key=[REDACTED]"),
     ],
 )
 def test_credential_query_values_are_masked_at_info(query: str, expected: str) -> None:
     for rendered in _render_both(f"/v1/models?{query}"):
         assert _SECRET not in rendered
+        assert "TAIL" not in rendered
         assert f"GET /v1/models?{expected} HTTP/1.1" in rendered
 
 
