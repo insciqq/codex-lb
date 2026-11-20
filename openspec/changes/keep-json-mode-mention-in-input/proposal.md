@@ -23,7 +23,9 @@ out, and #731's test was updated to expect that.
 - For a request that uses `json_object`, a `system` or `developer` message that
   mentions JSON stays in `input` in its original position. A `system` message
   is sent with the `developer` role, because upstream rejects `system` there.
-- Other `system` and `developer` messages still move into `instructions`.
+- Other `system` messages still move into `instructions`. `developer` messages
+  stay in `input` (`keep-developer-input-messages-in-input`), so a `developer`
+  JSON instruction needs no special handling.
 - Requests without `json_object`, compact requests (they drop `text` before
   upstream) and Responses Lite input are unchanged.
 

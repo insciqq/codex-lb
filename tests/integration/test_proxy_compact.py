@@ -354,6 +354,41 @@ async def test_proxy_compact_strips_tool_fields_before_upstream(async_client, mo
     assert "text" not in seen_payloads[0]
 
 
+async def test_proxy_compact_keeps_developer_messages_in_input(async_client, monkeypatch):
+    raw_account_id = "acc_compact_developer_messages"
+    auth_json = _make_auth_json(raw_account_id, "compact-developer-messages@example.com")
+    files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+    response = await async_client.post("/api/accounts/import", files=files)
+    assert response.status_code == 200
+
+    seen_payloads: list[dict[str, object]] = []
+
+    async def fake_compact(payload, headers, access_token, account_id):
+        del headers, access_token, account_id
+        seen_payloads.append(cast(dict[str, object], payload.to_payload()))
+        return CompactResponsePayload.model_validate({"object": "response.compaction", "output": []})
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    developer = {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "dev rules"}]}
+    user = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "base",
+        "input": [
+            developer,
+            {"type": "message", "role": "system", "content": [{"type": "input_text", "text": "sys rules"}]},
+            user,
+        ],
+    }
+    response = await async_client.post("/backend-api/codex/responses/compact", json=payload)
+
+    assert response.status_code == 200
+    assert len(seen_payloads) == 1
+    assert seen_payloads[0]["input"] == [developer, user]
+    assert seen_payloads[0]["instructions"] == "base\nsys rules"
+
+
 @pytest.mark.asyncio
 async def test_proxy_compact_preserves_historical_code_mode_side_effect_pair_before_ordinary_tail(
     async_client, monkeypatch

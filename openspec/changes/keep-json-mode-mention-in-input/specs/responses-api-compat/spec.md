@@ -2,11 +2,16 @@
 
 ### Requirement: JSON mode keeps a JSON instruction in Responses input
 
-When Responses request normalization hoists `system`/`developer` instruction messages into `instructions` for a request whose `text.format.type` is `json_object`, the service MUST keep each `system` or `developer` message that mentions JSON in `input`, in its original position, with the `developer` role. Other instruction messages MUST still be hoisted. Compact requests and Responses Lite input MUST keep their existing normalization.
+When Responses request normalization hoists `system` instruction messages into `instructions` for a request whose `text.format.type` is `json_object`, the service MUST keep each `system` message that mentions JSON in `input`, in its original position, with the `developer` role. Other `system` messages MUST still be hoisted. `developer` messages already stay in `input`, so a `developer` message that mentions JSON keeps satisfying the upstream JSON-mode check without a role change. Compact requests and Responses Lite input MUST keep their existing normalization.
 
 #### Scenario: System JSON instruction stays in input
 - **WHEN** a Responses request with `text.format.type = "json_object"` has a system message `Reply with a JSON object.` and a user message `Say hello.`
 - **THEN** `input` starts with a `developer` message `Reply with a JSON object.`, followed by the user message
+- **AND** `instructions` do not contain `Reply with a JSON object.`
+
+#### Scenario: Developer JSON instruction stays in input
+- **WHEN** a Responses request with `text.format.type = "json_object"` has a developer message `Reply with a JSON object.` and a user message `Say hello.`
+- **THEN** `input` keeps the developer message unchanged, followed by the user message
 - **AND** `instructions` do not contain `Reply with a JSON object.`
 
 #### Scenario: Request without JSON mode

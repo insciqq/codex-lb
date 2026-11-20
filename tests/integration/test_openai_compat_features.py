@@ -669,13 +669,18 @@ async def test_v1_chat_completions_maps_response_format(async_client, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_v1_chat_completions_json_object_keeps_json_instruction_in_input(async_client, monkeypatch):
+@pytest.mark.parametrize("instruction_role", ["system", "developer"])
+async def test_v1_chat_completions_json_object_keeps_json_instruction_in_input(
+    async_client, monkeypatch, instruction_role
+):
     """JSON mode is accepted upstream only when an input message mentions JSON.
 
-    A client that asks for JSON only in its system message used to get a 400,
-    because the system message moved into top-level ``instructions``.
+    A client that asks for JSON only in its system or developer message used to
+    get a 400, because the message moved into top-level ``instructions``.
     """
-    await _import_account(async_client, "acc_chat_json_object", "chat-json-object@example.com")
+    await _import_account(
+        async_client, f"acc_chat_json_object_{instruction_role}", f"chat-json-object-{instruction_role}@example.com"
+    )
 
     seen = {}
 
@@ -688,7 +693,7 @@ async def test_v1_chat_completions_json_object_keeps_json_instruction_in_input(a
     payload = {
         "model": "gpt-5.2",
         "messages": [
-            {"role": "system", "content": "Reply with a JSON object."},
+            {"role": instruction_role, "content": "Reply with a JSON object."},
             {"role": "user", "content": "Say hello."},
         ],
         "response_format": {"type": "json_object"},

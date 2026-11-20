@@ -6242,9 +6242,10 @@ disappear before validation. A canonical Lite-prefix developer instruction MAY
 appear immediately after the `additional_tools` bundle when it passes the same
 account-neutral item checks as historical interleaving and has no response-owned
 ID. A developer message in the stored prefix outside that canonical position or
-the verified pending-call/matching-output interleave MUST fail closed. Non-Lite
-`input` or `messages` forms whose instruction-role messages are normalized into
-top-level `instructions` remain outside this requirement.
+the verified pending-call/matching-output interleave MUST fail closed. The same
+fail-closed rule covers `developer` messages that non-Lite `input` keeps inline;
+`system` messages normalized into top-level `instructions` remain outside this
+requirement.
 
 #### Scenario: Canonical Responses-Lite prefix remains transparent
 

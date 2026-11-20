@@ -381,8 +381,10 @@ def _normalize_responses_input_instructions(data: JsonValue, *, keep_json_mode_i
         instruction_text, preserved_content = _split_responses_instruction_item_content(item_mapping)
         if keep_json_mentions and _mentions_json(instruction_text):
             # JSON mode only counts a JSON mention inside input messages, not in
-            # top-level instructions. Keep this instruction where it is, as a
-            # developer message: upstream rejects the system role in input.
+            # top-level instructions. Developer messages already stayed in input
+            # above, so only a system message reaches this point: keep it where
+            # it is as a developer message, because upstream rejects the system
+            # role in input.
             kept_item = dict(item_mapping)
             kept_item["role"] = "developer"
             input_items.append(kept_item)

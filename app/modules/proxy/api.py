@@ -792,8 +792,8 @@ def _is_openai_sdk_request(
 async def _capture_raw_compaction_trigger_error(request: Request) -> None:
     """Validate top-level compaction triggers before Pydantic normalization.
 
-    The typed request models intentionally hoist trailing system/developer
-    messages into ``instructions``. Keep that behavior for runtime parsing and
+    The typed request models intentionally hoist trailing system messages
+    into ``instructions``. Keep that behavior for runtime parsing and
     OpenAPI, but remember a raw trigger-placement error for the endpoint to
     render after FastAPI has supplied the typed body.
     """
