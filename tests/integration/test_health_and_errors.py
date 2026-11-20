@@ -191,6 +191,24 @@ async def test_unresolvable_static_path_returns_not_found(async_client, path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/internal", "/internal/unknown", "/internal/drain/unknown", "/api/unknown"])
+async def test_unknown_backend_paths_do_not_fall_back_to_the_dashboard(async_client, path):
+    """Unknown GETs under backend-only prefixes are a 404, never index.html."""
+    index = _STATIC_DIR / "index.html"
+    created = not index.exists()
+    if created:
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("<!doctype html><html></html>")
+    try:
+        response = await async_client.get(path)
+        assert response.status_code == 404
+        assert not response.headers["content-type"].startswith("text/html")
+    finally:
+        if created:
+            index.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/a%00b", "/assets/x%00.js", "/internal%00"])
 async def test_static_lookup_with_embedded_nul_is_not_found(async_client, path):
     """An embedded NUL cannot name a file: 404, like Starlette's StaticFiles."""

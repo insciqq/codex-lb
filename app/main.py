@@ -1105,8 +1105,9 @@ def create_app() -> FastAPI:
     # ``scim/`` is here for a reason the others are not: an identity provider
     # probes for resources this release does not implement (Groups,
     # ServiceProviderConfig), and answering those with index.html and a 200
-    # tells it they are supported. They must be a SCIM 404.
-    excluded_prefixes = ("api/", "v1/", "backend-api/", "health", "scim/")
+    # tells it they are supported. They must be a SCIM 404. ``internal/`` holds
+    # operator and replica-to-replica endpoints, never a dashboard route.
+    excluded_prefixes = ("api/", "v1/", "backend-api/", "health", "scim/", "internal/")
 
     def _is_static_asset_path(path: str) -> bool:
         if path.startswith("assets/"):
