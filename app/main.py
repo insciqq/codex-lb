@@ -568,17 +568,21 @@ async def _finish_shutdown_after_lease_release(
         except Exception:
             logger.exception("Metrics server stopped with an error")
         finally:
-            mark_process_dead()
+            # A failing metrics bookkeeping step must not skip database
+            # disposal, dump settlement or the lifespan completion mark.
             try:
-                await _close_db_and_record_clean_shutdown(
-                    database_tasks_drained=database_tasks_drained,
-                    leader_lease_release_completed=leader_lease_release_completed,
-                )
+                mark_process_dead()
             finally:
                 try:
-                    await _finish_response_create_dumps_for_shutdown()
+                    await _close_db_and_record_clean_shutdown(
+                        database_tasks_drained=database_tasks_drained,
+                        leader_lease_release_completed=leader_lease_release_completed,
+                    )
                 finally:
-                    shutdown_state.mark_lifespan_completed()
+                    try:
+                        await _finish_response_create_dumps_for_shutdown()
+                    finally:
+                        shutdown_state.mark_lifespan_completed()
 
 
 async def _close_db_and_record_clean_shutdown(
