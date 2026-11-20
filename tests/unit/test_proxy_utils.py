@@ -17939,7 +17939,9 @@ async def test_stream_with_retry_cancelled_multi_penalty_flush_survives_backoff_
     await asyncio.wait_for(first_health_started.wait(), timeout=1)
     consumer.cancel()
     release_first_health.set()
-    with pytest.raises(RuntimeError, match="route backoff persistence unavailable"):
+    # The cancellation propagates; the failed post-settlement backoff write is
+    # logged and does not replace it.
+    with pytest.raises(asyncio.CancelledError):
         await consumer
     assert await service.drain_persistence_tasks(timeout_seconds=1)
 
@@ -20363,7 +20365,10 @@ def test_is_confirmed_pre_dispatch_transport_error_requires_provable_connect_pro
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_confirmed_proxy_connect_failure_fails_over_after_lease_release(monkeypatch):
+@pytest.mark.parametrize("backoff_failures", [0, 1, 2])
+async def test_stream_responses_confirmed_proxy_connect_failure_fails_over_after_lease_release(
+    monkeypatch, caplog, backoff_failures: int
+):
     settings = _make_proxy_settings()
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
@@ -20411,6 +20416,10 @@ async def test_stream_responses_confirmed_proxy_connect_failure_fails_over_after
         assert lease_a in released_leases
         assert response_lease_a in released_leases
         assert settlement_order == ["settle"]
+        if len(record_error_backoff_accounts) <= backoff_failures:
+            # A failing write after the published terminal must neither raise
+            # nor send the stream back through settlement.
+            raise RuntimeError("backoff write failed")
         settlement_order.append("backoff")
 
     async def settle_usage(*_args: object, **kwargs: object) -> bool:
@@ -20471,12 +20480,18 @@ async def test_stream_responses_confirmed_proxy_connect_failure_fails_over_after
     event = json.loads(chunks[0].split("data: ", 1)[1])
     assert event["type"] == "response.completed"
     assert event["response"]["id"] == "resp_proxy_connect_ok"
+    assert len(chunks) == 1
     assert all('"type":"response.failed"' not in chunk for chunk in chunks)
     assert stream_accounts == [account_a.chatgpt_account_id, account_b.chatgpt_account_id]
     assert seen_excluded_account_ids == [set(), {account_a.id}]
     assert seen_reallocate_sticky[-1] is True
-    assert record_error_backoff_accounts == [account_a]
-    assert settlement_order == ["settle", "backoff"]
+    # A failed write stays queued and is retried once by the final cleanup.
+    assert record_error_backoff_accounts == [account_a] * (1 if backoff_failures == 0 else 2)
+    assert settlement_order == (["settle"] if backoff_failures == 2 else ["settle", "backoff"])
+    backoff_warnings = [
+        r for r in caplog.records if r.getMessage().startswith("Failed to write deferred route backoff")
+    ]
+    assert len(backoff_warnings) == backoff_failures
     assert settlement_wait_flags == [True]
     assert request_logs.calls[0]["failure_detail"] == "proxy_connect_pre_dispatch"
     record_error.assert_not_awaited()

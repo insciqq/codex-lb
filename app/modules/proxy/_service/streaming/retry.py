@@ -637,6 +637,28 @@ class _StreamingRetryMixin:
                 if cancellation is not None:
                     raise cancellation
 
+        async def _drain_deferred_account_error_backoffs_after_settlement() -> None:
+            """Write route backoffs deferred until the reservation closed.
+
+            Runs only after settlement or release committed, possibly after a
+            terminal event was already published. An ordinary failure is
+            logged instead of raised: raising here would send the stream back
+            through settlement and the client error renderer and emit a second
+            terminal, or replace an exception already propagating from the
+            caller's ``finally``. The drain re-queues the failed account, so a
+            later post-settlement drain of this request retries it.
+            Cancellation still propagates.
+            """
+            try:
+                await proxy._drain_deferred_account_error_backoffs(deferred_account_error_backoffs)
+            except Exception:
+                logger.warning(
+                    "Failed to write deferred route backoff account_ids=%s request_id=%s",
+                    sorted(deferred_account_error_backoffs),
+                    request_id,
+                    exc_info=True,
+                )
+
         async def _flush_or_schedule_pending_post_refresh_penalties() -> None:
             if not pending_post_refresh_transient_penalties:
                 return
@@ -682,7 +704,7 @@ class _StreamingRetryMixin:
             # skips both reservation cleanup and retained-queue flush.
             settled = True
             try:
-                await proxy._drain_deferred_account_error_backoffs(deferred_account_error_backoffs)
+                await _drain_deferred_account_error_backoffs_after_settlement()
             finally:
                 # Route backoffs and queued stream penalties have independent
                 # ownership after settlement. A failed backoff write must not
@@ -3749,7 +3771,7 @@ class _StreamingRetryMixin:
                     )
                     if released:
                         try:
-                            await proxy._drain_deferred_account_error_backoffs(deferred_account_error_backoffs)
+                            await _drain_deferred_account_error_backoffs_after_settlement()
                         finally:
                             # Confirmed release owns the same independent
                             # post-settlement health lanes as confirmed settle.
@@ -3767,7 +3789,7 @@ class _StreamingRetryMixin:
                     await release_coro
             elif settled and deferred_account_error_backoffs:
                 try:
-                    await proxy._drain_deferred_account_error_backoffs(deferred_account_error_backoffs)
+                    await _drain_deferred_account_error_backoffs_after_settlement()
                 finally:
                     # A retained backoff failure must not block ownership of
                     # later penalties left by a cancelled flush.
