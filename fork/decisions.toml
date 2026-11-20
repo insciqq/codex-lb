@@ -597,6 +597,7 @@ status = "pending"
 title = "fix(balancer): express lease pressure in percentage points and keep relative availability ranked by persisted usage"
 state = "closed"
 status = "pending"
+rework = "Only the percentage-point lease term is taken; the 99% pressure ceiling and the persisted-usage fallback ranking are left out."
 
 [pr.2561]
 title = "fix(proxy): honor dashboard caps on warm bridge admission"
