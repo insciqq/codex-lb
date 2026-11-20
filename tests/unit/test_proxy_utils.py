@@ -3611,8 +3611,24 @@ async def test_resolve_websocket_previous_response_owner_suppresses_confirmed_st
     assert request_logs.lookup_calls == [("resp_stale_anchor_cache", None, "sid-stale-anchor-cache")]
     assert request_state.previous_response_owner_lookup_source == "stale_response_cache"
     assert request_state.previous_response_owner_lookup_outcome == "hit"
-    assert exc_info.value.status_code == 502
-    assert exc_info.value.payload["error"]["code"] == "stream_incomplete"
+    # The client's own anchor was already denied upstream: no retry, and the
+    # client is told to resend without it, without the anchor id.
+    assert exc_info.value.payload["error"]["code"] == "previous_response_not_found"
+    assert "resp_stale_anchor_cache" not in str(exc_info.value.payload)
+
+    # An anchor the proxy injected keeps the suppression error.
+    request_state.proxy_injected_previous_response_id = True
+    request_state.previous_response_owner_lookup_outcome = None
+    with pytest.raises(proxy_module.ProxyResponseError) as injected_exc_info:
+        await service._resolve_websocket_previous_response_owner(
+            previous_response_id=request_state.previous_response_id,
+            api_key=None,
+            session_id=request_state.session_id,
+            surface="websocket_stream",
+            request_state=request_state,
+        )
+    assert injected_exc_info.value.status_code == 502
+    assert injected_exc_info.value.payload["error"]["code"] == "stream_incomplete"
 
 
 @pytest.mark.asyncio
@@ -38280,7 +38296,7 @@ async def test_proxy_responses_websocket_previous_response_owner_lookup_failure_
 
 
 @pytest.mark.asyncio
-async def test_proxy_responses_websocket_masks_owner_lookup_previous_response_not_found(monkeypatch):
+async def test_proxy_responses_websocket_sanitizes_owner_lookup_previous_response_not_found(monkeypatch):
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
 
@@ -38359,8 +38375,10 @@ async def test_proxy_responses_websocket_masks_owner_lookup_previous_response_no
     assert len(request_logs.calls) == 1
     failure_log = request_logs.calls[0]
     assert failure_log["status"] == "error"
-    assert failure_log["error_code"] == "stream_incomplete"
-    assert failure_log["error_message"] == "Upstream websocket closed before response.completed"
+    # The client's own anchor is never replayed without it, so the public route
+    # also tells the client to resend without it rather than masking the miss.
+    assert failure_log["error_code"] == "previous_response_not_found"
+    assert failure_log["error_message"] == "Previous response was not found; retry without previous_response_id."
     assert failure_log["account_id"] is None
     assert failure_log["failure_phase"] == "upstream"
     assert failure_log["failure_detail"] == (
@@ -38381,9 +38399,9 @@ async def test_proxy_responses_websocket_masks_owner_lookup_previous_response_no
     payload = json.loads(downstream.sent_text[0])
     assert payload["type"] == "response.failed"
     error = payload["response"]["error"]
-    assert error["code"] == "stream_incomplete"
+    assert error["code"] == "previous_response_not_found"
     assert error["type"] == "server_error"
-    assert error["message"] == "Upstream websocket closed before response.completed"
+    assert error["message"] == "Previous response was not found; retry without previous_response_id."
     assert "param" not in error
 
 

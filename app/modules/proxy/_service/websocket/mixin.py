@@ -68,6 +68,7 @@ from app.core.clock import Clock, Scheduler, clock_for, scheduler_for
 from app.core.errors import (
     PREVIOUS_RESPONSE_MALFORMED_PARAM_REASON,
     PREVIOUS_RESPONSE_NOT_FOUND_CODE,
+    PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
     STREAM_INCOMPLETE_ANCHOR_NEUTRAL_MESSAGES,
     OpenAIErrorEnvelope,
     OpenAIErrorParam,
@@ -2126,7 +2127,11 @@ class _WebSocketMixin:
                                     error_code=error_code or "upstream_error",
                                     error_message=error_message,
                                     surface="websocket_connect",
-                                    expose_stale_previous_response_classifier=codex_session_affinity,
+                                    expose_stale_previous_response_classifier=codex_session_affinity
+                                    or (
+                                        request_state is not None
+                                        and request_state.expose_stale_previous_response_classifier
+                                    ),
                                     request_state=request_state,
                                 )
                                 if request_state is not None:
@@ -5035,6 +5040,18 @@ class _WebSocketMixin:
                 previous_response_id=response_id,
                 session_id=session_id_value,
             )
+            if request_state is not None and not request_state.proxy_injected_previous_response_id:
+                # A client's own anchor that upstream already denied is not
+                # retried, and the client recovers by resending without it,
+                # which it learns from ``previous_response_not_found``.
+                raise ProxyResponseError(
+                    400,
+                    openai_error(
+                        PREVIOUS_RESPONSE_NOT_FOUND_CODE,
+                        PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
+                        error_type="server_error",
+                    ),
+                )
             raise ProxyResponseError(
                 502,
                 openai_error(
