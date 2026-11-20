@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import case, func, select, union_all
+from sqlalchemy import BigInteger, case, cast, func, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.usage.types import BucketConversationAggregate, BucketModelAggregate, RequestActivityAggregate
@@ -185,7 +185,8 @@ class DashboardRepository:
         per_metric_limit: int = 3,
     ) -> list[ApiKeyAttributionRow]:
         key_name = func.coalesce(func.nullif(ApiKey.name, ""), "(unnamed)")
-        billable_tokens = func.coalesce(RequestLog.input_tokens, 0) + func.coalesce(
+        # Widen before adding: two int32 token columns can overflow before SUM widens.
+        billable_tokens = cast(func.coalesce(RequestLog.input_tokens, 0), BigInteger) + func.coalesce(
             RequestLog.output_tokens, RequestLog.reasoning_tokens, 0
         )
         grouped_models = (

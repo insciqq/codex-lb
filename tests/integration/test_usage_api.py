@@ -230,6 +230,40 @@ async def test_usage_window_invalid_query_returns_validation_error(async_client)
 
 
 @pytest.mark.asyncio
+async def test_usage_summary_totals_a_row_at_the_int32_token_limit(async_client, db_setup):
+    """input + output of one row can exceed int32 although each column fits;
+    PostgreSQL adds ``integer`` columns as ``integer`` and failed the summary."""
+    from app.modules.request_logs.repository import RequestLogsRepository
+
+    now = utcnow()
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(_make_account("acc_usage_int32", "usage-int32@example.com"))
+        await UsageRepository(session).add_entry(
+            "acc_usage_int32",
+            10.0,
+            window="secondary",
+            window_minutes=10080,
+            recorded_at=now - timedelta(minutes=5),
+        )
+        await RequestLogsRepository(session).add_log(
+            account_id="acc_usage_int32",
+            request_id="req_int32",
+            model="gpt-int32",
+            input_tokens=2_147_483_647,
+            output_tokens=1,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now - timedelta(hours=1),
+        )
+
+    response = await async_client.get("/api/usage/summary")
+
+    assert response.status_code == 200
+    assert response.json()["metrics"]["tokensSecondaryWindow"] == 2_147_483_648
+
+
+@pytest.mark.asyncio
 async def test_usage_summary_sql_aggregate_matches_legacy_python_summation(async_client, db_setup):
     """The SQL window aggregate must reproduce the legacy per-row Python
     summation exactly, including the reasoning-token fallback, per-row

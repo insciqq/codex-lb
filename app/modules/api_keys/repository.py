@@ -374,7 +374,8 @@ class ApiKeysRepository:
             return 0
 
         if limit_type == LimitType.TOTAL_TOKENS:
-            value_expr = func.coalesce(RequestLog.input_tokens, 0) + func.coalesce(
+            # Widen before adding: two int32 token columns can overflow before SUM widens.
+            value_expr = cast(func.coalesce(RequestLog.input_tokens, 0), BigInteger) + func.coalesce(
                 RequestLog.output_tokens,
                 RequestLog.reasoning_tokens,
                 0,

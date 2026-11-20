@@ -7,7 +7,7 @@ from typing import Any
 from typing import cast as typing_cast
 
 import anyio
-from sqlalchemy import Integer, String, and_, case, cast, func, insert, or_, select
+from sqlalchemy import BigInteger, Integer, String, and_, case, cast, func, insert, or_, select
 from sqlalchemy import exc as sa_exc
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -235,6 +235,12 @@ class RequestLogsRepository:
     def _conversation_output_expr(self) -> ColumnElement:
         return func.coalesce(RequestLog.output_tokens, RequestLog.reasoning_tokens, 0)
 
+    @staticmethod
+    def _total_tokens_expr(output: ColumnElement) -> ColumnElement:
+        # Widen before adding: two int32 token columns (PostgreSQL ``integer``)
+        # can overflow before SUM widens the result.
+        return cast(func.coalesce(RequestLog.input_tokens, 0), BigInteger) + output
+
     def _conversation_cached_expr(self) -> ColumnElement:
         dialect = self._session.get_bind().dialect.name
         least = func.least if dialect == "postgresql" else func.min
@@ -308,7 +314,7 @@ class RequestLogsRepository:
                 func.max(RequestLog.requested_at).label("last_requested_at"),
                 func.count().label("request_count"),
                 func.count(func.distinct(RequestLog.account_id)).label("account_count"),
-                func.coalesce(func.sum(func.coalesce(RequestLog.input_tokens, 0) + output), 0).label("total_tokens"),
+                func.coalesce(func.sum(self._total_tokens_expr(output)), 0).label("total_tokens"),
                 func.sum(cached).label("cached_input_tokens"),
                 func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
             )
@@ -847,7 +853,7 @@ class RequestLogsRepository:
 
         window = [RequestLog.requested_at >= since, self._exclude_warmup_clause()]
         output_expr = func.coalesce(RequestLog.output_tokens, RequestLog.reasoning_tokens, 0)
-        tokens_expr = func.coalesce(RequestLog.input_tokens, 0) + output_expr
+        tokens_expr = self._total_tokens_expr(output_expr)
         cached_expr = case(
             (RequestLog.cached_input_tokens.is_(None), 0),
             (RequestLog.input_tokens.is_(None), greatest(0, RequestLog.cached_input_tokens)),
