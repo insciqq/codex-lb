@@ -1439,19 +1439,30 @@ async def test_stream_request_shape_400_surfaces_without_failover_or_account_pen
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", ["/backend-api/codex/responses", "/v1/responses"])
+@pytest.mark.parametrize(
+    ("route", "upstream_stream"),
+    [
+        # The production trigger: the Codex route forwards ``stream: false``
+        # upstream on purpose, and upstream rejects it with this sentence.
+        ("/backend-api/codex/responses", False),
+        # ``/v1/responses`` streams upstream and aggregates; here the 400 is
+        # injected, proving it propagates through aggregation the same way.
+        ("/v1/responses", True),
+    ],
+)
 async def test_stream_false_request_shape_400_surfaces_without_failover_or_account_penalty(
-    async_client, monkeypatch, route
+    async_client, monkeypatch, route, upstream_stream
 ):
-    """The production trigger: a ``stream: false`` request whose stream mode is forwarded upstream."""
     account_ids = [
         await _import_account(async_client, f"acc_stream_false_{suffix}", f"stream_false_{suffix}@example.com")
         for suffix in "abc"
     ]
     seen_account_ids: list[str | None] = []
+    upstream_stream_flags: list[object] = []
 
     async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
         seen_account_ids.append(account_id)
+        upstream_stream_flags.append(payload.stream)
         raise _upstream_400(_STREAM_REQUIRED_WIRE_BODY)
         yield  # pragma: no cover - makes this an async generator
 
@@ -1462,6 +1473,7 @@ async def test_stream_false_request_shape_400_surfaces_without_failover_or_accou
         json={"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": False},
     )
 
+    assert upstream_stream_flags == [upstream_stream]
     assert response.status_code == 400
     assert "Stream must be set to true" in response.text
     assert len(seen_account_ids) == 1, seen_account_ids
