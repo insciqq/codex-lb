@@ -4,6 +4,12 @@ Point any OpenAI-compatible client at codex-lb. If [API key auth](api-keys.md) i
 
 Model availability is discovered from the upstream Codex model catalog and can vary by account plan, workspace, rollout, and upstream deprecation state. Prefer the live `GET /v1/models` or `GET /backend-api/codex/models` response over a copied static table when configuring clients or API-key model allowlists.
 
+Images use a separate compatibility route: `gpt-image-*` models may be absent
+from that catalog even when `POST /v1/images/generations` and
+`POST /v1/images/edits` are available. Do not use catalog absence alone to
+diagnose missing image support. See the
+[Images API example and troubleshooting notes](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/images-api-compat/context.md#model-discovery-and-direct-api-example).
+
 The examples use `gpt-6-astra` for complex reasoning and coding, following [OpenAI's model guidance](https://developers.openai.com/api/docs/guides/latest-model). `gpt-5.6-terra` and `gpt-5.6-luna` remain alternative examples. Confirm that your live model catalog includes each selected model before using these configs.
 
 The client budgets below are conservative example settings, not Astra's maximum context or output limits. Use your live catalog's limits when adjusting them. The [872k opt-in](#opting-into-the-872k-context-window) applies to any model whose catalog entry reports a `max_context_window` above its `context_window` — check `GET /backend-api/codex/models` for the model you select. Existing pinned model IDs remain valid only while your upstream account serves them; retired slugs such as `gpt-5.3-codex`, `gpt-5.3-codex-spark`, and `gpt-5.1-codex-mini` were dropped from the upstream bundled catalog and should no longer be used in new configs.
