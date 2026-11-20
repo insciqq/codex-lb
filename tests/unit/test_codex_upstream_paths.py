@@ -1668,7 +1668,9 @@ async def test_routed_stream_tolerates_response_without_release(route: ResolvedU
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("transport", "trace_payload", "image_generation", "expected_preparation_dumps"),
-    [("http", False, False, 0), ("http", True, False, 1), ("auto", False, False, 1), ("auto", False, True, 0)],
+    # The auto transport sizes the body one input item at a time instead of
+    # dumping it whole, so only the payload trace dumps the full body.
+    [("http", False, False, 0), ("http", True, False, 1), ("auto", False, False, 0), ("auto", False, True, 0)],
     ids=["no-payload-consumer", "raw-payload-trace", "auto-size-budget", "auto-image-generation"],
 )
 async def test_stream_responses_python_http_prepares_only_consumed_json(

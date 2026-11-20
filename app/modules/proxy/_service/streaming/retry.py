@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import sys
 from dataclasses import replace
@@ -49,6 +48,7 @@ from app.core.resilience.network_recovery import (
 )
 from app.core.resilience.toggles import bind_resilience_toggles, set_resilience_toggles
 from app.core.upstream_proxy import UpstreamProxyRouteError
+from app.core.utils.payload_size import compact_json_length
 from app.core.utils.request_id import ensure_request_id
 from app.core.utils.retry import backoff_seconds
 from app.core.utils.shared_future import _await_task_deferring_cancellation
@@ -305,7 +305,7 @@ def _retry_after_kwargs(retry_after_seconds: float | None) -> dict[str, float]:
 
 
 def _payload_size_estimate_bytes(payload: ResponsesRequest) -> int:
-    return len(json.dumps(payload.to_payload(), ensure_ascii=True, separators=(",", ":")).encode("utf-8"))
+    return compact_json_length(payload.to_payload())
 
 
 def _transient_retry_error_code(tex: BaseException) -> str:

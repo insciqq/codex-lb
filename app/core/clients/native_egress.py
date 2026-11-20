@@ -8,7 +8,7 @@ import logging
 import math
 import os
 import shutil
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -56,6 +56,10 @@ _NATIVE_STREAM_QUEUE_BYTES_LIMIT = 32 * 1024 * 1024
 _NATIVE_WEBSOCKET_MESSAGE_QUEUE_LIMIT = _NATIVE_STREAM_QUEUE_LIMIT
 _NATIVE_CANCEL_TIMEOUT_SECONDS = 2.0
 _NATIVE_WEBSOCKET_COMMAND_TIMEOUT_SECONDS = 30.0
+# Request bodies are base64-encoded into the command line in slices of this
+# many bytes. A multiple of 3 makes every slice encode to whole base64 quanta,
+# so the concatenated slices equal the encoding of the whole body.
+_NATIVE_BODY_BASE64_SLICE_BYTES = 3 * 256 * 1024
 
 
 def _event_payload_size(item: object) -> int:
@@ -751,6 +755,27 @@ class _NativeEgressContent:
         return self._response.iter_bytes()
 
 
+def _command_line_pieces(command: Mapping[str, object], *, base64_body: bytes | None) -> Iterator[bytes]:
+    """Yield one newline-terminated helper command in pieces.
+
+    With ``base64_body`` the command gains a ``"body"`` string holding its
+    base64 encoding. Base64 output needs no JSON escaping, so the body is
+    encoded slice by slice straight into the line instead of being held at
+    once as base64 bytes, a decoded string, a JSON dump and its encoding.
+    """
+    encoded = json.dumps(command, separators=(",", ":")).encode("utf-8")
+    if base64_body is None:
+        yield encoded
+        yield b"\n"
+        return
+    yield encoded[:-1]
+    yield b',"body":"' if command else b'"body":"'
+    body = memoryview(base64_body)
+    for start in range(0, len(body), _NATIVE_BODY_BASE64_SLICE_BYTES):
+        yield base64.b64encode(body[start : start + _NATIVE_BODY_BASE64_SLICE_BYTES])
+    yield b'"}\n'
+
+
 class SubprocessNativeEgressClient:
     """Persistent multiplexed adapter for the pinned Rust Codex helper.
 
@@ -806,7 +831,6 @@ class SubprocessNativeEgressClient:
             "method": request.method,
             "url": request.url,
             "headers": list(request.headers.items()),
-            "body": base64.b64encode(request.body).decode("ascii") if request.body is not None else None,
             "timeout_ms": (
                 max(1, round(request.timeout_seconds * 1000)) if request.timeout_seconds is not None else None
             ),
@@ -828,8 +852,10 @@ class SubprocessNativeEgressClient:
                 else None
             ),
         }
+        if request.body is None:
+            request_event["body"] = None
         try:
-            await self._send_command(process, generation, request_event)
+            await self._send_command(process, generation, request_event, base64_body=request.body)
             head_timeout = request.response_head_timeout_seconds or request.timeout_seconds
             if request.timeout_seconds is not None and head_timeout is not None:
                 head_timeout = min(head_timeout, request.timeout_seconds)
@@ -1070,6 +1096,8 @@ class SubprocessNativeEgressClient:
         process: asyncio.subprocess.Process,
         generation: int,
         command: Mapping[str, object],
+        *,
+        base64_body: bytes | None = None,
     ) -> None:
         async with self._write_lock:
             if process is not self._process or generation != self._generation or process.returncode is not None:
@@ -1077,9 +1105,19 @@ class SubprocessNativeEgressClient:
             stdin = process.stdin
             if stdin is None:
                 raise NativeEgressTransportError("native helper stdin is unavailable")
+            pieces = _command_line_pieces(command, base64_body=base64_body)
             try:
-                stdin.write(json.dumps(command, separators=(",", ":")).encode("utf-8") + b"\n")
-                await stdin.drain()
+                # Draining after every piece keeps the pipe buffer at one piece
+                # instead of the whole line.
+                for piece in pieces:
+                    stdin.write(piece)
+                    await stdin.drain()
+            except asyncio.CancelledError:
+                # Queue the rest of the line before the cancellation leaves the
+                # write lock, so the helper never reads a partial command.
+                for piece in pieces:
+                    stdin.write(piece)
+                raise
             except (BrokenPipeError, ConnectionResetError) as exc:
                 raise NativeEgressTransportError("native helper closed during command dispatch") from exc
 

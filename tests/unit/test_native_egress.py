@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import json
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import anyio
 import pytest
@@ -1136,8 +1140,8 @@ for line in sys.stdin:
     sent = asyncio.Event()
     original_send = client._send_command
 
-    async def send(process, generation, command):
-        await original_send(process, generation, command)
+    async def send(process, generation, command, **kwargs):
+        await original_send(process, generation, command, **kwargs)
         if command.get("type") == "request":
             sent.set()
 
@@ -1400,3 +1404,48 @@ async def test_interpreted_sse_rejects_invalid_metadata_without_replay(
         assert not client._streams
     finally:
         await client.aclose()
+
+
+class _BackpressuredStdin:
+    """Pipe writer whose reader stops after the first write."""
+
+    def __init__(self) -> None:
+        self.pieces: list[bytes] = []
+        self.blocked = asyncio.Event()
+
+    def write(self, data: bytes) -> None:
+        self.pieces.append(bytes(data))
+
+    async def drain(self) -> None:
+        if not self.blocked.is_set():
+            self.blocked.set()
+            await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_body_command_still_queues_the_whole_line(tmp_path: Path) -> None:
+    slice_bytes = native_egress_module._NATIVE_BODY_BASE64_SLICE_BYTES
+    body = os.urandom(2 * slice_bytes + 1)
+    stdin = _BackpressuredStdin()
+    process = SimpleNamespace(stdin=stdin, returncode=None)
+    client = SubprocessNativeEgressClient(tmp_path / "unused-helper")
+    client._process = cast(asyncio.subprocess.Process, process)
+    client._generation = 1
+    command = {"type": "request", "request_id": "1:1"}
+
+    sender = asyncio.create_task(
+        client._send_command(cast(asyncio.subprocess.Process, process), 1, command, base64_body=body)
+    )
+    await stdin.blocked.wait()
+    # Backpressure holds the body back instead of buffering the whole line.
+    assert len(b"".join(stdin.pieces)) < slice_bytes
+    sender.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await sender
+
+    line = b"".join(stdin.pieces)
+    assert line.endswith(b"\n") and line.count(b"\n") == 1
+    decoded = json.loads(line)
+    assert base64.b64decode(decoded.pop("body"), validate=True) == body
+    assert decoded == command
+    assert not client._write_lock.locked()

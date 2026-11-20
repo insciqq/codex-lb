@@ -43,6 +43,7 @@ from app.core.config.settings import DEFAULT_HOME_DIR, get_settings
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
+from app.core.utils.payload_size import compact_json_length, utf8_length
 from app.modules.proxy._service.support import (
     _PENDING_TOOL_CALL_ITEM_TYPES,
     _PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE,
@@ -238,9 +239,20 @@ def _prune_response_create_dumps(dump_dir: Path, *, max_pairs: int) -> None:
 
 
 def _fingerprint_input_items(items: Sequence[JsonValue]) -> str:
-    """Return stable SHA-256 fingerprint for input list canonical JSON."""
-    canonical = json.dumps(list(items), ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-    return sha256(canonical.encode("utf-8")).hexdigest()
+    """Return stable SHA-256 fingerprint for input list canonical JSON.
+
+    The digest covers the canonical dump of the whole list, but the dump is
+    fed to the hash one item at a time: a list dump is ``[`` + the item dumps
+    joined by ``,`` + ``]``, so the digest is unchanged while the temporary
+    memory is bounded by the largest item instead of the whole input.
+    """
+    digest = sha256(b"[")
+    for index, item in enumerate(items):
+        if index:
+            digest.update(b",")
+        digest.update(json.dumps(item, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("ascii"))
+    digest.update(b"]")
+    return digest.hexdigest()
 
 
 def _input_part_is_image(part: JsonValue) -> bool:
@@ -381,8 +393,9 @@ def _response_create_text_with_size_guard(
             or _payload_has_responses_lite_websocket_marker(upstream_payload)
         ),
     )
-    text_data = json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
-    payload_size = len(text_data.encode("utf-8"))
+    # Measured without a full dump, so an oversized body is serialized only
+    # once, after slimming.
+    payload_size = compact_json_length(upstream_payload)
     max_bytes = _upstream_response_create_max_bytes()
     if payload_size > max_bytes:
         original_payload_size = payload_size
@@ -397,8 +410,7 @@ def _response_create_text_with_size_guard(
         )
         if slim_summary is not None:
             upstream_payload = slimmed_payload
-            text_data = json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
-            payload_size = len(text_data.encode("utf-8"))
+            payload_size = compact_json_length(upstream_payload)
             logger.warning(
                 (
                     "Slimmed response.create request_id=%s request_log_id=%s transport=%s "
@@ -426,7 +438,7 @@ def _response_create_text_with_size_guard(
                 max_bytes,
             )
             return None
-    return text_data
+    return json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
 
 
 def _response_create_text_with_account_installation_id(
@@ -701,8 +713,7 @@ def _enforce_response_create_size_limit(request_state: _WebSocketRequestState) -
     if not request_text:
         return
 
-    payload_bytes = request_text.encode("utf-8")
-    payload_size = len(payload_bytes)
+    payload_size = utf8_length(request_text)
     warn_bytes = _upstream_response_create_warn_bytes()
     max_bytes = _upstream_response_create_max_bytes()
     if payload_size > warn_bytes:

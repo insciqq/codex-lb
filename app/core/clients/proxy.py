@@ -111,6 +111,7 @@ from app.core.upstream_proxy import ResolvedUpstreamRoute
 from app.core.usage.live_hub import publish_live_usage
 from app.core.usage.live_snapshots import EVENT_MARKER, parse_rate_limit_event_text, parse_rate_limit_headers
 from app.core.utils.json_guards import is_json_mapping
+from app.core.utils.payload_size import compact_json_length
 from app.core.utils.proxy_env import resolve_http_proxy_from_env
 from app.core.utils.request_id import get_request_id
 from app.core.utils.shared_future import _await_cleanup_deferring_cancellation, _await_task_deferring_cancellation
@@ -3139,8 +3140,7 @@ def _prepare_websocket_response_create_payload(
     protected_agent_control_output_occurrences: Mapping[tuple[str, str], tuple[bool, ...]] | None = None,
 ) -> JsonObject:
     request_payload = _build_websocket_response_create_payload(payload_dict)
-    payload_text = json.dumps(request_payload, ensure_ascii=True, separators=(",", ":"))
-    payload_size = len(payload_text.encode("utf-8"))
+    payload_size = compact_json_length(request_payload)
     if payload_size > _UPSTREAM_RESPONSE_CREATE_MAX_BYTES:
         slimmed_payload, slim_summary = _slim_response_create_payload_for_upstream(
             request_payload,
@@ -3149,7 +3149,7 @@ def _prepare_websocket_response_create_payload(
         )
         if slim_summary is not None:
             request_payload = slimmed_payload
-            slimmed_text = json.dumps(request_payload, ensure_ascii=True, separators=(",", ":"))
+            slimmed_size = compact_json_length(request_payload)
             logger.warning(
                 (
                     "Slimmed response.create before upstream websocket connect request_id=%s "
@@ -3158,12 +3158,11 @@ def _prepare_websocket_response_create_payload(
                 ),
                 get_request_id(),
                 payload_size,
-                len(slimmed_text.encode("utf-8")),
+                slimmed_size,
                 slim_summary["historical_tool_outputs_slimmed"],
                 slim_summary["historical_images_slimmed"],
             )
-            payload_text = slimmed_text
-            payload_size = len(payload_text.encode("utf-8"))
+            payload_size = slimmed_size
     if payload_size > _UPSTREAM_RESPONSE_CREATE_WARN_BYTES:
         previous_response_id = request_payload.get("previous_response_id")
         logger.warning(
@@ -3816,9 +3815,7 @@ async def _stream_responses_with_session(
     has_image_generation_tool = _payload_uses_image_generation_tool(payload_dict)
     payload_size_estimate_bytes = None
     if transport_mode != "http" and not (transport_mode == "auto" and has_image_generation_tool):
-        payload_size_estimate_bytes = len(
-            json.dumps(websocket_payload_dict, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-        )
+        payload_size_estimate_bytes = compact_json_length(websocket_payload_dict)
     transport = (
         "http"
         if non_streaming_http
@@ -3835,9 +3832,11 @@ async def _stream_responses_with_session(
     active_native_egress_client = (
         native_egress_client or discover_native_egress_client() if route is None and transport == "http" else None
     )
+    # Only the payload trace keeps the serialized text; the native egress body
+    # is serialized at dispatch so no full copy outlives the send.
     payload_json = (
         json.dumps(payload_dict, ensure_ascii=True, separators=(",", ":"))
-        if active_native_egress_client is not None or "upstream_payload" in settings.trace_channels
+        if "upstream_payload" in settings.trace_channels
         else None
     )
     if transport == "websocket":
@@ -4073,7 +4072,7 @@ async def _stream_responses_with_session(
                             method="POST",
                             url=url,
                             headers=current_headers,
-                            body=cast(str, payload_json).encode("utf-8"),
+                            body=json.dumps(payload_dict, ensure_ascii=True, separators=(",", ":")).encode("utf-8"),
                             timeout_seconds=current_timeout.total or request_total_timeout,
                             connect_timeout_seconds=current_timeout.sock_connect,
                             response_head_timeout_seconds=current_timeout.sock_read,
