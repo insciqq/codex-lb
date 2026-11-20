@@ -40,7 +40,7 @@ and rebuilds do not add cross-reference events to upstream threads.
 | `Upstream-PR` | Upstream PR number, or `none` |
 | `Upstream-PR-Head` | Upstream PR head SHA at pick time |
 | `Upstream-Issue` | Upstream issue numbers, comma-separated |
-| `Fork-Only` | Reason for a commit without an upstream PR or issue: fork tooling, CI, spec fixes, or an own production fix (`production-fix`) |
+| `Fork-Only` | Reason for a commit without an upstream PR or issue: fork tooling, CI, spec fixes, or an own bug fix found in production or review (`production-fix`) |
 
 `Upstream-PR: none` requires `Upstream-Issue` or `Fork-Only`.
 
