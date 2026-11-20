@@ -562,6 +562,24 @@ async def test_v1_usage_aggregate_ignores_elapsed_samples_of_silent_accounts(asy
 
 
 @pytest.mark.asyncio
+async def test_v1_usage_omits_a_window_whose_samples_have_all_elapsed(async_client):
+    _, plain_key = await _create_api_key(name="aggregate-all-elapsed")
+    now = utcnow()
+    await _seed_upstream_usage_partial(
+        now=now,
+        windows=("primary", "secondary"),
+        primary_reset_at=naive_utc_to_epoch(now - timedelta(days=3)),
+    )
+
+    response = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [limit["limit_window"] for limit in payload["upstream_limits"]] == ["7d"]
+    assert payload["limits"] == payload["upstream_limits"]
+
+
+@pytest.mark.asyncio
 async def test_v1_usage_hides_upstream_limits_for_api_key_clients_when_setting_enabled(async_client):
     _, plain_key = await _create_api_key(name="hidden-upstream-aggregate")
     now = utcnow()

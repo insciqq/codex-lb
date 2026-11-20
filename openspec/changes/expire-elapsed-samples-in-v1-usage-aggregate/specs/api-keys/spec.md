@@ -9,7 +9,7 @@ The system SHALL expose `GET /v1/usage` for self-service usage lookup by API-key
 - `cached_input_tokens`
 - `total_cost_usd`
 - `limits[]` containing limits configured on the authenticated API key, with `limit_type`, `limit_window`, `max_value`, `current_value`, `remaining_value`, `model_filter`, `reset_at`, and `source`. When no API-key limits are configured and aggregate upstream quota details are visible to the caller, `limits[]` MAY mirror those aggregate upstream credit windows for legacy client compatibility.
-- `upstream_limits[]` containing aggregate upstream Codex credit windows when available, with the same fields and `source: "aggregate"`, subject to the key's `usage_sections` containing `upstream_limits`. An account's latest sample whose `reset_at` has elapsed MUST count as a reset window (0% used, no reset time) before aggregation, so an account that stopped reporting a window cannot pin the aggregate `reset_at` or `current_value` to a past window.
+- `upstream_limits[]` containing aggregate upstream Codex credit windows when available, with the same fields and `source: "aggregate"`, subject to the key's `usage_sections` containing `upstream_limits`. An account's latest sample whose `reset_at` has elapsed MUST count as a reset window (0% used, no reset time) before aggregation, so an account that stopped reporting a window cannot pin the aggregate `reset_at` or `current_value` to a past window. A window whose samples have all elapsed MUST be omitted from `upstream_limits[]` and from the legacy `limits[]` mirror.
 - `account_pool_usage` containing `primary` and `secondary` float remaining percentages, subject to the key's `usage_sections` containing `account_pool_usage`
 
 Validation failures MUST use the existing OpenAI error envelope used by `/v1/*` routes.
@@ -60,3 +60,9 @@ Validation failures MUST use the existing OpenAI error envelope used by `/v1/*` 
 - **WHEN** an API key with visible upstream limits calls `GET /v1/usage`
 - **THEN** the aggregate 5h `reset_at` is account A's reset
 - **AND** account B contributes no used credits to the aggregate 5h `current_value`
+
+#### Scenario: A window whose samples have all elapsed is omitted
+
+- **GIVEN** every account's latest 5h sample has a `reset_at` in the past
+- **WHEN** an API key with visible upstream limits and no own limits calls `GET /v1/usage`
+- **THEN** neither `upstream_limits[]` nor `limits[]` contains a `5h` window
