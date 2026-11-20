@@ -1,8 +1,8 @@
 # Fork policy
 
 This fork tracks [Soju06/codex-lb](https://github.com/Soju06/codex-lb) and
-applies selected upstream bug fixes that upstream has not merged. It adds no
-features of its own.
+applies selected upstream pull requests that upstream has not merged. It adds
+no functionality of its own.
 
 ## Branches
 
@@ -20,12 +20,13 @@ no releases, packages or images.
 
 ## What goes into `patched`
 
-* Bug fixes with tests, preferably an upstream pull request picked with
-  `git cherry-pick -x`. One fork commit per upstream PR, keeping the PR
-  author as the commit author.
-* No new features, settings or dashboard work.
-* Avoid schema migrations. A patch with a migration needs a documented
-  rollback path before it is picked.
+* Pull requests opened in upstream Soju06/codex-lb: fixes, dependency and
+  security updates, maintenance. Upstream feature PRs are taken case by case.
+* No functionality from other forks and no fork-specific features.
+* One fork commit per upstream PR, keeping the PR author as the commit
+  author. Squash the PR's commits when it has several.
+* A patch that adds an Alembic revision needs a documented rollback path
+  before it is picked.
 
 ## Commit trailers
 
