@@ -84,3 +84,9 @@ Upstream PRs reviewed and rejected, one line each with the reason.
 * 2665: configuration_update effort; enforced-model alias masks disallowed efforts,
   compact trimming drops the authorizing update, model-source egress changes the
   cache-sensitive starting effort.
+* 2701: HTTP/2 keepalive pings on the native egress pool; a late PING ack makes the pinned
+  Hyper close the shared connection and fail every stream of every account on it (the
+  blast radius of issue 2471), and its test covers HTTP/1.1 only.
+* 2506: shutdown grace for DB-owning schedulers; a stop can return before the leader
+  election registers a detached body, so the lease is released while the old leader's
+  work still runs, and fresh post-cancel waits can exhaust the cleanup reserve.
