@@ -220,6 +220,24 @@ async def test_unknown_backend_paths_do_not_fall_back_to_the_dashboard(async_cli
 
 
 @pytest.mark.asyncio
+async def test_over_long_segment_below_a_missing_directory_keeps_the_spa_fallback(async_client):
+    """ENOENT on the missing parent comes before the name-length check: an ordinary missing route."""
+    index = _STATIC_DIR / "index.html"
+    created = not index.exists()
+    if created:
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("<!doctype html><html></html>")
+    try:
+        assert not (_STATIC_DIR / "dashboard").exists()
+        response = await async_client.get("/dashboard/" + "a" * 300)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+    finally:
+        if created:
+            index.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/a%00b", "/assets/x%00.js", "/internal%00"])
 async def test_static_lookup_with_embedded_nul_is_not_found(async_client, path):
     """An embedded NUL cannot name a file: 404, like Starlette's StaticFiles."""
