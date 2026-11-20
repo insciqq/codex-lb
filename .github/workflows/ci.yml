@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["main", "patched"]
+    branches: ["main", "patched", "wip/**"]
   # No `edited`: a PR title/body edit (agents finalizing descriptions, review
   # bots rewriting summaries) must not cancel the in-flight matrix and re-queue
   # ~30 jobs for an unchanged head. The only jobs that read PR metadata are the
