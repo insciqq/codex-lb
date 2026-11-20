@@ -115,7 +115,8 @@ async def _drain_request_body(receive: Receive) -> bytes:
     """Read the full request body from ``receive``.
 
     Mirrors ``Request.body()`` semantics: a mid-body ``http.disconnect`` raises
-    ``ClientDisconnect``, and receive failures propagate. The caller's
+    ``ClientDisconnect`` (the middleware ends the request quietly on it), and
+    receive failures propagate. The caller's
     ``receive`` is the body-limit middleware's limited receive, so the wire-size
     cap (``_RequestBodyTooLarge``) propagates through this drain unchanged.
     """
@@ -161,7 +162,13 @@ class RequestDecompressionMiddleware:
             return
 
         max_size = request_body_limit_for_path(get_route_path(scope))
-        body = await _drain_request_body(receive)
+        try:
+            body = await _drain_request_body(receive)
+        except ClientDisconnect:
+            # The client left before sending the whole body: there is no
+            # request to serve and nobody to answer. Ending here keeps an
+            # ordinary disconnect from surfacing as an application error.
+            return
         try:
             decompressed = _decompress_body(body, encodings, max_size)
         except _DecompressedBodyTooLarge:

@@ -11,7 +11,6 @@ import zstandard as zstd
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from httpx import ASGITransport, AsyncByteStream, AsyncClient
-from starlette.requests import ClientDisconnect
 from starlette.types import Message, Receive, Scope, Send
 
 import app.core.middleware.request_body_limit as request_body_limit_module
@@ -506,7 +505,9 @@ async def _unused_send(message: Message) -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_decompression_propagates_client_disconnect():
+async def test_request_decompression_ends_quietly_on_client_disconnect():
+    """A client that leaves mid-body is a normal disconnect, not an app error."""
+
     async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
         raise AssertionError("downstream app should not run after client disconnect")
 
@@ -515,8 +516,34 @@ async def test_request_decompression_propagates_client_disconnect():
     async def receive() -> Message:
         return {"type": "http.disconnect"}
 
-    with pytest.raises(ClientDisconnect):
-        await middleware(_encoded_post_scope(), receive, _unused_send)
+    await middleware(_encoded_post_scope(), receive, _unused_send)
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_while_draining_compressed_body_does_not_escape_the_app():
+    """Through the whole middleware stack: no exception reaches the server.
+
+    An exception escaping the ASGI app is what the server logs as
+    "Exception in ASGI application".
+    """
+    app = _build_echo_app()
+    messages = iter(
+        [
+            {"type": "http.request", "body": gzip.compress(b'{"a":')[:8], "more_body": True},
+            {"type": "http.disconnect"},
+        ]
+    )
+
+    async def receive() -> Message:
+        return next(messages)
+
+    sent: list[Message] = []
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    await app(_encoded_post_scope(), receive, send)
+    assert sent == []
 
 
 @pytest.mark.asyncio
