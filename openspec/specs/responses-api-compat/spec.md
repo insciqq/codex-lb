@@ -1850,6 +1850,14 @@ The service SHALL remove `tools` and `tool_choice` from compact request payloads
 - **AND** the proxy sends `parallel_tool_calls` as `false`
 - **AND** the compact request continues without a local or upstream `invalid_request_error` caused by `param="tools"`
 
+### Requirement: Responses input item discriminators are strings
+Responses and compact requests MUST reject, as an invalid request, a top-level input item whose `type` or `role` is present, not null and not a string. Routing, replay and continuity classify items by these fields, so a list or object there MUST NOT reach that classification. Content part `type` values are not restricted by this requirement.
+
+#### Scenario: List-valued item type is rejected
+- **WHEN** a `/responses`, `/v1/responses` or WebSocket `response.create` request carries an input item whose `type` is a list
+- **THEN** the request is rejected as invalid before routing
+- **AND** no internal error is raised
+
 ### Requirement: Responses requests accept input_file content items with a file_id
 
 The system SHALL accept `input_file` content items that reference an upload by `file_id` in `/backend-api/codex/responses` and `/v1/responses` request payloads (both list-form and string-form `input`). These items MUST be forwarded to upstream verbatim. The same MUST apply to `/responses/compact` request bodies. The proxy MUST NOT raise `input_file.file_id is not supported` for these items.

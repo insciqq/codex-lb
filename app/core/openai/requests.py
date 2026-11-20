@@ -640,6 +640,22 @@ class ResponsesTextControls(BaseModel):
     format: ResponsesTextFormat | None = None
 
 
+def _validate_input_item_discriminators(items: list[JsonValue]) -> None:
+    """Reject top-level input items whose ``type`` or ``role`` is not a string.
+
+    Routing, replay and continuity code classify items by these fields; a
+    list or object there is not a valid Responses item, so the request is
+    refused up front instead of failing inside that classification. Content
+    parts are left alone: clients send structured part types.
+    """
+    for item in items:
+        if not is_json_mapping(item):
+            continue
+        for key in ("type", "role"):
+            if key in item and item[key] is not None and not isinstance(item[key], str):
+                raise ValueError(f"input item {key} must be a string")
+
+
 class ResponsesRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     _codex_lb_client_reasoning_effort: str | None = PrivateAttr(default=None)
@@ -680,6 +696,7 @@ class ResponsesRequest(BaseModel):
             return _sanitize_input_items(normalized)
         if is_json_list(value):
             validate_passthrough_depth(value)
+            _validate_input_item_discriminators(value)
             return _sanitize_input_items(value)
         raise ValueError("input must be a string or array")
 
@@ -800,6 +817,7 @@ class ResponsesCompactRequest(BaseModel):
             return _sanitize_input_items(normalized)
         if is_json_list(value):
             validate_passthrough_depth(value)
+            _validate_input_item_discriminators(value)
             return _sanitize_input_items(value)
         raise ValueError("input must be a string or array")
 
