@@ -83,3 +83,20 @@ def test_cli_upgrade_prints_progress_to_stderr(tmp_path: Path) -> None:
     assert result.stdout.strip() == "current_revision=20260213_000000_base_schema"
     assert "Running upgrade" not in result.stderr
     assert "create base schema" not in result.stderr
+
+
+def test_upgrade_runs_without_progress_when_alembic_hook_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import app.db.migration_progress as migration_progress
+
+    # A future Alembic that renames its private runner hook: the progress
+    # adapter finds nothing to wrap and the migration still runs.
+    monkeypatch.setattr(migration_progress, "_MIGRATIONS_FN_ATTR", "_renamed_runner_hook")
+    url = f"sqlite+aiosqlite:///{tmp_path / 'nohook.db'}"
+    revision = "20260213_000000_base_schema"
+    with caplog.at_level(logging.INFO, logger="app.db.migration_progress"):
+        result = run_upgrade(url, revision, bootstrap_legacy=False)
+    assert result.current_revision == revision
+    messages = [record.getMessage() for record in caplog.records if record.name == "app.db.migration_progress"]
+    assert messages == ["Migration progress unavailable: Alembic runner hook not found"]
