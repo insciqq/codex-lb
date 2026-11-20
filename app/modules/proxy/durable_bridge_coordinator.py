@@ -23,6 +23,7 @@ from app.modules.proxy.durable_bridge_repository import (
     DurableBridgeOperationAbandonmentScanCursor,
     DurableBridgeOperationEventInput,
     DurableBridgeOperationPurgeBatchResult,
+    DurableBridgeOperationPurgeProgress,
     DurableBridgeOperationSnapshot,
     DurableBridgeRecoveryAttemptSnapshot,
     DurableBridgeRepository,
@@ -739,11 +740,17 @@ class DurableBridgeSessionCoordinator:
         *,
         cutoff: datetime,
         batch_size: int = DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_BATCH_SIZE,
+        deadline: float | None = None,
+        progress: DurableBridgeOperationPurgeProgress | None = None,
+        pace_writer: bool = True,
     ) -> DurableBridgeOperationPurgeBatchResult:
         async with self._session() as session:
             return await DurableBridgeRepository(session).purge_operation_spool_batch(
                 cutoff=cutoff,
                 batch_size=batch_size,
+                deadline=deadline,
+                progress=progress,
+                pace_writer=pace_writer,
             )
 
     async def append_operation_event(

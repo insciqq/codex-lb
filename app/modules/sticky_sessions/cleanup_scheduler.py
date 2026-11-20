@@ -31,6 +31,7 @@ from app.db.session import SessionLocal, get_background_session
 from app.modules.proxy.durable_bridge_repository import (
     DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_BATCH_SIZE,
     DURABLE_BRIDGE_RETRY_CIRCUIT_STATE_TTL_SECONDS,
+    DurableBridgeOperationPurgeProgress,
     DurableBridgeRepository,
     missing_durable_bridge_tables,
 )
@@ -117,18 +118,29 @@ async def _purge_operation_spool_with_budget(
     cutoff: datetime,
 ) -> OperationRetentionCleanupResult:
     started_at = time.monotonic()
+    deadline = started_at + _OPERATION_RETENTION_TIME_BUDGET_SECONDS
     deleted_operations = 0
     batches = 0
     outcome: OperationRetentionOutcome = "completed"
+    # Operation deletes the in-flight batch already committed; a cancelled or
+    # failed batch returns no result, so its progress is read from here.
+    progress = DurableBridgeOperationPurgeProgress()
 
     try:
         while True:
             batch_result = await bridge_repo.purge_operation_spool_batch(
                 cutoff=cutoff,
                 batch_size=_OPERATION_RETENTION_BATCH_SIZE,
+                deadline=deadline,
+                progress=progress,
             )
+            # The result now carries this batch's deletes.
+            progress = DurableBridgeOperationPurgeProgress()
             deleted_operations += batch_result.deleted_operations
             batches += 1
+            if batch_result.budget_exhausted:
+                outcome = "time_budget_exhausted"
+                break
             if batch_result.selected_operations < _OPERATION_RETENTION_BATCH_SIZE:
                 break
             if time.monotonic() - started_at >= _OPERATION_RETENTION_TIME_BUDGET_SECONDS:
@@ -141,7 +153,7 @@ async def _purge_operation_spool_with_budget(
     except asyncio.CancelledError:
         raise OperationRetentionCleanupCancelledError(
             OperationRetentionCleanupResult(
-                deleted_operations=deleted_operations,
+                deleted_operations=deleted_operations + progress.deleted_operations,
                 batches=batches,
                 backlog_likely=True,
                 outcome="failed",
@@ -151,7 +163,7 @@ async def _purge_operation_spool_with_budget(
     except Exception as exc:
         raise OperationRetentionCleanupError(
             OperationRetentionCleanupResult(
-                deleted_operations=deleted_operations,
+                deleted_operations=deleted_operations + progress.deleted_operations,
                 batches=batches,
                 backlog_likely=True,
                 outcome="failed",

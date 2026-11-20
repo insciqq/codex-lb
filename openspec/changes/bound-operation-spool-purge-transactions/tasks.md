@@ -1,0 +1,12 @@
+## 1. Bounded retention transactions
+- [x] 1.1 Reproduce the long writer hold on a synthetic multi-gigabyte rows_v1 database with a cold page cache and confirm with `EXPLAIN QUERY PLAN` that every statement is already indexed.
+- [x] 1.2 Purge each operation in transactions bounded by spool rows, rechecking the retention predicate in each.
+- [x] 1.3 Yield the SQLite writer slot between retention transactions.
+- [x] 1.4 Add regression tests for rows per transaction, a free writer slot between transactions, and the mid-purge owner recheck.
+- [x] 1.5 Remove `RETURNING` from retention deletes; share one timestamp per transaction and never delete an operation row with transcript rows left.
+- [x] 1.6 Skip request-locked rows in the PostgreSQL recheck; add a two-session regression against `record_operation`.
+- [x] 1.7 Enforce the pass budget between transactions, report committed progress on cancellation, pace only the scheduled SQLite path after the writer gate.
+- [x] 1.8 Let unlocked operations fill a PostgreSQL batch, check the budget after partial deletes, count a delete whose commit cleanup is cancelled, and report committed deletes when startup retention fails.
+- [x] 1.9 Add regression tests that need each safety guard: the row-delete `NOT EXISTS` guard and resume rounds, the in-statement recheck, the between-operations deadline, the scheduler progress reset and the pause clock.
+- [x] 1.10 Count an operation-row commit cancelled while it executes (bounded settle), report committed deletes from a cancelled startup pass, and make the PostgreSQL overlap test reach the per-transaction recheck.
+- [x] 1.11 Pass the durable bridge, retention and database session suites, ruff, ty and strict OpenSpec validation.

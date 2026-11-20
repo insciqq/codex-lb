@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -21,6 +21,7 @@ from app.modules.proxy.durable_bridge_coordinator import DurableBridgeSessionCoo
 from app.modules.proxy.durable_bridge_repository import (
     DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_BATCH_SIZE,
     DurableBridgeOperationPurgeBatchResult,
+    DurableBridgeOperationPurgeProgress,
     DurableBridgeRepository,
 )
 
@@ -100,6 +101,8 @@ async def test_operation_retention_cleanup_drains_small_backlog(monkeypatch) -> 
     bridge_repo.purge_operation_spool_batch.assert_awaited_with(
         cutoff=cutoff,
         batch_size=3,
+        deadline=10.0 + cleanup_scheduler._OPERATION_RETENTION_TIME_BUDGET_SECONDS,
+        progress=ANY,
     )
 
 
@@ -196,6 +199,75 @@ async def test_operation_retention_cleanup_failure_preserves_committed_progress(
     assert captured.value.result.duration_seconds == 2.0
     assert captured.value.error_type == "RuntimeError"
     assert captured.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_operation_retention_cleanup_reports_a_batch_stopped_at_the_deadline(monkeypatch) -> None:
+    bridge_repo = AsyncMock()
+    bridge_repo.purge_operation_spool_batch = AsyncMock(
+        side_effect=[
+            DurableBridgeOperationPurgeBatchResult(selected_operations=3, deleted_operations=1, budget_exhausted=True),
+            AssertionError("extra batch"),
+        ]
+    )
+    monkeypatch.setattr(cleanup_scheduler, "_OPERATION_RETENTION_BATCH_SIZE", 3)
+    monkeypatch.setattr(cleanup_scheduler, "time", SimpleNamespace(monotonic=lambda: 10.0))
+
+    result = await cleanup_scheduler._purge_operation_spool_with_budget(bridge_repo, cutoff=utcnow())
+
+    assert result.deleted_operations == 1
+    assert result.batches == 1
+    assert result.backlog_likely is True
+    assert result.outcome == "time_budget_exhausted"
+
+
+def _in_flight_batch(deleted: int, error: BaseException) -> Callable[..., Awaitable[object]]:
+    async def purge(*, progress: DurableBridgeOperationPurgeProgress, **_kwargs: object) -> object:
+        progress.deleted_operations += deleted
+        raise error
+
+    return purge
+
+
+@pytest.mark.asyncio
+async def test_operation_retention_cancellation_reports_deletes_committed_by_the_in_flight_batch(
+    monkeypatch,
+) -> None:
+    batches = iter((_purge_batch(3),))
+
+    async def purge(*, progress: DurableBridgeOperationPurgeProgress, **kwargs: object) -> object:
+        result = next(batches, None)
+        if result is not None:
+            # A real batch counts its deletes in ``progress`` as they commit.
+            progress.deleted_operations += result.deleted_operations
+            return result
+        return await _in_flight_batch(2, asyncio.CancelledError())(progress=progress, **kwargs)
+
+    bridge_repo = AsyncMock()
+    bridge_repo.purge_operation_spool_batch = purge
+    monkeypatch.setattr(cleanup_scheduler, "_OPERATION_RETENTION_BATCH_SIZE", 3)
+    monkeypatch.setattr(cleanup_scheduler, "time", SimpleNamespace(monotonic=lambda: 10.0))
+
+    with pytest.raises(cleanup_scheduler.OperationRetentionCleanupCancelledError) as captured:
+        await cleanup_scheduler._purge_operation_spool_with_budget(bridge_repo, cutoff=utcnow())
+
+    assert captured.value.result.deleted_operations == 5
+    assert captured.value.result.batches == 1
+    assert captured.value.result.outcome == "failed"
+
+
+@pytest.mark.asyncio
+async def test_operation_retention_failure_reports_deletes_committed_by_the_failed_batch(monkeypatch) -> None:
+    bridge_repo = AsyncMock()
+    bridge_repo.purge_operation_spool_batch = _in_flight_batch(2, RuntimeError("db unavailable"))
+    monkeypatch.setattr(cleanup_scheduler, "time", SimpleNamespace(monotonic=lambda: 10.0))
+
+    with pytest.raises(cleanup_scheduler.OperationRetentionCleanupError) as captured:
+        await cleanup_scheduler._purge_operation_spool_with_budget(bridge_repo, cutoff=utcnow())
+
+    assert captured.value.result.deleted_operations == 2
+    assert captured.value.result.batches == 0
+    assert captured.value.error_type == "RuntimeError"
 
 
 def test_cleanup_delay_retries_immediately_while_backlog_is_likely() -> None:

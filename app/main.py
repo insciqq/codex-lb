@@ -113,6 +113,7 @@ from app.modules.proxy.cap_partitioning import refresh_cap_partition
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeSessionCoordinator
 from app.modules.proxy.durable_bridge_repository import (
     DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_BATCH_SIZE,
+    DurableBridgeOperationPurgeProgress,
     missing_durable_bridge_tables,
 )
 from app.modules.proxy.durable_bridge_runtime import http_bridge_owner_process_epoch
@@ -137,6 +138,7 @@ from app.modules.settings import api as settings_api
 from app.modules.settings.service import warn_environment_shadowed_by_dashboard
 from app.modules.sticky_sessions import api as sticky_sessions_api
 from app.modules.sticky_sessions.cleanup_scheduler import (
+    _OPERATION_RETENTION_TIME_BUDGET_SECONDS,
     OperationRetentionCleanupResult,
     _abandoned_bridge_retention_seconds,
     _record_operation_retention_cleanup,
@@ -421,13 +423,20 @@ async def _purge_operation_spool_on_startup(*, retention_seconds: float) -> int:
     """Run one bounded transcript purge and record a sanitized aggregate result."""
 
     started_at = time.monotonic()
+    # Operation deletes already committed when the purge fails part way.
+    progress = DurableBridgeOperationPurgeProgress()
     try:
         operation_purge_result = await DurableBridgeSessionCoordinator(SessionLocal).purge_operation_spool_batch(
             cutoff=utcnow() - timedelta(seconds=retention_seconds),
+            deadline=started_at + _OPERATION_RETENTION_TIME_BUDGET_SECONDS,
+            progress=progress,
+            # Startup runs before any request writer exists; pausing for them
+            # would only delay serving.
+            pace_writer=False,
         )
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
         result = OperationRetentionCleanupResult(
-            deleted_operations=0,
+            deleted_operations=progress.deleted_operations,
             batches=0,
             backlog_likely=True,
             outcome="failed",
@@ -436,19 +445,30 @@ async def _purge_operation_spool_on_startup(*, retention_seconds: float) -> int:
         _record_operation_retention_cleanup(result)
         logger.warning(
             "HTTP bridge operation transcript startup retention failed "
-            "deleted_operations=0 batches=0 outcome=failed backlog_likely=true "
+            "deleted_operations=%s batches=0 outcome=failed backlog_likely=true "
             "duration_seconds=%.3f error_type=%s",
+            result.deleted_operations,
             result.duration_seconds,
             type(exc).__name__,
         )
+        if isinstance(exc, asyncio.CancelledError):
+            # Committed deletes are reported above; the cancellation itself
+            # must reach the caller unchanged.
+            raise
         raise RuntimeError("HTTP bridge operation transcript startup retention failed") from None
 
-    backlog_likely = operation_purge_result.selected_operations >= DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_BATCH_SIZE
+    budget_exhausted = operation_purge_result.budget_exhausted
+    backlog_likely = (
+        budget_exhausted
+        or operation_purge_result.selected_operations >= DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_BATCH_SIZE
+    )
     result = OperationRetentionCleanupResult(
         deleted_operations=operation_purge_result.deleted_operations,
         batches=1,
         backlog_likely=backlog_likely,
-        outcome="batch_budget_exhausted" if backlog_likely else "completed",
+        outcome=(
+            "time_budget_exhausted" if budget_exhausted else "batch_budget_exhausted" if backlog_likely else "completed"
+        ),
         duration_seconds=max(time.monotonic() - started_at, 0.0),
     )
     _record_operation_retention_cleanup(result)

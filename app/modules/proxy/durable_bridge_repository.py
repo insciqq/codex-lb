@@ -2,20 +2,38 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
-from typing import Any, cast
+from typing import Any, Literal, cast
 
-from sqlalchemy import Row, and_, case, delete, exists, func, or_, select, text, true, update
+from sqlalchemy import (
+    ColumnElement,
+    CursorResult,
+    Executable,
+    Row,
+    and_,
+    case,
+    delete,
+    event,
+    exists,
+    func,
+    or_,
+    select,
+    text,
+    true,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import clock_for, scheduler_for
 from app.core.utils.time import naive_utc_to_epoch, to_utc_naive, utcnow
 from app.db.models import (
     HTTP_BRIDGE_SPOOL_FORMAT_CHUNKS_V2,
@@ -59,11 +77,29 @@ REQUIRED_DURABLE_BRIDGE_TABLES = (
     "http_bridge_operation_events",
     "http_bridge_operation_event_chunks",
 )
+logger = logging.getLogger(__name__)
+
 DURABLE_BRIDGE_RETRY_CIRCUIT_STATE_TTL_SECONDS = 3600.0
 # Mirrors the HTTP bridge retry circuit's abandonment tombstone detail; the
 # scheduled purge preserves such rows until the bridge-retention cutoff.
 _RETRY_CIRCUIT_ABANDONED_TOMBSTONE_DETAIL = "anchor_abandoned"
 DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_BATCH_SIZE = 50
+# Spool rows removed per retention write transaction. Deleting a transcript
+# row touches a random page of the event-id index, so the writer hold grows
+# with rows, not with operations: one transaction per whole transcript held
+# SQLite's single writer slot past busy_timeout on a large database.
+DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_EVENT_ROWS_PER_TRANSACTION = 256
+# A chunk row carries up to one spool flush of compressed events.
+DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_CHUNK_ROWS_PER_TRANSACTION = 32
+# Upper bound of the pause after one retention write transaction on SQLite.
+DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_MAX_YIELD_SECONDS = 1.0
+# How long a cancelled retention keeps waiting for an operation-row commit
+# that is already executing, so a durable delete is still counted. Matches
+# the SQLite teardown bound that takes over afterwards.
+DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_COMMIT_SETTLE_SECONDS = 5.0
+# Rounds of "remove material, then delete the row" per operation and pass; a
+# row that keeps gaining material is left for a later pass.
+_SPOOL_PURGE_MAX_ROUNDS_PER_OPERATION = 3
 _PURGE_CLOSED_BATCH_SIZE = 500
 # Marks a retirement taken on the request path rather than by the sweep.
 # The sweep writes the global timestamp form instead; both read as retired.
@@ -291,6 +327,19 @@ class DurableBridgeOperationEventInput:
 class DurableBridgeOperationPurgeBatchResult:
     selected_operations: int
     deleted_operations: int
+    # The caller's deadline stopped the batch before every selected
+    # operation was purged.
+    budget_exhausted: bool = False
+
+
+@dataclass(slots=True)
+class DurableBridgeOperationPurgeProgress:
+    """Committed retention work, updated as each operation delete commits."""
+
+    deleted_operations: int = 0
+
+
+_SpoolPurgeOutcome = Literal["deleted", "kept", "deadline"]
 
 
 class DurableBridgeRepository:
@@ -2511,18 +2560,14 @@ class DurableBridgeRepository:
         turns.reverse()
         return turns
 
-    async def purge_operation_spool_batch(
-        self,
-        *,
-        cutoff: datetime,
-        batch_size: int = DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_BATCH_SIZE,
-    ) -> DurableBridgeOperationPurgeBatchResult:
-        """Delete eligible transcript material past retention.
+    def _operation_spool_purgeable(self, cutoff: datetime, *, now: datetime) -> ColumnElement[bool]:
+        """Retention predicate for one operation row at ``now``.
 
         Nonterminal rows are purgeable only after their owning session is
-        ownerless or its lease has expired. Recheck that predicate in the
-        delete transaction so an in-flight operation cannot lose its
-        duplicate-suppression ledger between selection and deletion.
+        ownerless or its lease has expired, so an in-flight operation cannot
+        lose its duplicate-suppression ledger. One retention transaction
+        passes the same ``now`` to its lock and its delete, so both see the
+        same lease state.
         """
         terminal_states = ("completed", "incomplete", "failed", "abandoned")
         # UNKNOWN is an ambiguous, still-live operation while its owner lease
@@ -2533,7 +2578,7 @@ class DurableBridgeRepository:
         stale_owner = or_(
             HttpBridgeSessionRecord.owner_instance_id.is_(None),
             HttpBridgeSessionRecord.lease_expires_at.is_(None),
-            HttpBridgeSessionRecord.lease_expires_at < utcnow(),
+            HttpBridgeSessionRecord.lease_expires_at < now,
         )
         stale_nonterminal = and_(
             HttpBridgeOperationRecord.state.in_(nonterminal_states),
@@ -2546,45 +2591,302 @@ class DurableBridgeRepository:
                 .correlate(HttpBridgeOperationRecord)
             ),
         )
-        purgeable = or_(HttpBridgeOperationRecord.state.in_(terminal_states), stale_nonterminal)
-        async with sqlite_writer_section():
-            selected = await self._session.execute(
-                select(HttpBridgeOperationRecord)
-                .join(
-                    HttpBridgeSessionRecord,
-                    HttpBridgeSessionRecord.id == HttpBridgeOperationRecord.session_id,
-                )
-                .where(HttpBridgeOperationRecord.updated_at < cutoff, purgeable)
-                .order_by(HttpBridgeOperationRecord.updated_at.asc())
-                .limit(batch_size)
-                .with_for_update()
+        return and_(
+            HttpBridgeOperationRecord.updated_at < cutoff,
+            or_(HttpBridgeOperationRecord.state.in_(terminal_states), stale_nonterminal),
+        )
+
+    async def _lock_purgeable_operation(self, operation_id: str, cutoff: datetime, *, now: datetime) -> bool:
+        # The joined FOR UPDATE locks both the operation and owning session on
+        # PostgreSQL, serializing retention deletion with claim_session() on
+        # the same continuity row. The request path locks the session before
+        # the operation (record_operation), so waiting here in the opposite
+        # order could deadlock: SKIP LOCKED leaves a contended operation to a
+        # later pass instead.
+        locked = await self._session.scalar(
+            select(HttpBridgeOperationRecord.operation_id)
+            .join(
+                HttpBridgeSessionRecord,
+                HttpBridgeSessionRecord.id == HttpBridgeOperationRecord.session_id,
             )
-            # The joined FOR UPDATE locks both the operation and owning
-            # session on PostgreSQL, serializing retention deletion with
-            # claim_session() on the same continuity row.
-            operation_ids = [str(operation.operation_id) for operation in selected.scalars().all()]
-            if not operation_ids:
+            .where(
+                HttpBridgeOperationRecord.operation_id == operation_id,
+                self._operation_spool_purgeable(cutoff, now=now),
+            )
+            .with_for_update(skip_locked=True)
+        )
+        return locked is not None
+
+    async def _spool_purge_transaction(
+        self,
+        operation_id: str,
+        cutoff: datetime,
+        build_statement: Callable[[datetime], Executable],
+        *,
+        on_committed: Callable[[int], None] | None = None,
+    ) -> tuple[int | None, float]:
+        """Run one bounded retention write in its own short transaction.
+
+        Returns the affected row count, or ``None`` when the operation is no
+        longer purgeable or is locked by a request, together with how long
+        the transaction held the writer. Time spent queueing for the writer
+        is not part of the hold.
+
+        ``on_committed`` runs exactly once when the database commit
+        succeeded, even if the caller is cancelled during the commit's
+        connection cleanup.
+        """
+        clock = clock_for(self)
+        async with sqlite_writer_section():
+            started_at = clock.monotonic()
+            now = utcnow()
+            if not await self._lock_purgeable_operation(operation_id, cutoff, now=now):
                 await self._session.commit()
-                return DurableBridgeOperationPurgeBatchResult(
-                    selected_operations=0,
-                    deleted_operations=0,
+                return None, clock.monotonic() - started_at
+            result = cast(CursorResult[Any], await self._session.execute(build_statement(now)))
+            affected = int(result.rowcount or 0)
+            if on_committed is None:
+                await self._session.commit()
+            else:
+                await self._commit_counting_outcome(lambda: on_committed(affected))
+            return affected, clock.monotonic() - started_at
+
+    async def _commit_counting_outcome(self, on_committed: Callable[[], None]) -> None:
+        """Commit, and call ``on_committed`` exactly once if the commit succeeded.
+
+        A cancellation can arrive while the driver is executing COMMIT; the
+        commit may still succeed, and the caller must learn about it. The
+        commit runs in its own task and a cancelled caller keeps waiting for
+        its outcome for at most ``DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_COMMIT_SETTLE_SECONDS``
+        before re-raising. A commit that has not settled by then is cancelled
+        and left to the session's bounded teardown.
+        """
+        committed = False
+
+        def mark_committed(_session: object) -> None:
+            nonlocal committed
+            committed = True
+
+        # after_commit fires only once the DBAPI commit succeeded, so it
+        # tells a durable delete apart from one cancelled before it.
+        event.listen(self._session.sync_session, "after_commit", mark_committed)
+        scheduler = scheduler_for(self)
+        commit = scheduler.create_task(self._session.commit())
+        try:
+            await asyncio.shield(commit)
+        except asyncio.CancelledError:
+            _, pending = await scheduler.wait(
+                {commit}, timeout=DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_COMMIT_SETTLE_SECONDS
+            )
+            if pending:
+                logger.warning(
+                    "HTTP bridge operation transcript retention commit did not settle after cancellation "
+                    "settle_seconds=%.1f",
+                    DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_COMMIT_SETTLE_SECONDS,
                 )
-            deleted = await self._session.execute(
+                commit.cancel()
+            raise
+        finally:
+            event.remove(self._session.sync_session, "after_commit", mark_committed)
+            if committed:
+                on_committed()
+
+    async def _pace_spool_purge(self, held_seconds: float, *, enabled: bool) -> None:
+        # On SQLite, leave the writer slot free for as long as the last
+        # retention transaction held it, so writers that wait on busy_timeout
+        # rather than sqlite_writer_section (leader lease renewal, ring
+        # heartbeat) still get the slot while a backlog drains.
+        if enabled and self._session.get_bind().dialect.name == "sqlite":
+            await scheduler_for(self).sleep(min(held_seconds, DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_MAX_YIELD_SECONDS))
+
+    def _spool_purge_deadline_reached(self, deadline: float | None) -> bool:
+        return deadline is not None and clock_for(self).monotonic() >= deadline
+
+    async def _purge_operation_spool(
+        self,
+        operation_id: str,
+        cutoff: datetime,
+        *,
+        deadline: float | None,
+        progress: DurableBridgeOperationPurgeProgress,
+        pace_writer: bool,
+    ) -> _SpoolPurgeOutcome:
+        """Delete one operation's transcript, then its row, in bounded transactions.
+
+        A whole transcript can hold thousands of event rows; deleting it in one
+        transaction (directly or through ON DELETE CASCADE) holds SQLite's
+        single writer slot for the full delete. Each transaction here removes
+        at most a fixed number of spool rows and rechecks the retention
+        predicate first, so an operation that becomes live again keeps its row
+        and no further material is removed. The operation row is deleted only
+        once no material is left, so its cascade never removes transcript
+        rows. Readers treat a partially removed spool as incomplete, exactly
+        like a removed one.
+        """
+
+        def delete_events(now: datetime) -> Executable:
+            return (
+                delete(HttpBridgeOperationEvent)
+                .where(
+                    HttpBridgeOperationEvent.event_id.in_(
+                        select(HttpBridgeOperationEvent.event_id)
+                        .where(HttpBridgeOperationEvent.operation_id == operation_id)
+                        .limit(DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_EVENT_ROWS_PER_TRANSACTION)
+                    ),
+                    exists(
+                        select(HttpBridgeOperationRecord.operation_id).where(
+                            HttpBridgeOperationRecord.operation_id == operation_id,
+                            self._operation_spool_purgeable(cutoff, now=now),
+                        )
+                    ),
+                )
+                # No RETURNING: a cancelled RETURNING write can keep SQLite's
+                # write lock past the close of its connection.
+                .execution_options(synchronize_session=False)
+            )
+
+        def delete_chunks(now: datetime) -> Executable:
+            return (
+                delete(HttpBridgeOperationEventChunk)
+                .where(
+                    HttpBridgeOperationEventChunk.operation_id == operation_id,
+                    HttpBridgeOperationEventChunk.first_sequence_number.in_(
+                        select(HttpBridgeOperationEventChunk.first_sequence_number)
+                        .where(HttpBridgeOperationEventChunk.operation_id == operation_id)
+                        .limit(DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_CHUNK_ROWS_PER_TRANSACTION)
+                    ),
+                    exists(
+                        select(HttpBridgeOperationRecord.operation_id).where(
+                            HttpBridgeOperationRecord.operation_id == operation_id,
+                            self._operation_spool_purgeable(cutoff, now=now),
+                        )
+                    ),
+                )
+                .execution_options(synchronize_session=False)
+            )
+
+        def delete_operation(now: datetime) -> Executable:
+            return (
                 delete(HttpBridgeOperationRecord)
                 .where(
-                    HttpBridgeOperationRecord.operation_id.in_(operation_ids),
-                    HttpBridgeOperationRecord.updated_at < cutoff,
-                    purgeable,
+                    HttpBridgeOperationRecord.operation_id == operation_id,
+                    self._operation_spool_purgeable(cutoff, now=now),
+                    ~exists(
+                        select(HttpBridgeOperationEvent.event_id).where(
+                            HttpBridgeOperationEvent.operation_id == operation_id
+                        )
+                    ),
+                    ~exists(
+                        select(HttpBridgeOperationEventChunk.first_sequence_number).where(
+                            HttpBridgeOperationEventChunk.operation_id == operation_id
+                        )
+                    ),
                 )
-                .returning(HttpBridgeOperationRecord.operation_id)
+                .execution_options(synchronize_session=False)
             )
-            deleted_ids = [str(value) for value in deleted.scalars().all()]
-            if deleted_ids:
-                await self._delete_operation_spool_material(deleted_ids)
-            await self._session.commit()
+
+        material = (
+            (delete_events, DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_EVENT_ROWS_PER_TRANSACTION),
+            (delete_chunks, DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_CHUNK_ROWS_PER_TRANSACTION),
+        )
+        # The deadline is checked after every transaction that deleted rows.
+        # Transactions that find nothing to delete never stop the purge, so
+        # once an operation's spool is empty the call reaches its row delete:
+        # every call makes progress even when each pass has room for one
+        # transaction.
+        for _ in range(_SPOOL_PURGE_MAX_ROUNDS_PER_OPERATION):
+            for build_statement, rows_per_transaction in material:
+                while True:
+                    affected, held_seconds = await self._spool_purge_transaction(operation_id, cutoff, build_statement)
+                    if affected is None:
+                        return "kept"
+                    await self._pace_spool_purge(held_seconds, enabled=pace_writer)
+                    if affected and self._spool_purge_deadline_reached(deadline):
+                        return "deadline"
+                    if affected < rows_per_transaction:
+                        break
+
+            def count_deleted_operation(affected: int) -> None:
+                progress.deleted_operations += affected
+
+            deleted, held_seconds = await self._spool_purge_transaction(
+                operation_id,
+                cutoff,
+                delete_operation,
+                # Counted as the commit succeeds, before any cancellable await.
+                on_committed=count_deleted_operation,
+            )
+            if deleted is None:
+                return "kept"
+            if deleted:
+                await self._pace_spool_purge(held_seconds, enabled=pace_writer)
+                return "deleted"
+            # Material was appended, or its delete raced a writer outside the
+            # writer section: remove what is left in bounded transactions.
+            await self._pace_spool_purge(held_seconds, enabled=pace_writer)
+        return "kept"
+
+    async def purge_operation_spool_batch(
+        self,
+        *,
+        cutoff: datetime,
+        batch_size: int = DURABLE_BRIDGE_OPERATION_SPOOL_PURGE_BATCH_SIZE,
+        deadline: float | None = None,
+        progress: DurableBridgeOperationPurgeProgress | None = None,
+        pace_writer: bool = True,
+    ) -> DurableBridgeOperationPurgeBatchResult:
+        """Delete eligible transcript material past retention.
+
+        Selection reads only operation ids. Each operation is then purged in
+        short transactions bounded by spool rows, each rechecking the
+        retention predicate, so no transaction holds the database writer for
+        the size of a whole transcript or batch. ``deadline`` (monotonic
+        seconds) stops the batch between committed transactions and reports
+        ``budget_exhausted``. ``progress`` counts each committed operation
+        delete as it happens, so a cancelled or failed caller still knows it.
+        ``pace_writer=False`` skips the SQLite pause between transactions for
+        callers with no competing writers, such as startup.
+        """
+        progress = progress if progress is not None else DurableBridgeOperationPurgeProgress()
+        deleted_before = progress.deleted_operations
+        # Same join as the per-transaction recheck, so an operation that can
+        # never be locked is never selected. The commit below releases the
+        # selection's row locks again.
+        selected = await self._session.execute(
+            select(HttpBridgeOperationRecord.operation_id)
+            .join(
+                HttpBridgeSessionRecord,
+                HttpBridgeSessionRecord.id == HttpBridgeOperationRecord.session_id,
+            )
+            .where(self._operation_spool_purgeable(cutoff, now=utcnow()))
+            .order_by(HttpBridgeOperationRecord.updated_at.asc())
+            .limit(batch_size)
+            # On PostgreSQL, rows a request holds locked would be skipped by
+            # every recheck; leaving them out here lets unlocked operations
+            # fill the batch instead of re-selecting the same locked ones.
+            .with_for_update(skip_locked=True)
+        )
+        operation_ids = [str(operation_id) for operation_id in selected.scalars().all()]
+        await self._session.commit()
+        budget_exhausted = False
+        for index, operation_id in enumerate(operation_ids):
+            if index and self._spool_purge_deadline_reached(deadline):
+                budget_exhausted = True
+                break
+            outcome = await self._purge_operation_spool(
+                operation_id,
+                cutoff,
+                deadline=deadline,
+                progress=progress,
+                pace_writer=pace_writer,
+            )
+            if outcome == "deadline":
+                budget_exhausted = True
+                break
         return DurableBridgeOperationPurgeBatchResult(
             selected_operations=len(operation_ids),
-            deleted_operations=len(deleted_ids),
+            deleted_operations=progress.deleted_operations - deleted_before,
+            budget_exhausted=budget_exhausted,
         )
 
     async def purge_operation_spool(
