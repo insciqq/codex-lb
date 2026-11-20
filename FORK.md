@@ -40,7 +40,7 @@ and rebuilds do not add cross-reference events to upstream threads.
 | `Upstream-PR` | Upstream PR number, or `none` |
 | `Upstream-PR-Head` | Upstream PR head SHA at pick time |
 | `Upstream-Issue` | Upstream issue numbers, comma-separated |
-| `Fork-Only` | Reason for a commit that never goes upstream |
+| `Fork-Only` | Reason for a commit without an upstream PR or issue: fork tooling, CI, spec fixes, or an own production fix (`production-fix`) |
 
 `Upstream-PR: none` requires `Upstream-Issue` or `Fork-Only`.
 
@@ -73,4 +73,8 @@ Rebuild instead:
 
 Upstream PRs reviewed and rejected, one line each with the reason.
 
-* none yet
+* 2666: owner-bound replay proof could accept incomplete history (delta fingerprints,
+  call-id-only manifest, unchecked parent anchor) and relocate owner content; replaced
+  by socket-bound anchoring of native full histories.
+* 2472: native give-up terminal; no matching production evidence and several unresolved
+  edge cases in review.
