@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import pytest
@@ -170,3 +171,43 @@ async def test_assets_js_served_as_javascript_despite_poisoned_registry(async_cl
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/javascript")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/" + "a" * 300,
+        # Longer than PATH_MAX even though no single segment is too long.
+        "/probe/" + "0123456789abcdef/" * 300,
+        "/assets/" + "x" * 300 + ".js",
+    ],
+)
+async def test_unresolvable_static_path_returns_not_found(async_client, path):
+    """A path the filesystem rejects as too long is a 404, not a 500."""
+    response = await async_client.get(path)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Not Found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/a%00b", "/assets/x%00.js", "/internal%00"])
+async def test_static_lookup_with_embedded_nul_is_not_found(async_client, path):
+    """An embedded NUL cannot name a file: 404, like Starlette's StaticFiles."""
+    response = await async_client.get(path)
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_number", [errno.EIO, errno.EACCES])
+async def test_static_lookup_storage_fault_is_not_disguised_as_not_found(async_client, monkeypatch, error_number):
+    """A disk or permission error on a real asset must stay an error, not a 404."""
+    import app.main as main_module
+
+    def failing_lookup(static_root, requested_path):
+        raise OSError(error_number, "lookup failed")
+
+    monkeypatch.setattr(main_module, "_resolve_static_asset_path", failing_lookup)
+    with pytest.raises(OSError) as raised:
+        await async_client.get("/assets/app.js")
+    assert raised.value.errno == error_number

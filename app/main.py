@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import mimetypes
 import os
@@ -1115,7 +1116,20 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Not Found")
 
         if normalized:
-            candidate = _resolve_static_asset_path(static_root, normalized)
+            try:
+                candidate = _resolve_static_asset_path(static_root, normalized)
+            except ValueError:
+                # An embedded NUL: the path cannot name a file. Same answer as
+                # Starlette's StaticFiles.
+                raise HTTPException(status_code=404, detail="Not Found") from None
+            except OSError as exc:
+                # A segment longer than NAME_MAX or a path longer than PATH_MAX
+                # names neither an asset nor a dashboard route; scanners send
+                # such paths. Any other lookup failure is a real storage fault
+                # and must stay visible.
+                if exc.errno != errno.ENAMETOOLONG:
+                    raise
+                raise HTTPException(status_code=404, detail="Not Found") from None
             if candidate is not None:
                 if normalized.startswith("assets/"):
                     # Vite content-hashes everything under assets/, so the
