@@ -20,15 +20,17 @@ no releases, packages or images.
 
 ## What goes into `patched`
 
-* Pull requests opened in upstream Soju06/codex-lb: fixes, dependency and
-  security updates, maintenance. Upstream feature PRs are taken case by case.
+* Pull requests opened in upstream Soju06/codex-lb within the fork's scope:
+  bug fixes, security, compatibility with current Codex clients and the OpenAI
+  backend, dependency updates. No features; the registry records feature PRs
+  as `out-of-scope`.
 * Own fixes for bugs observed in production, with `Upstream-PR: none` and
   `Upstream-Issue` when an upstream report exists.
 * No functionality from other forks and no fork-specific features.
 * One fork commit per upstream PR, keeping the PR author as the commit
   author. Squash the PR's commits when it has several.
-* A patch that adds an Alembic revision needs a documented rollback path
-  before it is picked.
+* No new Alembic revisions: the database schema stays identical to upstream,
+  so switching between upstream and the fork is an image swap.
 
 ## Commit trailers
 
