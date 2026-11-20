@@ -15,6 +15,8 @@ import base64
 import json
 import logging
 import time
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import aiohttp
@@ -1355,6 +1357,187 @@ async def test_stream_safety_policy_rejection_keeps_account_health_and_original_
     else:
         assert runtime is not None
         assert runtime.error_count >= 1
+
+
+_STREAM_REQUIRED_WIRE_BODY = {"detail": "Stream must be set to true"}
+
+
+def _upstream_400(body: dict[str, Any]) -> ProxyResponseError:
+    """A ProxyResponseError built from the upstream wire body the way the client builds it."""
+    from app.core.clients.proxy import _error_payload_from_response_body
+
+    response = cast(Any, SimpleNamespace(status=400, reason="Bad Request"))
+    return ProxyResponseError(
+        400,
+        _error_payload_from_response_body(response, data=body, text=None),
+        failure_phase="status",
+    )
+
+
+def _assert_no_account_health_change(async_client, account_ids: list[str]) -> None:
+    from app.dependencies import get_proxy_service_for_app
+
+    service = get_proxy_service_for_app(async_client._transport.app)
+    for imported_account_id in account_ids:
+        runtime = service._load_balancer._runtime.get(imported_account_id)
+        assert runtime is None or runtime.error_count == 0, imported_account_id
+        assert runtime is None or runtime.last_error_at is None, imported_account_id
+
+
+async def _enable_keyed_requests(async_client) -> dict[str, str]:
+    settings_response = await async_client.put("/api/settings", json={"apiKeyAuthEnabled": True})
+    assert settings_response.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "request-shape",
+            "limits": [{"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 1_000_000}],
+        },
+    )
+    assert created.status_code == 200
+    return {"authorization": f"Bearer {created.json()['key']}"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keyed", [False, True])
+async def test_stream_request_shape_400_surfaces_without_failover_or_account_penalty(async_client, monkeypatch, keyed):
+    """``Stream must be set to true`` rejects the request itself, so it reproduces on every account.
+
+    It must surface from the first account, without walking the pool and
+    without moving any account's health, on both the unkeyed and the keyed
+    (API-key reservation) stream paths. The sticky prompt-cache owner is the
+    account that answered; nothing reallocates it.
+    """
+    account_ids = [
+        await _import_account(async_client, "acc_shape_a", "shape_a@example.com"),
+        await _import_account(async_client, "acc_shape_b", "shape_b@example.com"),
+        await _import_account(async_client, "acc_shape_c", "shape_c@example.com"),
+    ]
+    headers = await _enable_keyed_requests(async_client) if keyed else {}
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        raise _upstream_400(_STREAM_REQUIRED_WIRE_BODY)
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "hi",
+        "input": [],
+        "stream": True,
+        "prompt_cache_key": "request-shape-cache-key",
+    }
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload, headers=headers) as resp:
+        body = (await resp.aread()).decode()
+
+    assert len(seen_account_ids) == 1, f"request-shape 400 must not fail over: {seen_account_ids}"
+    assert "Stream must be set to true" in body
+    _assert_no_account_health_change(async_client, account_ids)
+
+
+@pytest.mark.asyncio
+async def test_post_refresh_request_shape_400_surfaces_without_failover_or_account_penalty(async_client, monkeypatch):
+    """The redispatch after a forced token refresh classifies the same rejection the same way."""
+    account_ids = [
+        await _import_account(async_client, "acc_shape_refresh_a", "shape_refresh_a@example.com"),
+        await _import_account(async_client, "acc_shape_refresh_b", "shape_refresh_b@example.com"),
+    ]
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        if len(seen_account_ids) == 1:
+            raise ProxyResponseError(401, {"error": {"code": "invalid_api_key", "message": "token invalidated"}})
+        raise _upstream_400(_STREAM_REQUIRED_WIRE_BODY)
+        yield  # pragma: no cover - makes this an async generator
+
+    async def fake_ensure_fresh(self, account, **kwargs):
+        return account
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        body = (await resp.aread()).decode()
+
+    assert len(seen_account_ids) == 2, seen_account_ids
+    assert seen_account_ids[0] == seen_account_ids[1], "the post-refresh rejection must not fail over"
+    assert "Stream must be set to true" in body
+
+    from app.dependencies import get_proxy_service_for_app
+
+    service = get_proxy_service_for_app(async_client._transport.app)
+    owner = service._load_balancer._runtime.get(account_ids[0])
+    # The 401 before the refresh records its own error as before; the
+    # request-shape rejection after it adds nothing.
+    assert owner is not None and owner.error_count == 1
+    _assert_no_account_health_change(async_client, account_ids[1:])
+
+
+@pytest.mark.asyncio
+async def test_compact_request_shape_400_surfaces_without_failover_or_account_penalty(async_client, monkeypatch):
+    account_ids = [
+        await _import_account(async_client, "acc_shape_compact_a", "shape_compact_a@example.com"),
+        await _import_account(async_client, "acc_shape_compact_b", "shape_compact_b@example.com"),
+    ]
+    seen_account_ids: list[str | None] = []
+
+    async def fake_compact(payload, headers, access_token, account_id):
+        seen_account_ids.append(account_id)
+        raise _upstream_400(_STREAM_REQUIRED_WIRE_BODY)
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": []}
+    response = await async_client.post("/backend-api/codex/responses/compact", json=payload)
+
+    assert response.status_code == 400
+    assert "Stream must be set to true" in response.text
+    assert len(seen_account_ids) == 1, seen_account_ids
+    _assert_no_account_health_change(async_client, account_ids)
+
+
+@pytest.mark.asyncio
+async def test_stream_code_less_unsupported_parameter_400_still_fails_over(async_client, monkeypatch):
+    """A parameter rejection can depend on the account or model, so it keeps failing over.
+
+    Accounts differ in what they accept (for example ``text.verbosity``), so a
+    code-less ``Unsupported parameter`` 400 from one account must not stop a
+    sibling that accepts the request from serving it.
+    """
+    await _import_account(async_client, "acc_param_a", "param_a@example.com")
+    await _import_account(async_client, "acc_param_b", "param_b@example.com")
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        if account_id == seen_account_ids[0]:
+            raise ProxyResponseError(
+                400,
+                {"error": {"message": "Unsupported parameter: text.verbosity"}},
+                failure_phase="status",
+            )
+        yield _success_sse_event()
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "hi",
+        "input": [],
+        "stream": True,
+        "text": {"verbosity": "high"},
+    }
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = _extract_events(lines)
+    assert any(e.get("type") == "response.completed" for e in events), seen_account_ids
+    assert len(seen_account_ids) == 2
 
 
 @pytest.mark.asyncio

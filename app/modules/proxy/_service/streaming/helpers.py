@@ -417,6 +417,7 @@ from app.modules.proxy.helpers import (
     is_account_neutral_safety_policy_rejection,
     is_model_scoped_upstream_rejection,
     is_upstream_model_capacity_error,
+    is_upstream_request_shape_rejection,
     is_upstream_usage_limit_rejection,
 )
 from app.modules.proxy.http_bridge_forwarding import (
@@ -1094,6 +1095,8 @@ def _is_account_neutral_request_rejection(
     if http_status is not None and http_status != 400:
         return False
     if is_account_neutral_safety_policy_rejection(code=code, http_status=http_status, message=message):
+        return True
+    if is_upstream_request_shape_rejection(code=code, http_status=http_status, message=message):
         return True
     return code == "invalid_request_error" and bool(_facade()._is_missing_tool_output_message(message))
 

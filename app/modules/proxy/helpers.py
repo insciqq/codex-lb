@@ -63,6 +63,17 @@ _SAFETY_BLOCK_MESSAGE_PREFIX = "This request was blocked by our safety systems."
 _MODEL_UNSUPPORTED_MESSAGE_RE = re.compile(
     r"^The '.+' model is not supported when using Codex with a ChatGPT account\.$"
 )
+# Request-shape rejections: an HTTP 400 whose whole message says the request's
+# own transport flag is wrong. ``stream`` is a property of the request alone --
+# no account, plan or model makes upstream accept a non-streaming Codex request
+# -- so every account answers the same way. They arrive with no code at all
+# (normalized to ``upstream_error``) or as ``invalid_request_error``. Keep this
+# list to sentences proven account independent: a rejection that names a
+# parameter some accounts or models support (``Unsupported parameter: ...``)
+# must keep failing over. Matched against the entire message so a sentence
+# quoted back inside a longer message cannot qualify.
+_REQUEST_SHAPE_REJECTION_CODES = frozenset({"upstream_error", "invalid_request_error"})
+_REQUEST_SHAPE_REJECTION_MESSAGE_RE = re.compile(r"Stream must be set to true\.?")
 
 
 def is_account_neutral_safety_policy_rejection(
@@ -78,6 +89,24 @@ def is_account_neutral_safety_policy_rejection(
         and isinstance(message, str)
         and message.startswith(_SAFETY_BLOCK_MESSAGE_PREFIX)
     )
+
+
+def is_upstream_request_shape_rejection(
+    *,
+    code: str | None,
+    http_status: int | None,
+    message: str | None,
+) -> bool:
+    """Match a deterministic upstream rejection of the request's own shape.
+
+    Such a rejection reproduces identically on every account: failing over
+    only repeats it, and charging it to an account benches a healthy one.
+    The status is optional because some health writes run after the HTTP
+    status is no longer known; when it is known it must be 400.
+    """
+    if code not in _REQUEST_SHAPE_REJECTION_CODES or http_status not in (None, 400) or message is None:
+        return False
+    return _REQUEST_SHAPE_REJECTION_MESSAGE_RE.fullmatch(" ".join(message.split())) is not None
 
 
 def is_model_scoped_upstream_rejection(message: str | None) -> bool:
@@ -164,6 +193,15 @@ def classify_upstream_failure(
         # nothing is raised this way; a coded envelope keeps the class its code
         # chose.
         failure_class = "rate_limit"
+    elif is_upstream_request_shape_rejection(
+        code=error_code,
+        http_status=http_status,
+        message=error.get("message"),
+    ):
+        # Checked before the transient branch: a code-less 400 normalizes to
+        # ``upstream_error``, which would otherwise walk the pool with a request
+        # every account rejects identically.
+        failure_class = "non_retryable"
     elif (
         error_code in _TRANSIENT_CODES
         or is_upstream_model_capacity_error(error.get("message"))

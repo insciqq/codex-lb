@@ -28,6 +28,33 @@ pytestmark = pytest.mark.unit
 
 
 class TestClassifyUpstreamFailure:
+    @pytest.mark.parametrize(
+        ("error_code", "message", "http_status", "expected"),
+        [
+            ("upstream_error", "Stream must be set to true", 400, "non_retryable"),
+            ("upstream_error", "Stream must be set to true.", None, "non_retryable"),
+            # A parameter some accounts or models support keeps failing over.
+            ("upstream_error", "Unsupported parameter: text.verbosity", 400, "retryable_transient"),
+            # The same sentence on a server failure is not a request-shape rejection.
+            ("upstream_error", "Stream must be set to true", 500, "retryable_transient"),
+            # Quoted inside a longer message it does not decide anything.
+            ("upstream_error", "Upstream said: Stream must be set to true", 400, "retryable_transient"),
+            # A coded transient or rate-limit failure keeps its class.
+            ("server_error", "Stream must be set to true", 400, "retryable_transient"),
+            ("rate_limit_exceeded", "Stream must be set to true", 400, "rate_limit"),
+        ],
+    )
+    def test_request_shape_rejection_is_non_retryable_only_for_its_exact_shape(
+        self, error_code: str, message: str, http_status: int | None, expected: FailureClass
+    ) -> None:
+        result = classify_upstream_failure(
+            error_code=error_code,
+            error=UpstreamError(message=message),
+            http_status=http_status,
+            phase="first_event",
+        )
+        assert result["failure_class"] == expected
+
     @pytest.mark.parametrize("http_status", [402, None, 500])
     def test_deactivated_workspace_is_account_unavailable(self, http_status: int | None) -> None:
         result = classify_upstream_failure(
