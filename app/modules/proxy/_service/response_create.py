@@ -67,15 +67,21 @@ _RESPONSE_CREATE_DUMP_MAX_PAIRS = 20
 # Dumps run in a worker thread so hashing and gzip of a payload of up to the
 # upstream response.create limit never stall the event loop. They are written
 # one at a time, in submission order, so fingerprint dedup sees every earlier
-# dump. At most this many may be pending (the one being written included); each
-# pins its payload text until written, so a dump requested beyond the bound is
-# dropped with a warning that carries its fingerprint.
+# dump. Each pending dump pins its payload text until written, and ingress
+# admits request bodies far above the upstream limit, so pending dumps are
+# bounded by count and by the memory their payloads hold (the one being written
+# included). A dump that would exceed either bound -- or a single payload larger
+# than the byte budget -- is dropped with a warning naming the request and its
+# size; nothing is hashed or encoded on the loop to report it.
 _RESPONSE_CREATE_DUMP_MAX_PENDING = 4
+_RESPONSE_CREATE_DUMP_MAX_PENDING_BYTES = 64 << 20
 # The meta summary parses the whole payload and re-serializes its fields, which
 # holds the GIL -- and so the event loop -- for the whole parse even in a worker
 # thread. Above this size the summary is skipped; the payload file has it all.
 _RESPONSE_CREATE_DUMP_SUMMARY_MAX_BYTES = 1 << 20
 _response_create_dump_tasks: list[asyncio.Task[bool]] = []
+# Memory each pending dump pins, released when its task finishes in any way.
+_response_create_dump_retained_bytes: dict[asyncio.Task[bool], int] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -765,20 +771,28 @@ def _submit_response_create_dump(
         )
         return
     # A dump queued on a loop that has since closed can never finish.
-    _response_create_dump_tasks[:] = [task for task in _response_create_dump_tasks if task.get_loop() is loop]
-    if len(_response_create_dump_tasks) >= _RESPONSE_CREATE_DUMP_MAX_PENDING:
-        request_text = request_state.request_text or ""
+    for stale in [task for task in _response_create_dump_tasks if task.get_loop() is not loop]:
+        _forget_response_create_dump(stale)
+    # O(1): the size of the str object this dump would keep alive.
+    retained_bytes = sys.getsizeof(request_state.request_text or "")
+    pending_bytes = sum(_response_create_dump_retained_bytes.values())
+    if (
+        len(_response_create_dump_tasks) >= _RESPONSE_CREATE_DUMP_MAX_PENDING
+        or pending_bytes + retained_bytes > _RESPONSE_CREATE_DUMP_MAX_PENDING_BYTES
+    ):
         logger.warning(
             (
-                "Dropped %s response.create dump request_id=%s request_log_id=%s request_text_sha256=%s bytes=%s: "
-                "%s dumps already pending"
+                "Dropped %s response.create dump request_id=%s request_log_id=%s retained_bytes=%s: "
+                "%s dumps pending holding %s bytes, limits %s dumps and %s bytes"
             ),
             log_prefix,
             request_state.request_id,
             request_state.request_log_id,
-            sha256(request_text.encode("utf-8")).hexdigest(),
-            len(request_text.encode("utf-8")),
+            retained_bytes,
             len(_response_create_dump_tasks),
+            pending_bytes,
+            _RESPONSE_CREATE_DUMP_MAX_PENDING,
+            _RESPONSE_CREATE_DUMP_MAX_PENDING_BYTES,
         )
         return
     previous = _response_create_dump_tasks[-1] if _response_create_dump_tasks else None
@@ -794,6 +808,7 @@ def _submit_response_create_dump(
         )
     )
     _response_create_dump_tasks.append(task)
+    _response_create_dump_retained_bytes[task] = retained_bytes
     task.add_done_callback(_finish_response_create_dump)
 
 
@@ -824,9 +839,14 @@ async def drain_response_create_dumps(timeout_seconds: float, *, scheduler: Sche
     return all(task.done() for task in pending)
 
 
-def _finish_response_create_dump(task: asyncio.Task[bool]) -> None:
+def _forget_response_create_dump(task: asyncio.Task[bool]) -> None:
     if task in _response_create_dump_tasks:
         _response_create_dump_tasks.remove(task)
+    _response_create_dump_retained_bytes.pop(task, None)
+
+
+def _finish_response_create_dump(task: asyncio.Task[bool]) -> None:
+    _forget_response_create_dump(task)
     if task.cancelled():
         return
     exc = task.exception()

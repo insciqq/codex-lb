@@ -12,9 +12,11 @@ stalled for as long as each dump took.
   records; the rejection is returned without waiting for it.
 - Write dumps one at a time in request order, so fingerprint dedup also
   catches a retry that arrives while its dump is being written.
-- Bound the queue at four pending dumps; each pins a payload of up to the
-  upstream limit. A dump beyond the bound is dropped with a warning naming the
-  request and its payload fingerprint.
+- Bound pending dumps at four and at 64 MiB of retained payload text; ingress
+  admits bodies far above the upstream limit, so a count alone could pin
+  hundreds of MiB. A dump beyond either bound, or a single payload above the
+  budget, is dropped with a warning naming the request and its size; the drop
+  path does no hashing or encoding on the loop.
 - Skip the meta field summary above 1 MiB: it parses the whole payload, which
   holds the GIL and so stalls the loop even from a worker thread.
 - Graceful shutdown waits for pending dumps within its remaining drain deadline
