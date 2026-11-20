@@ -40,6 +40,7 @@ from app.core.config.settings import OAUTH_CALLBACK_PORT, OAUTH_REDIRECT_URI, ge
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
+from app.core.upstream_proxy.resolver import _is_missing_upstream_proxy_schema
 from app.core.utils.time import naive_utc_to_epoch, utcnow
 from app.db.models import Account, AccountProxyBinding, AccountStatus
 from app.db.session import get_background_session, sqlite_writer_section
@@ -85,8 +86,13 @@ async def _has_active_proxy_bindings(session: AsyncSession) -> bool:
             select(AccountProxyBinding.id).where(AccountProxyBinding.is_active.is_(True)).limit(1)
         )
         return result.scalar_one_or_none() is not None
-    except OperationalError:
-        return False
+    except OperationalError as exc:
+        # Only a database without the proxy tables proves there is no binding.
+        # A lock or connection failure proves nothing: treating it as "no
+        # binding" would let bootstrap OAuth leave through direct egress.
+        if _is_missing_upstream_proxy_schema(exc):
+            return False
+        raise
 
 
 def _oauth_target_not_found() -> OAuthError:
@@ -135,6 +141,14 @@ async def _oauth_route(*, account_id: str | None = None) -> ResolvedUpstreamRout
             )
         except UpstreamProxyRouteError as exc:
             raise OAuthError(exc.reason, str(exc), status_code=502) from exc
+        except OperationalError as exc:
+            # The route could not be determined; fail before any token or
+            # device request rather than guessing that no binding exists.
+            raise OAuthError(
+                "upstream_proxy_lookup_failed",
+                "Unable to determine the upstream proxy route for OAuth.",
+                status_code=502,
+            ) from exc
 
 
 class ReauthSeatMismatchError(Exception):

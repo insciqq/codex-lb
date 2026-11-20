@@ -441,6 +441,12 @@ Targeted OAuth operations for an intended local account with an active binding M
 - **THEN** it MUST fail before upstream I/O
 - **AND** the dashboard OAuth endpoint MUST answer HTTP 404 `oauth_account_not_found`, not a 502 gateway error
 
+#### Scenario: OAuth fails closed when the binding lookup fails
+- **GIVEN** the proxy binding tables exist but reading them fails, for example because the database is locked
+- **WHEN** a targeted or untargeted server-side OAuth operation resolves its route
+- **THEN** it MUST fail with `upstream_proxy_lookup_failed` before upstream I/O
+- **AND** only a database without the proxy tables MAY be treated as having no binding
+
 #### Scenario: OAuth fails closed when bindings exist but no default pool is configured
 - **GIVEN** an OAuth flow has no intended local account and active account bindings exist
 - **AND** no default pool is configured

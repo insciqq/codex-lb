@@ -418,3 +418,77 @@ async def test_refresh_fails_closed_when_binding_exists_but_route_returns_none(
     assert exc_info.value.code == "upstream_proxy_unavailable"
     assert exc_info.value.transport_error is True
     assert repo.tokens_payload is None
+
+
+class _BindingLookupFailingSession:
+    """Real session whose proxy-binding queries fail with a given error."""
+
+    def __init__(self, inner: AsyncSession, error: str) -> None:
+        self._inner = inner
+        self._error = error
+
+    async def execute(self, statement, *args, **kwargs):
+        if "account_proxy_bindings" in str(statement):
+            import sqlite3
+
+            from sqlalchemy.exc import OperationalError
+
+            raise OperationalError(str(statement), {}, sqlite3.OperationalError(self._error))
+        return await self._inner.execute(statement, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+async def _seed_bound_account_without_default(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    encryptor = _encryptor()
+    async with session_factory() as session:
+        bound = _account(encryptor, "bound")
+        unbound = _account(encryptor, "unbound")
+        await _pool_with_endpoints(session, encryptor, "bound_pool")
+        session.add_all(
+            [
+                bound,
+                unbound,
+                AccountProxyBinding(id="binding", account=bound, pool_id="bound_pool"),
+                DashboardSettings(id=1, upstream_proxy_routing_enabled=False),
+            ]
+        )
+        await session.commit()
+
+
+@pytest.mark.parametrize("target_id", [None, "unbound", "bound"])
+async def test_oauth_route_fails_closed_when_binding_lookup_fails(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, target_id: str | None
+) -> None:
+    await _seed_bound_account_without_default(session_factory)
+
+    @asynccontextmanager
+    async def locked_background_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield cast(AsyncSession, _BindingLookupFailingSession(session, "database is locked"))
+
+    monkeypatch.setattr(oauth_service_module, "get_background_session", locked_background_session)
+
+    with pytest.raises(OAuthError) as exc_info:
+        await oauth_service_module._oauth_route(account_id=target_id)
+
+    assert exc_info.value.code == "upstream_proxy_lookup_failed"
+    assert exc_info.value.status_code == 502
+
+
+async def test_oauth_route_tolerates_missing_proxy_schema(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        session.add(DashboardSettings(id=1, upstream_proxy_routing_enabled=False))
+        await session.commit()
+
+    @asynccontextmanager
+    async def schema_less_background_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield cast(AsyncSession, _BindingLookupFailingSession(session, "no such table: account_proxy_bindings"))
+
+    monkeypatch.setattr(oauth_service_module, "get_background_session", schema_less_background_session)
+
+    assert await oauth_service_module._oauth_route() is None
