@@ -91,3 +91,22 @@ client.
 - **THEN** the proxy does not classify it as an account-neutral safety-policy
   rejection
 - **AND** its existing account-health handling remains in effect
+
+#### Scenario: Request-shape rejection surfaces without failover or penalty
+
+- **GIVEN** several eligible accounts and a request whose shape upstream rejects
+- **WHEN** the first account returns HTTP 400 with the message `Stream must be set to true` and no error code
+- **THEN** the proxy classifies the failure `non_retryable` and surfaces it to the client without dispatching to another account
+- **AND** no account's transient error count, error backoff, rate-limit, quota, or permanent-failure state changes
+
+#### Scenario: Parameter rejection keeps failing over
+
+- **GIVEN** account A rejects a request with a code-less HTTP 400 `Unsupported parameter: <name>` and account B accepts that parameter
+- **WHEN** the proxy classifies A's failure
+- **THEN** the classification and failover decision are unchanged, so B is attempted and serves the request
+
+#### Scenario: Request-shape sentence on a server failure keeps its class
+
+- **GIVEN** account A is selected for a request
+- **WHEN** upstream fails with HTTP 500 and the message `Stream must be set to true`
+- **THEN** the failure keeps its `retryable_transient` classification and the account-health penalty is recorded as before
