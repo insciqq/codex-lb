@@ -373,3 +373,16 @@ A failed account-error health write must not replace a Responses terminal that t
 ## Ready transcript backlog
 
 The background spooler continues bounded passes while eligible events remain, giving each operation one batch per pass. For example, 320 events queued before the first pass at batch size 32 require ten writes, without nine extra flush-interval waits. This changes backlog scheduling; paced-event coalescing and terminal persistence retain their existing behavior. Isolated database measurements and limits are recorded in `openspec/changes/archive/2026-09-10-drain-ready-http-bridge-spool/verification.md`.
+
+## Native WebSocket receive bursts
+
+The decoded native WebSocket receive queue shares byte accounting with the
+existing helper event queue. A 4096-event cap permits ordinary small-frame
+bursts; a 32 MiB accounted-payload cap bounds stalled consumers. Interpreted
+Responses frames retain text and a decoded representation, so both count.
+Overflow is a local consumer condition, not evidence of an unhealthy account.
+
+For example, a 256-frame reasoning burst can remain queued while a send
+acknowledgement completes. Sustained overflow still terminates that connection
+without stopping the shared helper reader or unrelated connections. No automatic
+replay is added because a dispatched request may already have had effects.
