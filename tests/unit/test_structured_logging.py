@@ -700,6 +700,19 @@ def test_json_access_formatter_redacts_request_line():
     assert parsed["client"] == "10.0.0.5:1234"
 
 
+def test_json_access_formatter_reads_uvicorn_access_record_args():
+    # uvicorn sets client_addr/request_line/status_code only on a copy inside
+    # its own AccessFormatter; the record a JSON handler receives carries args.
+    record = _record('%s - "%s %s HTTP/%s" %d', level=logging.INFO, name="uvicorn.access")
+    record.args = ("10.0.0.5:1234", "GET", "/probe?target=" + runtime_basic_auth_url("u", "ACCESSPW", "h"), "1.1", 200)
+
+    parsed = json.loads(JsonAccessFormatter().format(record))
+
+    assert parsed["client"] == "10.0.0.5:1234"
+    assert parsed["request"] == "GET /probe?target=http://[REDACTED]@h HTTP/1.1"
+    assert parsed["status"] == 200
+
+
 def test_text_access_formatter_redacts_request_line():
     formatter = UtcAccessFormatter(
         fmt='%(asctime)s %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
