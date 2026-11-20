@@ -616,9 +616,12 @@ class UsageUpdater:
     ) -> AccountRefreshResult:
         access_token = access_token_override or self._encryptor.decrypt(account.access_token_encrypted)
         payload: UsagePayload | None = None
+        # The persisted sample carries the dispatch time of the attempt that
+        # supplied the payload; a live sample recorded before it stays older.
         fetch_started_at = utcnow()
         try:
             route = await _resolve_upstream_route_for_account(account, operation="usage_refresh")
+            fetch_started_at = utcnow()
             payload = await fetch_usage(
                 access_token=access_token,
                 account_id=usage_account_id,
@@ -651,6 +654,7 @@ class UsageUpdater:
             access_token = self._encryptor.decrypt(account.access_token_encrypted)
             try:
                 route = await _resolve_upstream_route_for_account(account, operation="usage_refresh")
+                fetch_started_at = utcnow()
                 payload = await fetch_usage(
                     access_token=access_token,
                     account_id=usage_account_id,

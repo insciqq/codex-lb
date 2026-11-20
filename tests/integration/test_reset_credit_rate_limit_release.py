@@ -612,6 +612,106 @@ async def test_confirmed_reset_credit_restores_same_live_balancer(async_client, 
     await _assert_active(account_id)
 
 
+@pytest.mark.asyncio
+async def test_usage_retry_after_401_records_its_own_observation_time(async_client, monkeypatch) -> None:
+    """A retried usage fetch must not inherit the failed attempt's timestamp.
+
+    A live sample recorded while the credential refresh runs is older than the
+    retried poll, so the retried 0% sample has to stay the latest row and the
+    same live balancer has to recover the account.
+    """
+    import asyncio
+    from collections.abc import AsyncGenerator
+    from contextlib import asynccontextmanager
+
+    from app.core.clients.usage import UsageFetchError
+    from app.modules.accounts.auth_manager import AuthManager
+    from app.modules.accounts.repository import AccountsRepository
+    from app.modules.api_keys.repository import ApiKeysRepository
+    from app.modules.proxy.load_balancer import LoadBalancer
+    from app.modules.proxy.repo_bundle import ProxyRepositories
+    from app.modules.proxy.sticky_repository import StickySessionsRepository
+    from app.modules.request_logs.repository import RequestLogsRepository
+    from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository, UsageWindowWrite
+
+    @asynccontextmanager
+    async def repo_factory() -> AsyncGenerator[ProxyRepositories]:
+        async with SessionLocal() as session:
+            yield ProxyRepositories(
+                accounts=AccountsRepository(session),
+                usage=UsageRepository(session),
+                request_logs=RequestLogsRepository(session),
+                sticky_sessions=StickySessionsRepository(session),
+                api_keys=ApiKeysRepository(session),
+                additional_usage=AdditionalUsageRepository(session),
+            )
+
+    account_id = await _blocked_account(async_client, "retry-after-401")
+    balancer = LoadBalancer(repo_factory)
+    async with SessionLocal() as session:
+        account = await session.get(Account, account_id)
+        assert account is not None
+        old_deadline = account.reset_at
+    assert old_deadline is not None
+
+    event_time = time.time() - 10
+    with monkeypatch.context() as clock:
+        clock.setattr("time.time", lambda: event_time)
+        await balancer.mark_rate_limit(
+            account, {"message": "Rate limit exceeded. Try again in 20m.", "resets_at": old_deadline}
+        )
+    assert (await balancer.select_account(account_ids={account_id})).account is None
+
+    fetch_calls = 0
+
+    async def _fetch_usage(**_kwargs):
+        nonlocal fetch_calls
+        fetch_calls += 1
+        if fetch_calls == 1:
+            raise UsageFetchError(401, "token expired")
+        return await _fresh_weekly_usage(used_percent=0.0)
+
+    original_ensure_fresh = AuthManager.ensure_fresh
+
+    async def _ensure_fresh(self, account, *, force: bool = False):
+        if force:
+            # A proxied response settles a live 100% sample while the
+            # credential refresh is in flight.
+            async with SessionLocal() as session:
+                await UsageRepository(session).add_account_snapshot(
+                    account_id,
+                    [
+                        UsageWindowWrite(
+                            window="primary",
+                            used_percent=100.0,
+                            reset_at=old_deadline,
+                            window_minutes=10_080,
+                        )
+                    ],
+                    recorded_at=utcnow(),
+                )
+            await asyncio.sleep(0.01)
+            return account
+        return await original_ensure_fresh(self, account, force=force)
+
+    monkeypatch.setattr("app.modules.usage.updater.fetch_usage", _fetch_usage)
+    monkeypatch.setattr(AuthManager, "ensure_fresh", _ensure_fresh)
+    await _patch_dashboard_redeem(monkeypatch, code="reset", windows_reset=1)
+    await _prime_dashboard_credit(account_id)
+    response = await async_client.post(f"/api/accounts/{account_id}/rate-limit-reset-credits/consume")
+    assert response.status_code == 200, response.text
+    assert fetch_calls >= 2
+
+    async with SessionLocal() as session:
+        latest = await UsageRepository(session).latest_by_account(window="primary")
+    assert latest[account_id].used_percent == 0.0
+
+    recovered = await balancer.select_account(account_ids={account_id})
+    assert recovered.account is not None, recovered.error_message
+    assert recovered.account.id == account_id
+    await _assert_active(account_id)
+
+
 @pytest.mark.parametrize(
     "protected_status", [AccountStatus.PAUSED, AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED]
 )
