@@ -62,12 +62,13 @@ up to `CODEX_LB_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` (30 seconds by default) and then
 runs up to 25 seconds of bounded cleanup (bridge sessions, persistence, database
 close). Docker kills a container 10 seconds after `docker stop` unless told
 otherwise, which cuts that drain short while a stream is in flight. Give the
-container at least the drain timeout plus 35 seconds: the bundled Compose files
-set `stop_grace_period: 65s`, matching the Helm chart's
+container at least the drain timeout plus 30 seconds (the 25-second cleanup
+reserve and a 5-second margin), which is 60 seconds at the default: the bundled
+Compose files set `stop_grace_period: 65s`, matching the Helm chart's
 `terminationGracePeriodSeconds`. With plain `docker run`, add
 `--stop-timeout 65`, or stop it with `docker stop -t 65 codex-lb`. Raise the
 value together with the drain timeout. Contract:
-[graceful-shutdown](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/graceful-shutdown).
+[deployment-installation](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/deployment-installation).
 
 ## Auth mode examples
 
