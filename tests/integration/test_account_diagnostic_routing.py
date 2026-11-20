@@ -353,3 +353,60 @@ async def test_force_probe_stale_token_with_unavailable_binding_returns_proxy_er
     assert response.status_code == 502, response.text
     assert response.json()["error"]["code"] == "upstream_proxy_unavailable"
     assert dispatched == []
+
+
+async def test_force_probe_reaches_the_bound_proxy_with_real_codex_client(async_client, monkeypatch):
+    """End to end through CodexClient: the probe request arrives at the bound
+    HTTP proxy endpoint (absolute-form request line) and nowhere else."""
+    import asyncio
+
+    from app.core.clients import codex as codex_module
+    from app.core.config.settings import get_settings
+
+    received: list[bytes] = []
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        head = await reader.readuntil(b"\r\n\r\n")
+        received.append(head.split(b"\r\n", 1)[0])
+        writer.write(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        await _seed()
+        async with SessionLocal() as session:
+            endpoint = await session.get(ProxyEndpoint, "bound-endpoint")
+            assert endpoint is not None
+            endpoint.host = "127.0.0.1"
+            endpoint.port = port
+            await session.commit()
+
+        @asynccontextmanager
+        async def no_direct():
+            raise AssertionError("bound probe must not use the direct session")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(get_settings(), "upstream_base_url", "http://upstream.example.test/backend-api")
+        monkeypatch.setattr(codex_module, "discover_native_egress_client", lambda: None)
+        monkeypatch.setattr(accounts_service, "lease_http_session", no_direct)
+        monkeypatch.setattr(
+            UsageUpdater,
+            "force_refresh_result",
+            AsyncMock(return_value=AccountRefreshResult(usage_written=False, fetch_succeeded=True)),
+        )
+        monkeypatch.setattr(
+            accounts_api,
+            "get_proxy_service_for_app",
+            lambda app: SimpleNamespace(record_account_probe_result=AsyncMock()),
+        )
+
+        response = await async_client.post("/api/accounts/bound-seat/probe")
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["probeStatusCode"] == 429
+    assert received == [b"POST http://upstream.example.test/backend-api/codex/responses HTTP/1.1"]
