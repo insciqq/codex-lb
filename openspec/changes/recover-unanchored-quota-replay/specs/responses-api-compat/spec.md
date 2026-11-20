@@ -6,13 +6,18 @@ The proxy MUST bind a Responses request body that is not a canonical
 account-neutral fresh replay to the account that first receives that exact
 body. Every later selection for that request MUST treat the dispatch owner as a
 strict required account across HTTP streaming, HTTP bridge, and direct
-WebSocket transports.
+WebSocket transports, except when the first dispatch returns a classified
+pre-visible rate-limit or quota rejection while owner registration is pending
+and encrypted content is the body's only account-scoped retained state.
 
 The proxy MUST NOT exclude the dispatch owner and send the retained body to a
 different account during stale-anchor recovery, retryable account failure,
 Trusted Access migration or degradation, bridge reconnect, or WebSocket account
 switching. If the required owner is unavailable, the proxy MUST fail closed
-without dispatching the retained body to another account.
+without dispatching the retained body to another account. This prohibition
+does not apply when encrypted content is the body's only account-scoped
+retained state and a classified pre-visible rate-limit or quota rejection
+prevents the pending dispatch owner from being established.
 
 The proxy MAY perform one forced authentication refresh and replay a retained
 account-bound body on the same dispatch owner. It MUST NOT use that refresh to
@@ -30,16 +35,29 @@ replaces that identity before account selection. Installing a verified fresh
 body and clearing its dispatch-owner binding MUST occur as one state
 transition.
 
-#### Scenario: Encrypted reasoning remains on its first dispatch account
+#### Scenario: Accepted encrypted reasoning remains on its dispatch owner
 
-- **GIVEN** account A first receives a Responses request containing encrypted
-  reasoning or another account-scoped retained item
+- **GIVEN** account A has accepted a Responses request containing encrypted
+  reasoning or another account-scoped retained item and become its dispatch
+  owner
 - **WHEN** a pre-visible retry excludes account A or requests a differently
   authorized account
 - **THEN** the proxy does not dispatch the retained body to account B
 - **AND** it may dispatch only a verified account-neutral projection that
   removes the account-scoped items and passes the canonical fresh-replay gates
-- **AND** the retry fails closed when no such projection is available
+- **AND** the retry fails closed when account A is unavailable and no such
+  projection is available
+
+#### Scenario: Rejected encrypted content may fail over before ownership
+
+- **GIVEN** account A first receives a Responses request containing encrypted
+  reasoning or compaction
+- **AND** ciphertext is the body's only account-scoped retained state
+- **WHEN** account A returns a classified rate-limit or quota rejection before
+  any downstream-visible response event while owner registration is pending
+- **THEN** the proxy does not establish account A as the dispatch owner
+- **AND** the proxy MUST attempt the exact unchanged ciphertext on an eligible
+  account B before returning account A's rejection
 
 #### Scenario: Verified account-neutral fresh replay may change accounts
 

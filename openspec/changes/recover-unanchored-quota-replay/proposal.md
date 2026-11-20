@@ -20,9 +20,11 @@ another pool account is healthy.
 - Keep previous-response, conversation, turn-state, file, single-account, incomplete-history,
   non-neutral, and post-visible requests fail-closed.
 
-Compaction items containing `encrypted_content` remain fail-closed and are not projected
-across accounts; this recovery applies only when the resulting replay passes the existing
-account-neutral validation.
+Compaction items containing `encrypted_content` are not projected across accounts; this
+recovery applies only when the resulting replay passes the existing account-neutral
+validation. A body whose only account-scoped retained state is ciphertext is handled
+earlier by `release-previsible-429-payload-owner`: the rejected first dispatch never becomes
+its owner, so it fails over unchanged and this projection does not run for it.
 
 ## Impact
 
