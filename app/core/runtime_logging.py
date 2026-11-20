@@ -66,11 +66,13 @@ _SENSITIVE_LOG_KEY_PATTERN = re.compile(r"(?i)(password|passwd|pwd|token|secret|
 # Case-folded substrings that must be present before the keyed/bearer/
 # authorization/JSON patterns above can match; keeps the per-record cost of
 # credential-free lines to a casefold plus substring scans.
-# Invite tokens travel in the URL path (``GET /api/dashboard-auth/invite/<token>``)
-# and would otherwise land in access logs and 404/429 error lines. ``/invite/accept``
-# is a route name, not a token, and stays readable.
-_INVITE_PATH_TOKEN_PATTERN = re.compile(r"(/api/dashboard-auth/invite/)(?!accept(?:[/?#\s]|$))[A-Za-z0-9_-]{20,}")
-_INVITE_PATH_PRECHECK = "/api/dashboard-auth/invite/"
+# Invite tokens travel in the URL path and would otherwise land in access logs
+# and 404/429 error lines: the browser opens the dashboard route
+# ``GET /invite/<token>`` first, then the page calls
+# ``GET /api/dashboard-auth/invite/<token>``, and both requests precede the
+# redemption. ``/invite/accept`` is a route name, not a token, and stays readable.
+_INVITE_PATH_TOKEN_PATTERN = re.compile(r"(/invite/)(?!accept(?:[/?#\s]|$))[A-Za-z0-9_-]{20,}")
+_INVITE_PATH_PRECHECK = "/invite/"
 # The OIDC callback carries its credentials in the query string
 # (``?code=...&state=...``), which is the one part of a request the access
 # logger prints verbatim: ``AccessFormatter`` renders the whole request line, so
@@ -92,6 +94,18 @@ _OIDC_CALLBACK_QUERY_PATTERN = re.compile(re.escape(_OIDC_CALLBACK_PRECHECK) + r
 #: Kept as groups so the separators survive the rebuild verbatim.
 _OIDC_CALLBACK_PARAMETER_SPLIT = re.compile(r"([&;])")
 _OIDC_CALLBACK_CREDENTIAL_KEYS = frozenset({"code", "state"})
+# Query parameters that carry a credential on any route (``?api_key=``,
+# ``?key=``, ``?access_token=``). The access logger renders the request line at
+# INFO, below the level at which the keyed text patterns run, so access
+# formatters mask these values explicitly. Long secret words match as a
+# suffix (``client_secret``, ``x-api-key``); the short words ``key``, ``auth``
+# and ``sig`` only as a whole word or after a separator, so ``monkey`` or
+# ``author`` stay readable. Keys are matched decoded, as for the OIDC callback.
+_QUERY_STRING_PATTERN = re.compile(r"\?([^\s\"'<>#]+)")
+_QUERY_CREDENTIAL_KEY_PATTERN = re.compile(
+    r"(?:password|passwd|pwd|token|secret|api[_-]?key|apikey|authorization|credentials?|signature)$"
+    r"|(?:^|[_.-])(?:key|auth|sig)$"
+)
 _SECRET_HINTS = (
     _INVITE_PATH_PRECHECK,
     _OIDC_CALLBACK_PRECHECK,
@@ -150,6 +164,35 @@ def _redact_oidc_callback_query(match: re.Match[str]) -> str:
 
 def _redact_oidc_callback_on_line(text: str) -> str:
     return _OIDC_CALLBACK_QUERY_PATTERN.sub(_redact_oidc_callback_query, text)
+
+
+def _redact_query_credential_parameter(parameter: str) -> str:
+    key, separator, _ = parameter.partition("=")
+    if not separator or not _QUERY_CREDENTIAL_KEY_PATTERN.search(unquote_plus(key).casefold()):
+        return parameter
+    return f"{key}={_LOG_REDACTION}"
+
+
+def _redact_query_credentials(match: re.Match[str]) -> str:
+    parts = _OIDC_CALLBACK_PARAMETER_SPLIT.split(match.group(1))
+    query = "".join(part if index % 2 else _redact_query_credential_parameter(part) for index, part in enumerate(parts))
+    return f"?{query}"
+
+
+def redact_access_request_line(text: str) -> str:
+    """Mask credential-bearing query values in a rendered access-log request line.
+
+    Applied by both access formatters at every level, after the shared
+    redaction, so ``GET /v1/models?api_key=...`` keeps its route and ordinary
+    parameters but never the credential. Never raises: a failing pass returns
+    the fail-closed placeholder instead of the original text.
+    """
+    if "?" not in text or "=" not in text:
+        return text
+    try:
+        return _QUERY_STRING_PATTERN.sub(_redact_query_credentials, text)
+    except Exception:
+        return _REDACTION_FAILED_PLACEHOLDER
 
 
 def _redact_secret_patterns_on_line(text: str) -> str:
@@ -273,6 +316,13 @@ class UtcDefaultFormatter(_RedactingFormatterMixin, DefaultFormatter):
 
 class UtcAccessFormatter(_RedactingFormatterMixin, AccessFormatter):
     converter: Callable[[float | None], time.struct_time] = staticmethod(_utc_converter)
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
+        redacted = redact_access_request_line(rendered)
+        if redacted is _REDACTION_FAILED_PLACEHOLDER:
+            return f"{self.formatTime(record, self.datefmt)} {record.levelname} {record.name} {redacted}"
+        return redacted
 
 
 # Containers nested deeper than this are rendered as redacted text instead of
@@ -442,7 +492,12 @@ class JsonAccessFormatter(logging.Formatter):
             "logger": record.name,
             "type": "access",
             "client": client,
-            "request": cast(JsonValue, _redact_json_log_value(record, request_line)),
+            "request": cast(
+                JsonValue,
+                _redact_json_log_value(
+                    record, None if request_line is None else redact_access_request_line(request_line)
+                ),
+            ),
             "status": status,
         }
         return json.dumps(log_entry, default=str)
