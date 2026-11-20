@@ -1,7 +1,7 @@
 ## 1. Redaction
 
 - [x] 1.1 Add a fail-closed authorization pattern for non-Bearer, non-Basic values (end of line, optional closing double quote after the key)
-- [x] 1.2 Apply it after the Basic pass and before the existing authorization pattern
+- [x] 1.2 Apply it before the Bearer and Basic token passes, so it classifies the value as it arrived
 
 ## 2. Regression coverage
 

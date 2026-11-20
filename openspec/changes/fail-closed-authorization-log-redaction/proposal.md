@@ -12,8 +12,8 @@ tracks this.
 - Redact an authorization value whose scheme is not Bearer or Basic through the
   end of the current line, allowing an optional closing double quote between
   the key and the `=`/`:` separator.
-- Keep the existing `,`/`&` bound for Basic credentials and for values already
-  reduced by the Bearer/Basic passes.
+- Keep the existing `,`/`&` bound for values that carry a real Bearer or Basic
+  token. A value is classified as it arrived, before the token passes run.
 - Leave the keyed-secret WARNING gate, the `keyed_secrets=False` path, and the
   Python-repr pattern unchanged.
 
