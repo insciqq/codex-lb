@@ -22,6 +22,8 @@ no releases, packages or images.
 
 * Pull requests opened in upstream Soju06/codex-lb: fixes, dependency and
   security updates, maintenance. Upstream feature PRs are taken case by case.
+* Own fixes for bugs observed in production, with `Upstream-PR: none` and
+  `Upstream-Issue` when an upstream report exists.
 * No functionality from other forks and no fork-specific features.
 * One fork commit per upstream PR, keeping the PR author as the commit
   author. Squash the PR's commits when it has several.
