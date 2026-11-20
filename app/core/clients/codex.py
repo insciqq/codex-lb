@@ -499,6 +499,9 @@ async def _request_via_socks_proxy(
         trust_env=False,
         skip_auto_headers=_CODEX_SKIP_AUTO_IDENTITY_HEADERS,
     )
+    # The helper owns the per-request session until it hands it to the
+    # returned wrapper; every earlier exit, cancellation included, closes it.
+    owns_session = True
     try:
         try:
             response = await session.request(method, url, **kwargs)
@@ -521,12 +524,11 @@ async def _request_via_socks_proxy(
                     failure_phase="body_read",
                     retryable_same_contract=False,
                 ) from None
-        return _SessionOwnedResponse(response, session)
-    except Exception:
-        await session.close()
-        raise
+        wrapped = _SessionOwnedResponse(response, session)
+        owns_session = False
+        return wrapped
     finally:
-        if buffer_response:
+        if owns_session:
             await session.close()
 
 

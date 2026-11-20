@@ -1077,3 +1077,57 @@ async def test_socks_proxy_connector_reuses_shared_ssl_context() -> None:
     finally:
         await connector.close()
         _reset_shared_ssl_context()
+
+
+class _RecordingSocksSession:
+    def __init__(self, request_error: BaseException | None = None) -> None:
+        self.request_error = request_error
+        self.closed = 0
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> Any:
+        del method, url, kwargs
+        if self.request_error is not None:
+            raise self.request_error
+        return _UnbufferedResponse()
+
+    async def close(self) -> None:
+        self.closed += 1
+
+
+class _UnbufferedResponse:
+    status = 200
+
+    def release(self) -> None:
+        return None
+
+
+@pytest.mark.parametrize("buffer_response", [False, True])
+@pytest.mark.asyncio
+async def test_socks_request_closes_session_when_cancelled_before_headers(monkeypatch, buffer_response):
+    session = _RecordingSocksSession(asyncio.CancelledError())
+    monkeypatch.setattr(codex_module, "_socks_proxy_connector", lambda endpoint: None)
+    monkeypatch.setattr(codex_module.aiohttp, "ClientSession", lambda **kwargs: session)
+    endpoint = ResolvedProxyEndpoint(id="socks", scheme="socks5h", host="proxy.example.test", port=1080)
+
+    with pytest.raises(asyncio.CancelledError):
+        await codex_module._request_via_socks_proxy(
+            "POST", "https://upstream.example.test", endpoint, buffer_response=buffer_response
+        )
+
+    assert session.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_socks_unbuffered_response_owns_session_until_released(monkeypatch):
+    session = _RecordingSocksSession()
+    monkeypatch.setattr(codex_module, "_socks_proxy_connector", lambda endpoint: None)
+    monkeypatch.setattr(codex_module.aiohttp, "ClientSession", lambda **kwargs: session)
+    endpoint = ResolvedProxyEndpoint(id="socks", scheme="socks5h", host="proxy.example.test", port=1080)
+
+    response = await codex_module._request_via_socks_proxy(
+        "POST", "https://upstream.example.test", endpoint, buffer_response=False
+    )
+
+    assert session.closed == 0
+    await response.release()
+    assert session.closed == 1

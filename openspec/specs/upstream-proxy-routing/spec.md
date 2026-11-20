@@ -40,6 +40,12 @@ Affected Codex upstream HTTP and websocket calls MUST use the Codex upstream cli
 - **WHEN** a caller attempts to pass runtime fingerprint kwargs such as `impersonate`, `ja3`, `akamai`, or `extra_fp`
 - **THEN** the client MUST reject the call before opening a network connection.
 
+#### Scenario: SOCKS request session is closed on every early exit
+- **GIVEN** a routed request through a SOCKS endpoint, which opens its own per-request session
+- **WHEN** the request fails, is cancelled before response headers arrive, or its body is buffered
+- **THEN** the client MUST close that session before the error or cancellation propagates
+- **AND** an unbuffered response MUST own the session until the caller releases it
+
 ### Requirement: Route metadata must be persisted for migrated upstream calls
 
 Request logs for migrated upstream calls MUST record route mode, proxy pool id, proxy endpoint id, same-pool fallback use, and fail-closed reason where applicable. The request-log API and dashboard request details MUST expose those credential-safe values to operators and MUST NOT expose proxy credentials.
