@@ -661,7 +661,7 @@ async def test_lifespan_drains_actual_audit_and_cancelled_fleet_tasks_before_res
         assert not shutdown_state.is_control_plane_task_admission_open()
         call_order.append("close_http_client")
 
-    async def _close_db() -> bool:
+    async def _close_db(**_kwargs: object) -> bool:
         assert fleet_refresh_finished.is_set()
         assert not shutdown_state.is_control_plane_task_admission_open()
         call_order.append("close_db")
@@ -900,7 +900,7 @@ async def test_lifespan_marks_bridge_membership_stale_and_records_clean_shutdown
         monkeypatch.setattr(asyncio, "wait", short_http_close_wait)
     shutdown_events: list[str] = []
 
-    async def _close_db() -> bool:
+    async def _close_db(**_kwargs: object) -> bool:
         shutdown_events.append("close_db")
         if dispose_failure:
             raise RuntimeError("dispose failed")

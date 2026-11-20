@@ -72,7 +72,7 @@ from app.core.resilience.memory_monitor import configure as configure_memory_mon
 from app.core.retention.scheduler import build_data_retention_scheduler
 from app.core.runtime_logging import install_redacting_loop_exception_handler
 from app.core.scheduling.leader_election import get_leader_election
-from app.core.shutdown import close_control_plane_task_admission
+from app.core.shutdown import close_control_plane_task_admission, remaining_post_drain_cleanup_timeout_seconds
 from app.core.timeout_invariants import validate_runtime_timeout_invariants, validate_timeout_invariants
 from app.core.usage.metadata_scheduler import build_metadata_refresh_scheduler
 from app.core.usage.refresh_scheduler import build_usage_refresh_scheduler
@@ -81,6 +81,7 @@ from app.core.utils.time import utcnow
 from app.db.session import (
     SessionLocal,
     close_db,
+    close_db_teardown_wait_seconds,
     close_session,
     init_background_db,
     init_db,
@@ -263,6 +264,60 @@ def _finish_abandoned_http_client_close(task: asyncio.Task[None]) -> None:
     exc = task.exception()
     if exc is not None:
         logger.warning("Managed HTTP client close finished with error", exc_info=exc)
+
+
+_HTTP_CLIENT_CLOSE_TIMEOUT_SECONDS = 10.0
+_METRICS_SERVER_STOP_TIMEOUT_SECONDS = 5.0
+
+
+def _essential_teardown_remaining_seconds() -> float | None:
+    """Time left before the cutoff for essential teardown, if a deadline is committed.
+
+    The cutoff is the shared shutdown deadline (drain deadline plus post-drain
+    reserve) minus the response.create dump margin, so the bounded waits below
+    always leave the dump settlement time to run before the graceful server's
+    force-exit.
+    """
+    remaining = remaining_post_drain_cleanup_timeout_seconds()
+    if remaining is None:
+        return None
+    return max(0.0, remaining - _RESPONSE_CREATE_DUMP_SHUTDOWN_MARGIN_SECONDS)
+
+
+def _http_client_close_timeout_seconds() -> float:
+    """Bound the HTTP client close by what the essential cutoff can spare.
+
+    The metrics-server stop and the ``close_db()`` registry drain run after
+    this close before the same cutoff, so the close may only use what remains
+    after their bounds. Without a committed shutdown deadline the fixed bound
+    applies.
+    """
+    remaining = _essential_teardown_remaining_seconds()
+    if remaining is None:
+        return _HTTP_CLIENT_CLOSE_TIMEOUT_SECONDS
+    spare = remaining - _METRICS_SERVER_STOP_TIMEOUT_SECONDS - close_db_teardown_wait_seconds()
+    return max(0.0, min(_HTTP_CLIENT_CLOSE_TIMEOUT_SECONDS, spare))
+
+
+def _metrics_server_stop_timeout_seconds() -> float:
+    """Bound the metrics-server stop so the ``close_db()`` registry drain still fits."""
+    remaining = _essential_teardown_remaining_seconds()
+    if remaining is None:
+        return _METRICS_SERVER_STOP_TIMEOUT_SECONDS
+    spare = remaining - close_db_teardown_wait_seconds()
+    return max(0.0, min(_METRICS_SERVER_STOP_TIMEOUT_SECONDS, spare))
+
+
+def _close_db_registry_wait_seconds() -> float:
+    """Bound the ``close_db()`` registry drain by the essential cutoff."""
+    remaining = _essential_teardown_remaining_seconds()
+    if remaining is None:
+        return close_db_teardown_wait_seconds()
+    return min(close_db_teardown_wait_seconds(), remaining)
+
+
+async def _await_metrics_server_stop(metrics_server_task: asyncio.Task[None], timeout: float) -> None:
+    await asyncio.wait_for(metrics_server_task, timeout=timeout)
 
 
 async def _close_http_client_within(timeout: float) -> None:
@@ -485,6 +540,47 @@ async def _finish_response_create_dumps_for_shutdown() -> None:
         )
 
 
+async def _finish_shutdown_after_lease_release(
+    *,
+    metrics_server_task: asyncio.Task[None] | None,
+    database_tasks_drained: bool,
+    leader_lease_release_completed: bool,
+) -> None:
+    """Close clients, stop metrics, dispose the database, then settle dumps.
+
+    Every wait before dump settlement is bounded against the essential
+    teardown cutoff, so the dump settlement starts before the graceful
+    server's force-exit even when each earlier step hits its bound.
+    ``engine.dispose()`` itself is not bounded.
+    """
+    shutdown_state = import_module("app.core.shutdown")
+    try:
+        try:
+            await close_discovered_native_egress_client()
+        finally:
+            await _close_http_client_within(_http_client_close_timeout_seconds())
+    finally:
+        try:
+            if metrics_server_task is not None:
+                await _await_metrics_server_stop(metrics_server_task, _metrics_server_stop_timeout_seconds())
+        except TimeoutError:
+            logger.warning("Timed out waiting for metrics server shutdown")
+        except Exception:
+            logger.exception("Metrics server stopped with an error")
+        finally:
+            mark_process_dead()
+            try:
+                await _close_db_and_record_clean_shutdown(
+                    database_tasks_drained=database_tasks_drained,
+                    leader_lease_release_completed=leader_lease_release_completed,
+                )
+            finally:
+                try:
+                    await _finish_response_create_dumps_for_shutdown()
+                finally:
+                    shutdown_state.mark_lifespan_completed()
+
+
 async def _close_db_and_record_clean_shutdown(
     *,
     database_tasks_drained: bool,
@@ -497,7 +593,7 @@ async def _close_db_and_record_clean_shutdown(
     drain must leave the run state unclean, because that is exactly the
     incomplete shutdown the next startup's integrity scan is for.
     """
-    sqlite_teardown_drained = await close_db()
+    sqlite_teardown_drained = await close_db(registry_wait_seconds=_close_db_registry_wait_seconds())
     if sqlite_teardown_drained and database_tasks_drained and leader_lease_release_completed:
         mark_sqlite_shutdown_clean()
 
@@ -1054,31 +1150,11 @@ async def lifespan(app: FastAPI):
         # enforced by abandoning the release task rather than awaiting a
         # potentially wedged cancellation, so shutdown always proceeds.
         leader_lease_release_completed = await _release_leader_lease_within(10)
-        try:
-            try:
-                await close_discovered_native_egress_client()
-            finally:
-                await _close_http_client_within(10)
-        finally:
-            try:
-                if metrics_server_task is not None:
-                    await asyncio.wait_for(metrics_server_task, timeout=5)
-            except TimeoutError:
-                logger.warning("Timed out waiting for metrics server shutdown")
-            except Exception:
-                logger.exception("Metrics server stopped with an error")
-            finally:
-                mark_process_dead()
-                try:
-                    await _close_db_and_record_clean_shutdown(
-                        database_tasks_drained=database_tasks_drained,
-                        leader_lease_release_completed=leader_lease_release_completed,
-                    )
-                finally:
-                    try:
-                        await _finish_response_create_dumps_for_shutdown()
-                    finally:
-                        shutdown_state.mark_lifespan_completed()
+        await _finish_shutdown_after_lease_release(
+            metrics_server_task=metrics_server_task,
+            database_tasks_drained=database_tasks_drained,
+            leader_lease_release_completed=leader_lease_release_completed,
+        )
 
 
 def create_app() -> FastAPI:

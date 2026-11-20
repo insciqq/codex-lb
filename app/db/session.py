@@ -1259,14 +1259,30 @@ async def init_db() -> None:
         raise
 
 
-async def close_db() -> bool:
-    """Dispose database engines and report whether SQLite teardown fully drained."""
+def close_db_teardown_wait_seconds() -> float:
+    """Upper bound of ``close_db()``'s wedged-teardown registry drain.
+
+    It bounds only the waits on the wedged-teardown registry, not
+    ``engine.dispose()``, which runs between them and is not bounded here.
+    """
+    return 2 * _SQLITE_TEARDOWN_TIMEOUT_SECONDS
+
+
+async def close_db(*, registry_wait_seconds: float | None = None) -> bool:
+    """Dispose database engines and report whether SQLite teardown fully drained.
+
+    ``registry_wait_seconds`` shortens the wedged-teardown registry drain below
+    ``close_db_teardown_wait_seconds()``; it never bounds ``engine.dispose()``.
+    """
     loop = asyncio.get_running_loop()
     # A teardown reclaimed as wedged can finish while engine disposal is in
     # progress and register its bookkeeping close from a done callback. Use
     # one deadline for both registry snapshots so that late work is included
     # without allowing shutdown to grow an unbounded second wait.
-    deadline = loop.time() + 2 * _SQLITE_TEARDOWN_TIMEOUT_SECONDS
+    registry_wait = close_db_teardown_wait_seconds()
+    if registry_wait_seconds is not None:
+        registry_wait = max(0.0, min(registry_wait, registry_wait_seconds))
+    deadline = loop.time() + registry_wait
     sqlite_teardown_drained = True
 
     async def _drain_wedged_teardown_registry() -> None:
