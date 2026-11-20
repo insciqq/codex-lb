@@ -448,6 +448,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_event_error_param,
     _websocket_event_error_type,
     _websocket_event_incomplete_reason,
+    _websocket_fresh_replay_payload_is_account_neutral,
     _websocket_full_resend_conflicts_with_visible_pending,
     _websocket_input_items_are_self_contained_fresh_replay,
     _websocket_owner_switch_has_other_pending_requests,
@@ -3532,6 +3533,14 @@ class _WebSocketMixin:
                     if isinstance(original_full_resend_payload, dict)
                     else original_full_resend_payload.input
                 )
+                request_state.fresh_upstream_request_account_neutral = (
+                    _websocket_fresh_replay_payload_is_account_neutral(original_full_resend_payload)
+                )
+                if original_input_item_count and original_input_fingerprint is not None:
+                    request_state.fresh_upstream_request_input_identity = (
+                        original_input_item_count,
+                        original_input_fingerprint,
+                    )
             request_state.fresh_upstream_request_is_retry_safe = bool(
                 request_state.fresh_upstream_request_text is not None
                 and isinstance(original_full_resend_input, list)

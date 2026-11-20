@@ -477,10 +477,10 @@ def _prepare_websocket_request_state_for_visible_output_replay(
         _install_fresh_replay_body(
             request_state,
             fresh_request_text,
-            account_neutral=_websocket_request_text_is_account_neutral_fresh_replay(
-                _anchor_free_replay_wire_text(fresh_request_text)
+            account_neutral=(
+                _websocket_fresh_replay_text_is_account_neutral(request_state)
                 if request_state.previous_response_id is not None
-                else fresh_request_text
+                else _websocket_request_text_is_account_neutral_fresh_replay(fresh_request_text)
             ),
             release_owner_pin=(
                 request_state.previous_response_id is None or request_state.proxy_injected_previous_response_id
@@ -523,6 +523,34 @@ def _websocket_request_text_is_account_neutral_fresh_replay(request_text: str | 
     return responses_payload_is_account_neutral_fresh_replay(cast(dict[str, JsonValue], payload))
 
 
+def _websocket_fresh_replay_payload_is_account_neutral(payload: ResponsesRequest) -> bool:
+    """Return whether a retained anchor-free replay body may move accounts.
+
+    Judged on the client's request with its replay-relevant metadata intact
+    (tool-call namespaces, which the wire text drops, mark owner-bound
+    history), minus only the tool-search ids the wire text omits.
+    """
+    replay_payload = dict(payload.to_replay_safety_payload())
+    # The direct WebSocket frame discriminator is not part of the request.
+    if replay_payload.pop("type", "response.create") != "response.create":
+        return False
+    input_items = replay_payload.get("input")
+    if isinstance(input_items, list):
+        replay_payload["input"] = [_strip_websocket_replayed_tool_search_id(item) for item in input_items]
+    return responses_payload_is_account_neutral_fresh_replay(replay_payload)
+
+
+def _websocket_fresh_replay_text_is_account_neutral(request_state: "_WebSocketRequestState") -> bool:
+    """Return whether the retained fresh body may move accounts.
+
+    Uses the decision recorded from the client's request when there is one;
+    otherwise the retained text is judged as it stands.
+    """
+    if request_state.fresh_upstream_request_account_neutral is not None:
+        return request_state.fresh_upstream_request_account_neutral
+    return _websocket_request_text_is_account_neutral_fresh_replay(request_state.fresh_upstream_request_text)
+
+
 def _bind_websocket_request_dispatch_owner(
     request_state: "_WebSocketRequestState",
     *,
@@ -550,10 +578,7 @@ def _install_verified_fresh_replay(
     if require_proxy_injected_previous_response_id and not request_state.proxy_injected_previous_response_id:
         return None
     fresh_request_text = request_state.fresh_upstream_request_text
-    # Neutrality is judged on what goes out: the anchor-free wire text.
-    account_neutral = _websocket_request_text_is_account_neutral_fresh_replay(
-        _anchor_free_replay_wire_text(fresh_request_text)
-    )
+    account_neutral = _websocket_fresh_replay_text_is_account_neutral(request_state)
     if require_account_neutral and not account_neutral:
         return None
     if not account_neutral and (request_state.replay_required_account_id or request_state.preferred_account_id) is None:
@@ -606,9 +631,15 @@ def _install_fresh_replay_body(
     request_state.proxy_injected_previous_response_id = False
     request_state.fresh_upstream_request_is_retry_safe = False
     request_state.responses_lite_model = request_state.fresh_upstream_request_responses_lite_model
-    # Continuity records the client's own items; only the wire text of a body
-    # that replaces an anchored one drops the tool-search ids.
-    _refresh_websocket_request_input_fingerprint_from_text(request_state)
+    # Continuity records the client's own items: the identity captured from
+    # the client input when the body was retained, since the wire text has
+    # normalized it. Only the wire text of a body that replaces an anchored
+    # one drops the tool-search ids.
+    fresh_input_identity = request_state.fresh_upstream_request_input_identity
+    if fresh_input_identity is not None:
+        request_state.input_item_count, request_state.input_full_fingerprint = fresh_input_identity
+    else:
+        _refresh_websocket_request_input_fingerprint_from_text(request_state)
     if replaces_anchored_body:
         request_state.request_text = _anchor_free_replay_wire_text(fresh_request_text)
     return request_state.request_text
@@ -1147,8 +1178,8 @@ def _websocket_auth_request_can_switch_account(request_state: _WebSocketRequestS
         and request_state.fresh_upstream_request_text
     ):
         return False
-    return _websocket_request_text_is_account_neutral_fresh_replay(
-        _anchor_free_replay_wire_text(request_state.fresh_upstream_request_text)
+    return _websocket_fresh_replay_text_is_account_neutral(
+        request_state
     ) and not _websocket_fresh_request_blocks_account_switch(request_state)
 
 

@@ -6169,9 +6169,11 @@ def test_responses_websocket_client_full_resend_miss_surfaces_previous_response_
     assert recovered_upstream.sent_text == []
 
 
+@pytest.mark.parametrize("owner_bound_history", [False, True], ids=["portable", "owner-bound"])
 def test_backend_responses_websocket_replays_tool_search_pair_to_replacement_account(
     app_instance,
     monkeypatch,
+    owner_bound_history,
 ):
     owner_upstream = _SequencedUpstreamWebSocket(
         [],
@@ -6203,6 +6205,9 @@ def test_backend_responses_websocket_replays_tool_search_pair_to_replacement_acc
         [],
         deferred_message_batches=[_websocket_response_batch("resp_ws_tool_search_replay")],
     )
+    if owner_bound_history:
+        # The owner-bound turn stays on its owner, which keeps refusing it.
+        owner_upstream._deferred_message_batches.append(list(owner_upstream._deferred_message_batches[-1]))
     accounts = {
         "owner": SimpleNamespace(id="acct_ws_tool_search_owner", codex_installation_id="owner-installation"),
         "replacement": SimpleNamespace(
@@ -6297,6 +6302,22 @@ def test_backend_responses_websocket_replays_tool_search_pair_to_replacement_acc
         "status": "completed",
     }
     followup_input = {"role": "user", "content": [{"type": "input_text", "text": "continue with that result"}]}
+    # A namespaced call binds the history to its owner. The wire text drops
+    # the namespace, so portability must be judged before that happens.
+    owner_bound_items = (
+        [
+            {
+                "type": "function_call",
+                "namespace": "collaboration",
+                "name": "spawn_agent",
+                "arguments": "{}",
+                "call_id": "call_owner_bound",
+            },
+            {"type": "function_call_output", "call_id": "call_owner_bound", "output": "ok"},
+        ]
+        if owner_bound_history
+        else []
+    )
     expected_replay_input = [
         historical_input,
         {key: value for key, value in tool_search_call.items() if key != "id"},
@@ -6333,14 +6354,24 @@ def test_backend_responses_websocket_replays_tool_search_pair_to_replacement_acc
                             historical_input,
                             tool_search_call,
                             tool_search_output,
+                            *owner_bound_items,
                             followup_input,
                         ],
                         "stream": True,
                     }
                 )
             )
-            replay_created = json.loads(websocket.receive_text())
-            replay_completed = json.loads(websocket.receive_text())
+            if owner_bound_history:
+                events, _disconnect = _receive_until_terminal(websocket)
+            else:
+                replay_created = json.loads(websocket.receive_text())
+                replay_completed = json.loads(websocket.receive_text())
+
+    if owner_bound_history:
+        assert events[-1]["type"] in {"response.failed", "error"}
+        assert opened_accounts == [accounts["owner"].id]
+        assert replacement_upstream.sent_text == []
+        return
 
     assert replay_created["type"] == "response.created"
     assert replay_created["response"]["id"] == "resp_ws_tool_search_replay"

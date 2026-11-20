@@ -1206,6 +1206,15 @@ class _WebSocketRequestState:
     # ``responses_lite_model``; otherwise the replay's ``response.created``
     # would be recorded as a Lite acceptance for a non-Lite upstream request.
     fresh_upstream_request_responses_lite_model: str | None = None
+    # Whether ``fresh_upstream_request_text`` may move accounts, decided from
+    # the client's request while its replay-relevant metadata (such as tool
+    # call namespaces, which the wire text drops) is still present. ``None``
+    # leaves the decision to the text itself.
+    fresh_upstream_request_account_neutral: bool | None = None
+    # Item count and fingerprint of the client input behind
+    # ``fresh_upstream_request_text``; installing that body keeps recording
+    # them instead of re-deriving them from the normalized wire text.
+    fresh_upstream_request_input_identity: tuple[int, str] | None = None
     request_stage: str = "first_turn"
     preferred_account_id: str | None = None
     # Once an account-bound body has been dispatched, retries remain pinned to

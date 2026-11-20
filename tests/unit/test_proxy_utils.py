@@ -27037,6 +27037,16 @@ async def test_prepare_websocket_response_create_request_sanitizes_injected_anch
             "status": "completed",
         },
     ]
+    # Owner-bound history: the wire text drops this call's namespace.
+    namespaced_call: JsonValue = {
+        "type": "function_call",
+        "namespace": "collaboration",
+        "name": "spawn_agent",
+        "arguments": "{}",
+        "call_id": "call_owner_bound",
+    }
+    namespaced_output: JsonValue = {"type": "function_call_output", "call_id": "call_owner_bound", "output": "ok"}
+    historical_input = [*historical_input, namespaced_call, namespaced_output]
     replay_safe_historical_input: list[JsonValue] = [
         historical_input[0],
         {
@@ -27051,6 +27061,8 @@ async def test_prepare_websocket_response_create_request_sanitizes_injected_anch
             "tools": [],
             "status": "completed",
         },
+        {key: value for key, value in cast(dict[str, JsonValue], namespaced_call).items() if key != "namespace"},
+        namespaced_output,
     ]
     new_input: JsonValue = {"role": "user", "content": [{"type": "input_text", "text": "next question"}]}
     continuity_state = proxy_service._WebSocketContinuityState(
@@ -27084,19 +27096,32 @@ async def test_prepare_websocket_response_create_request_sanitizes_injected_anch
     assert prepared.request_state.proxy_injected_previous_response_id is True
     assert prepared.request_state.fresh_upstream_request_is_retry_safe is True
     assert prepared.request_state.fresh_upstream_request_text is not None
-    # The retained body is the client's own input; continuity and the
-    # recovery journal see the items with their ids.
+    # The retained body is the client's own input as it goes on the wire
+    # (tool-call namespaces dropped), tool-search ids still included.
     fresh_payload = json.loads(prepared.request_state.fresh_upstream_request_text)
     assert "previous_response_id" not in fresh_payload
-    assert fresh_payload["input"] == [*historical_input, new_input]
-    # Installing it as the anchor-free replay strips the ids on the wire only;
-    # the recorded fingerprint stays that of the client's items, so the
-    # client's next unchanged resend still matches.
-    wire_text = proxy_service._prepare_websocket_request_state_for_account_switch(prepared.request_state)
+    assert fresh_payload["input"] == [
+        *historical_input[:3],
+        {key: value for key, value in cast(dict[str, JsonValue], namespaced_call).items() if key != "namespace"},
+        namespaced_output,
+        new_input,
+    ]
+    # The namespaced call binds the history to its owner, although the wire
+    # text no longer shows the namespace: it must not move accounts.
+    assert proxy_service._prepare_websocket_request_state_for_account_switch(prepared.request_state) is None
+    # Replayed on its owner, the anchor-free body drops the tool-search ids on
+    # the wire only; the recorded identity stays that of the client's items,
+    # so the client's next unchanged resend still matches.
+    prepared.request_state.preferred_account_id = "acct_owner"
+    wire_text = websocket_helpers_module._install_verified_fresh_replay(
+        prepared.request_state,
+        require_account_neutral=False,
+    )
     assert wire_text == prepared.request_state.request_text
     assert wire_text is not None
     assert json.loads(wire_text)["input"] == [*replay_safe_historical_input, new_input]
     assert prepared.request_state.previous_response_id is None
+    assert prepared.request_state.input_item_count == len(historical_input) + 1
     assert prepared.request_state.input_full_fingerprint == proxy_service._fingerprint_input_items(
         [*historical_input, new_input]
     )
