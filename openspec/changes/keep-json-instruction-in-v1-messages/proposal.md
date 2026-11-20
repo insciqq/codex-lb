@@ -1,20 +1,23 @@
 ## Why
 
-JSON mode keeps a `system` or `developer` message that mentions JSON in
-Responses `input`, because upstream only counts JSON mentions inside input
-messages. `/v1/responses` also accepts a Chat-style `messages` alias, and its
+JSON mode keeps a `system` message that mentions JSON in Responses `input`,
+because upstream only counts JSON mentions inside input messages, and
+`developer` messages stay in `input` because `previous_response_id` does not
+carry `instructions` into chained responses. `/v1/responses` and
+`/v1/responses/compact` also accept a Chat-style `messages` alias, and its
 message coercion hoisted every instruction message into `instructions` before
-that rule ran, so JSON-mode requests sent through `messages` still lost their
-only JSON mention.
+those rules ran, so JSON-mode requests sent through `messages` lost their only
+JSON mention and developer messages sent through `messages` were dropped from
+chained responses.
 
 ## What Changes
 
-- Keep instruction roles in `input` while coercing `/v1/responses` `messages`
-  for JSON-mode requests, so the existing Responses normalization decides
-  which instruction stays in `input`.
+- Keep instruction roles in `input` while coercing `/v1/responses` and
+  `/v1/responses/compact` `messages`, so the Responses normalization decides
+  which instruction moves into `instructions`, exactly as for `input`.
 
 ## Impact
 
 - Affected capability: `responses-api-compat`.
 - Affected code: `app/core/openai/v1_requests.py`.
-- Requests without JSON mode and compact requests are unchanged.
+- `system` messages sent through `messages` are hoisted as before.

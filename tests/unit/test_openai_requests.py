@@ -1327,11 +1327,37 @@ def test_v1_instructions_merge():
     payload = {
         "model": "gpt-5.1",
         "instructions": "primary",
-        "messages": [{"role": "developer", "content": "secondary"}],
+        "messages": [{"role": "system", "content": "secondary"}],
     }
     request = V1ResponsesRequest.model_validate(payload).to_responses_request()
 
     assert request.instructions == "primary\nsecondary"
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_v1_messages_keep_developer_messages_in_input(compact: bool) -> None:
+    # ``previous_response_id`` carries ``input`` but not ``instructions``, so the
+    # messages alias must keep developer messages in input like ``input`` does.
+    payload: dict[str, JsonValue] = {
+        "model": "gpt-5.1",
+        "instructions": "primary",
+        "messages": [
+            {"role": "developer", "content": "dev rules"},
+            {"role": "system", "content": "sys rules"},
+            {"role": "user", "content": "hi"},
+        ],
+    }
+    request = (
+        V1ResponsesCompactRequest.model_validate(payload).to_compact_request()
+        if compact
+        else V1ResponsesRequest.model_validate({**payload, "previous_response_id": "resp_1"}).to_responses_request()
+    )
+
+    assert request.instructions == "primary\nsys rules"
+    assert request.to_payload()["input"] == [
+        {"role": "developer", "content": [{"type": "input_text", "text": "dev rules"}]},
+        {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+    ]
 
 
 def test_v1_messages_and_input_conflict():

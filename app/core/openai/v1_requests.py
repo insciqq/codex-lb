@@ -113,16 +113,15 @@ class V1ResponsesRequest(BaseModel):
         input_text: str | None = input_value if isinstance(input_value, str) else None
 
         if messages is not None:
-            # JSON mode only counts a JSON mention inside input messages. Keep
-            # instruction roles in input so ResponsesRequest can leave such an
-            # instruction there and still hoist the others.
-            text_format = self.text.format if self.text is not None else None
-            preserve_instruction_roles = text_format is not None and text_format.type == "json_object"
+            # Keep instruction roles in input and let ResponsesRequest apply the
+            # same rules as for ``input``: developer messages stay in input
+            # (``previous_response_id`` does not carry ``instructions``), system
+            # messages are hoisted unless JSON mode needs their JSON mention.
             try:
                 instruction_text, input_items = coerce_messages(
                     instruction_text,
                     messages,
-                    preserve_instruction_roles=preserve_instruction_roles,
+                    preserve_instruction_roles=True,
                 )
             except ClientPayloadError:
                 raise
@@ -181,8 +180,14 @@ class V1ResponsesCompactRequest(BaseModel):
         input_text: str | None = input_value if isinstance(input_value, str) else None
 
         if messages is not None:
+            # As for Responses requests: ResponsesCompactRequest hoists system
+            # messages and keeps developer messages in input.
             try:
-                instruction_text, input_items = coerce_messages(instruction_text, messages)
+                instruction_text, input_items = coerce_messages(
+                    instruction_text,
+                    messages,
+                    preserve_instruction_roles=True,
+                )
             except ClientPayloadError:
                 raise
             except ValueError as exc:
