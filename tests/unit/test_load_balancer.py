@@ -28,7 +28,13 @@ from app.core.balancer import (
 from app.core.balancer.logic import DRAIN_PRIMARY_THRESHOLD_PCT, PROBE_QUIET_SECONDS
 from app.core.usage.quota import apply_usage_quota
 from app.db.models import Account, AccountStatus, UsageHistory
-from app.modules.proxy._load_balancer.tunables import RoutingTunables
+from app.modules.api_keys.service import (
+    API_KEY_USAGE_RESERVATION_DEFAULT_OUTPUT_TOKENS,
+    API_KEY_USAGE_RESERVATION_MAX_TOKEN_BUDGET,
+    ApiKeyRequestUsageBudget,
+)
+from app.modules.proxy._load_balancer.tunables import MAX_LEASE_ESTIMATE_TOKENS, RoutingTunables
+from app.modules.proxy._service.api_key_usage import _estimated_lease_tokens_from_request_usage_budget
 from app.modules.proxy.load_balancer import (
     RuntimeState,
     _additional_quota_applies_to_plan,
@@ -2362,6 +2368,47 @@ def test_state_from_account_preserves_pressure_for_active_routing(monkeypatch):
     assert state.used_percent == 96.5
     assert state.priority_used_percent is None
     assert _state_above_sticky_budget_threshold(state, 95.0) is True
+
+
+def test_max_lease_estimate_matches_request_lease_estimator():
+    # The largest estimate current callers produce: they never pass an output
+    # budget, so a request leases its capped input plus the default output.
+    largest = _estimated_lease_tokens_from_request_usage_budget(ApiKeyRequestUsageBudget(input_tokens=10**9))
+    assert largest == MAX_LEASE_ESTIMATE_TOKENS
+    assert MAX_LEASE_ESTIMATE_TOKENS == (
+        API_KEY_USAGE_RESERVATION_MAX_TOKEN_BUDGET + API_KEY_USAGE_RESERVATION_DEFAULT_OUTPUT_TOKENS
+    )
+
+
+@pytest.mark.parametrize("plan_type", ["plus", "prolite", "pro"])
+@pytest.mark.parametrize("streams", [1, 3])
+def test_state_from_account_stream_lease_pressure_is_plan_independent_points(monkeypatch, plan_type, streams):
+    now = 1_700_000_000.0
+    monkeypatch.setattr("time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    state = _state_from_account(
+        account=_make_test_account(status=AccountStatus.ACTIVE, plan_type=plan_type),
+        primary_entry=_make_test_usage(
+            window="primary",
+            used_percent=20.0,
+            reset_at=int(now + 3600),
+            window_minutes=300,
+            recorded_at=_epoch_to_naive_utc(now - 30),
+        ),
+        secondary_entry=_make_test_usage(
+            window="secondary",
+            used_percent=40.0,
+            reset_at=int(now + 3 * 24 * 3600),
+            window_minutes=10080,
+            recorded_at=_epoch_to_naive_utc(now - 30),
+        ),
+        runtime=RuntimeState(inflight_streams=streams, leased_tokens=streams * float(MAX_LEASE_ESTIMATE_TOKENS)),
+    )
+
+    # Default weights: 2.5 points per in-flight stream plus 1.0 point per max-size lease, on every plan.
+    assert state.used_percent == pytest.approx(20.0 + streams * 3.5)
+    assert state.secondary_used_percent == pytest.approx(40.0 + streams * 3.5)
 
 
 def test_state_from_account_clears_stale_advisory_account_reset_for_active_account(monkeypatch):

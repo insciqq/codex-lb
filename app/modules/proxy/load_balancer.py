@@ -2558,14 +2558,11 @@ def _state_from_account(
     inflight_pressure_pct = (
         runtime.inflight_response_creates + runtime.inflight_streams
     ) * tunables.inflight_penalty_pct
-    leased_token_pressure_pct = 0.0
     long_window_key = "secondary"
     if effective_secondary_entry is not None and effective_secondary_entry.window == "monthly":
         long_window_key = "monthly"
     capacity_credits = usage_core.capacity_for_plan(account.plan_type, long_window_key) or 0.0
-    if capacity_credits > 0.0 and runtime.leased_tokens > 0:
-        leased_token_pressure_pct = runtime.leased_tokens * tunables.lease_token_weight / capacity_credits * 100.0
-    pressure_pct = inflight_pressure_pct + leased_token_pressure_pct
+    pressure_pct = inflight_pressure_pct + tunables.lease_pressure_pct(runtime.leased_tokens)
     effective_used_percent = None if used_percent is None else min(100.0, used_percent + pressure_pct)
     effective_secondary_used_percent = None if secondary_used is None else min(100.0, secondary_used + pressure_pct)
     usage_exhaustion_evidence_status = status in (AccountStatus.QUOTA_EXCEEDED, AccountStatus.RATE_LIMITED)
