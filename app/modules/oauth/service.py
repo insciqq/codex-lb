@@ -89,14 +89,24 @@ async def _has_active_proxy_bindings(session: AsyncSession) -> bool:
         return False
 
 
+def _oauth_target_not_found() -> OAuthError:
+    return OAuthError(
+        "oauth_account_not_found",
+        "The account selected for reauthentication no longer exists.",
+        status_code=404,
+    )
+
+
+async def _require_oauth_target(session: AsyncSession, account_id: str) -> None:
+    account = await session.get(Account, account_id)
+    if account is None or account.delete_requested_at is not None:
+        raise _oauth_target_not_found()
+
+
 async def _oauth_route(*, account_id: str | None = None) -> ResolvedUpstreamRoute | None:
     async with get_background_session() as session:
-        if account_id is not None and await session.get(Account, account_id) is None:
-            raise OAuthError(
-                "oauth_account_not_found",
-                "The account selected for reauthentication no longer exists.",
-                status_code=404,
-            )
+        if account_id is not None:
+            await _require_oauth_target(session, account_id)
         strict = await _has_active_proxy_bindings(session) if account_id is None else False
         try:
             return await resolve_upstream_route(
@@ -489,6 +499,12 @@ class OauthService:
     async def start_oauth(self, request: OauthStartRequest) -> OauthStartResponse:
         force_method = (request.force_method or "").lower()
         intended_account_id = clean_account_identity_part(request.account_id)
+        if intended_account_id:
+            # Reject an unknown target before any flow state, callback server
+            # or upstream request exists; the browser flow has no server-side
+            # upstream call until its callback arrives.
+            async with get_background_session() as session:
+                await _require_oauth_target(session, intended_account_id)
         if not force_method and not intended_account_id:
             accounts = await self._accounts_repo.list_accounts()
             if accounts:

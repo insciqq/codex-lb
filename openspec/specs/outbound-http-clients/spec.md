@@ -431,9 +431,10 @@ Targeted OAuth operations MUST resolve the intended local account's current rout
 - **THEN** no token exchange or device request MUST be dispatched
 
 #### Scenario: Unknown target fails before network I/O
-- **GIVEN** the intended local account does not exist
-- **WHEN** a server-side OAuth operation is attempted
+- **GIVEN** the intended local account does not exist or is pending deletion
+- **WHEN** a browser or device OAuth flow is started for it, or a server-side OAuth operation is attempted
 - **THEN** it MUST fail before upstream I/O
+- **AND** the dashboard OAuth endpoint MUST answer HTTP 404 `oauth_account_not_found`, not a 502 gateway error
 
 #### Scenario: OAuth fails closed when bindings exist but no default pool is configured
 - **GIVEN** an OAuth flow has no intended local account and active account bindings exist

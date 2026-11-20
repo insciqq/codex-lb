@@ -33,6 +33,19 @@ router = APIRouter(
 )
 
 
+# Locally raised OAuth errors whose status describes the dashboard request.
+# Every other OAuthError carries the upstream provider status (for example
+# 401 from the token endpoint) and is reported as a 502 gateway failure.
+_LOCAL_OAUTH_ERROR_CODES = frozenset({"oauth_account_not_found"})
+
+
+def _oauth_error_response(exc: OAuthError) -> JSONResponse:
+    status_code = 502
+    if exc.code in _LOCAL_OAUTH_ERROR_CODES and exc.status_code is not None:
+        status_code = exc.status_code
+    return JSONResponse(status_code=status_code, content=dashboard_error(exc.code, exc.message))
+
+
 @router.post("/start", response_model=OauthStartResponse)
 async def start_oauth(
     request: OauthStartRequest,
@@ -42,10 +55,7 @@ async def start_oauth(
     try:
         return await context.service.start_oauth(request)
     except OAuthError as exc:
-        return JSONResponse(
-            status_code=502,
-            content=dashboard_error(exc.code, exc.message),
-        )
+        return _oauth_error_response(exc)
     except NotImplementedError:
         return JSONResponse(
             status_code=501,
@@ -89,10 +99,7 @@ async def manual_callback(
     try:
         return await context.service.manual_callback(request.callback_url, flow_id=request.flow_id)
     except OAuthError as exc:
-        return JSONResponse(
-            status_code=502,
-            content=dashboard_error(exc.code, exc.message),
-        )
+        return _oauth_error_response(exc)
     except Exception:
         logger.exception("manual_callback failed")
         return JSONResponse(

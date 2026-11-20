@@ -192,14 +192,28 @@ async def test_targeted_inactive_pool_never_opens_device_connection(async_client
     device.assert_not_awaited()
 
 
-async def test_unknown_target_never_opens_device_connection(async_client, monkeypatch):
+@pytest.mark.parametrize("force_method", ["device", "browser", None])
+@pytest.mark.parametrize("target", ["missing", "pending-delete"])
+async def test_unknown_target_is_rejected_at_start(async_client, monkeypatch, force_method, target):
     await _seed_accounts()
+    if target == "pending-delete":
+        async with SessionLocal() as session:
+            assert await AccountsRepository(session).begin_delete("direct")
+        account_id = "direct"
+    else:
+        account_id = target
     device = AsyncMock()
+    browser = AsyncMock()
     monkeypatch.setattr(oauth, "request_device_code", device)
-    response = await async_client.post("/api/oauth/start", json={"forceMethod": "device", "accountId": "missing"})
-    assert response.status_code == 502
+    monkeypatch.setattr(oauth.OauthService, "_start_browser_flow", browser)
+    body = {"accountId": account_id}
+    if force_method is not None:
+        body["forceMethod"] = force_method
+    response = await async_client.post("/api/oauth/start", json=body)
+    assert response.status_code == 404, response.text
     assert response.json()["error"]["code"] == "oauth_account_not_found", response.json()
     device.assert_not_awaited()
+    browser.assert_not_awaited()
 
 
 @pytest.mark.parametrize("returned_account", ["proxied", "direct"])
