@@ -38,7 +38,8 @@ sorted by number, keys in the order below, empty lists omitted, lists sorted):
   [pr.<number>]
   title = "..."               upstream title (sync)
   state = "open"              upstream state at snapshot: open | closed | merged (sync)
-  status = "pending"          required; a trailer-taken PR stores pending
+  status = "pending"          required; a trailer-taken PR stores pending (merged-upstream
+                              once upstream merged it; it still renders as taken)
   by = <number>               superseded only: the replacing PR (an entry or a taken PR)
   issues = [<number>, ...]    linked upstream issues
   reason = "..."              public, single-line, neutral English
@@ -59,8 +60,10 @@ Issue statuses set in data: pending, fixed-upstream, not-applicable (reason),
 out-of-scope, not-fixed (reason), partial (reason; only for an issue the trailers
 reference). Derived: fixed.
 
-After a rebuild drops a pick, `sync` reconciles: a pending PR merged upstream becomes
-merged-upstream, an orphaned `rework` is removed, an orphaned `partial` becomes pending.
+`sync` reconciles: a pending PR merged upstream becomes merged-upstream (a taken one
+renders as taken with a drop-on-rebuild note until the rebuild drops the pick); after a
+rebuild an orphaned `rework` is removed and an orphaned `partial` becomes pending. Entries
+recorded as open that no listing returns are refetched (at most 50 per run).
 
 Own changes: commits with `Upstream-PR: none` except those whose subject type is
 docs, test, ci or style, or whose `Fork-Only` is tooling, policy, ci or spec-fix.
@@ -128,7 +131,16 @@ REASON_REQUIRED = {"pr": {"rejected", "not-applicable"}, "issue": {"not-applicab
 OWN_SKIP_TYPES = {"docs", "test", "ci", "style"}
 OWN_SKIP_FORK_ONLY = {"tooling", "policy", "ci", "spec-fix"}
 FORK_ONLY_LABELS = {"production-fix": "bug found in production or review", "security-gate": "security gate"}
-MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]!<&|])")
+# Untrusted text (upstream titles, commit subjects) must render literally under GFM.
+# Backslash escapes cover the inline syntax (emphasis, strikethrough, links, images,
+# HTML, entities, table pipes). Placed on the ":" of "://" and the "." of "www." they
+# also stop URL and www autolinks, which are recognised while parsing. Email
+# autolinks are matched on the parsed text, where escapes are gone, so a zero-width
+# space entity after "@" breaks them instead; it renders as nothing.
+MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]!<&|~])")
+AUTOLINK_SCHEME = re.compile(r":(?=//)")
+AUTOLINK_WWW = re.compile(r"(?i)\b(www)\.")
+VANISHED_FETCH_LIMIT = 50
 
 Data = dict[str, Any]
 Fetch = Callable[[str], Any]
@@ -337,11 +349,14 @@ def validate_data(data: Data, trailers: Trailers) -> list[str]:
         if "by" in entry and status != "superseded":
             errors.append(f"{label}: by is only valid for superseded")
         if number in trailers.taken:
-            if status != "pending":
+            if status not in ("pending", "merged-upstream"):
                 subject = trailers.taken[number][0].subject
                 errors.append(
-                    f'{label}: taken by commit {subject!r}; data must keep status = "pending", not {status!r}'
+                    f"{label}: taken by commit {subject!r}; data may only set pending or merged-upstream,"
+                    f" not {status!r}"
                 )
+            elif status == "merged-upstream" and entry.get("state") != "merged":
+                errors.append(f'{label}: status merged-upstream requires state = "merged"')
             continue
         if "rework" in entry:
             errors.append(f"{label}: rework is only valid for a taken PR (was the pick dropped? run sync)")
@@ -408,7 +423,10 @@ def pending_entries(data: Data, trailers: Trailers) -> tuple[list[int], list[int
 
 def _title(text: str | None) -> str:
     """Upstream titles and commit subjects: shown literally, never as live markdown."""
-    return MARKDOWN_SPECIAL.sub(r"\\\1", " ".join((text or "").split())) or "-"
+    text = MARKDOWN_SPECIAL.sub(r"\\\1", " ".join((text or "").split()))
+    text = AUTOLINK_SCHEME.sub(r"\\:", text)
+    text = AUTOLINK_WWW.sub(r"\1\\.", text)
+    return text.replace("@", "@&#8203;") or "-"
 
 
 def _text(text: str | None) -> str:
@@ -455,6 +473,8 @@ def render_document(data: Data, trailers: Trailers) -> str:
         status = pr_status(number, entry, trailers)
         pr_counts[status] += 1
         notes = []
+        if number in trailers.taken and entry.get("state") == "merged":
+            notes.append("merged upstream; drop on rebuild")
         if entry.get("rework"):
             notes.append(f"changes: {_text(entry['rework'])}")
         if status == "superseded":
@@ -481,7 +501,8 @@ def render_document(data: Data, trailers: Trailers) -> str:
         notes = []
         fixing = sorted(trailers.issue_prs.get(number, set()))
         if fixing:
-            notes.append("fixed by PR " + ", ".join(pr_link(n) for n in fixing))
+            verb = "fixed" if status == "fixed" else "partly fixed"
+            notes.append(f"{verb} by PR " + ", ".join(pr_link(n) for n in fixing))
         if number in trailers.issue_own:
             notes.append("own fix")
         linked = sorted(issue_links[number] - set(fixing))
@@ -610,8 +631,9 @@ def sync_data(data: Data, trailers: Trailers, fetch: Fetch, snapshot: date, full
     ):
         kind, state = _item_state(item)
         seen[kind][item["number"]] = (_clean_title(item), state)
-        if kind == "pr" and state == "closed" and (item.get("closed_at") or "")[:10] >= closed_since:
-            wanted["pr"].add(item["number"])
+        closed_in_window = kind == "pr" and state == "closed" and (item.get("closed_at") or "")[:10] >= closed_since
+        if state == "open" or closed_in_window:
+            wanted[kind].add(item["number"])
     wanted["pr"].update(trailers.taken)
     wanted["pr"].update(e["by"] for e in data["pr"].values() if e.get("status") == "superseded" and e.get("by"))
     wanted["issue"].update(trailers.issue_prs)
@@ -619,9 +641,21 @@ def sync_data(data: Data, trailers: Trailers, fetch: Fetch, snapshot: date, full
     for kind in ("pr", "issue"):
         unknown = {n for n in wanted[kind] if n not in data[kind]}
         unknown |= {n for n, entry in data[kind].items() if entry.get("state") is None}
+        # An entry recorded as open that neither listing returns was closed before the
+        # listing window, deleted or transferred; refetch a bounded number per run.
+        vanished = sorted(n for n, e in data[kind].items() if e.get("state") == "open" and n not in seen[kind])
+        if len(vanished) > VANISHED_FETCH_LIMIT:
+            report.append(
+                f"{len(vanished)} open {kind} entries are missing from the listings; refreshed"
+                f" {VANISHED_FETCH_LIMIT}, run sync again for the rest"
+            )
+        unknown |= set(vanished[:VANISHED_FETCH_LIMIT])
         for number in sorted(unknown - set(seen[kind])):
             try:
                 item = fetch(f"{repo}/{'pulls' if kind == 'pr' else 'issues'}/{number}")
+                home = f"https://github.com/{registry['upstream']}/"
+                if not str(item.get("html_url") or home).startswith(home):
+                    raise NotFound(f"moved to {item.get('html_url')}")
             except NotFound as exc:
                 report.append(f"{kind} {number}: not found upstream, skipped ({exc})")
                 entry = data[kind].get(number)
@@ -664,6 +698,10 @@ def reconcile(data: Data, trailers: Trailers) -> list[str]:
         if number in trailers.taken:
             if entry.get("state") == "merged":
                 report.append(f"pr {number}: taken PR merged upstream: drop on rebuild")
+                if entry.get("status") in (None, "pending"):
+                    entry["status"] = "merged-upstream"
+            elif entry.get("status") is None:
+                entry["status"] = "pending"
             continue
         if "rework" in entry:
             del entry["rework"]

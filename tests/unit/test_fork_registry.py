@@ -134,11 +134,18 @@ def test_taken_pr_without_entry_uses_commit_subject(repo: Path) -> None:
 
 
 def test_titles_and_subjects_are_not_live_markdown(repo: Path) -> None:
+    # Each escape was checked against cmark-gfm: the cell renders as the literal text.
     commit(repo, "fix(api): handle `<think>` & [x](y) *bold*", "Upstream-PR: none", "Fork-Only: production-fix")
-    write_data(repo, '[pr.30]\ntitle = "![img](http://x/y.png) _a_ \\\\ <b>"\nstate = "open"\nstatus = "pending"\n')
+    title = "![img](http://x/y.png) _a_ \\\\ <b> ~~s~~ www.example.org a@example.org"
+    write_data(repo, f'[pr.30]\ntitle = "{title}"\nstate = "open"\nstatus = "pending"\n')
     doc = render(repo)
-    assert "| \\!\\[img\\](http://x/y.png) \\_a\\_ \\\\ \\<b> |" in doc
+    expected = (
+        "| \\!\\[img\\](http\\://x/y.png) \\_a\\_ \\\\ \\<b> \\~\\~s\\~\\~ www\\.example.org a@&#8203;example.org |"
+    )
+    assert expected in doc
     assert "| fix(api): handle \\`\\<think>\\` \\& \\[x\\](y) \\*bold\\* | - |" in doc
+    # Generated links stay live.
+    assert "| [30](https://github.com/owner/repo/pull/30) |" in doc
 
 
 def test_check_fails_when_document_is_missing_or_untracked(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -351,6 +358,8 @@ def test_sync_adds_missing_entries_and_refreshes_changed_ones() -> None:
             _item(302, "closed", closed="2025-12-01T00:00:00Z"),
             # Recorded as closed already; its title changed upstream.
             {**_item(303, "closed", closed="2025-11-01T00:00:00Z"), "title": "Renamed"},
+            # Opened after the open listing was read: only the second listing has it.
+            _item(402, pr=False),
         ],
         "repos/o/r/pulls/10": {"number": 10, "title": "PR 10", "state": "closed", "merged_at": "2026-01-05T00:00:00Z"},
         "repos/o/r/issues/5": {"number": 5, "title": "Issue 5", "state": "closed"},
@@ -367,10 +376,10 @@ def test_sync_adds_missing_entries_and_refreshes_changed_ones() -> None:
 
     assert set(data["pr"]) == set(range(100, 199)) | {201, 300, 301, 303, 10}
     assert data["pr"][300] == {"title": "Item 300", "state": "closed", "status": "pending"}
-    assert data["pr"][10] == {"title": "PR 10", "state": "merged", "status": "pending"}
+    assert data["pr"][10] == {"title": "PR 10", "state": "merged", "status": "merged-upstream"}
     assert data["pr"][301] == {"title": "Item 301", "state": "merged", "status": "merged-upstream"}
     assert data["pr"][303]["title"] == "Renamed"
-    assert set(data["issue"]) == {400, 401, 5}
+    assert set(data["issue"]) == {400, 401, 402, 5}
     assert data["issue"][401]["title"] == "multi line title"
     assert data["registry"]["snapshot"] == date(2026, 1, 7)
     assert "pr 301: open -> merged" in report
@@ -398,16 +407,62 @@ def test_sync_skips_entries_gone_upstream() -> None:
         SINCE.format(since="2026-01-01", page=1): [],
         "repos/o/r/pulls/7": registry.NotFound("HTTP 404"),
         "repos/o/r/pulls/8": registry.NotFound("HTTP 410"),
+        "repos/o/r/pulls/9": {**_item(9), "html_url": "https://github.com/other/repo/pull/9"},
+        "repos/o/r/pulls/11": {**_item(11, "closed"), "html_url": "https://github.com/o/r/pull/11"},
     }
     patch = registry.Patch("abc", "fix: taken", ["8"], ["h"], [], [])
     trailers = registry.Trailers([patch], taken={8: [patch]})
-    data = _data(p7={"status": "pending"})
+    # 7 has never been synced; 9 (transferred) and 11 (closed before the window) were open.
+    data = _data(
+        p7={"status": "pending"},
+        p9={"title": "Item 9", "state": "open", "status": "pending"},
+        p11={"title": "Item 11", "state": "open", "status": "pending"},
+    )
 
     report = registry.sync_data(data, trailers, _fetcher(responses, []), date(2026, 1, 7))
 
-    assert data["pr"] == {7: {"status": "pending", "state": "closed"}}
+    assert data["pr"] == {
+        7: {"status": "pending", "state": "closed"},
+        9: {"title": "Item 9", "state": "closed", "status": "pending"},
+        11: {"title": "Item 11", "state": "closed", "status": "pending"},
+    }
     assert any(line.startswith("pr 7: not found upstream") for line in report)
     assert any(line.startswith("pr 8: not found upstream") for line in report)
+    assert any(
+        line.startswith("pr 9: not found upstream, skipped (moved to https://github.com/other") for line in report
+    )
+    assert "pr 11: open -> closed (closed without merge)" in report
+
+
+def test_sync_caps_refetches_of_vanished_open_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(registry, "VANISHED_FETCH_LIMIT", 2)
+    responses: dict[str, Any] = {OPEN.format(page=1): [], SINCE.format(since="2026-01-01", page=1): []}
+    responses.update({f"repos/o/r/pulls/{n}": _item(n, "closed") for n in (1, 2)})
+    data = _data(**{f"p{n}": {"title": "x", "state": "open", "status": "pending"} for n in (1, 2, 3)})
+
+    report = registry.sync_data(data, registry.Trailers([]), _fetcher(responses, []), date(2026, 1, 7))
+
+    assert [data["pr"][n]["state"] for n in (1, 2, 3)] == ["closed", "closed", "open"]
+    assert "3 open pr entries are missing from the listings; refreshed 2, run sync again for the rest" in report
+
+
+def test_taken_pr_merged_upstream_renders_as_taken_with_drop_note(repo: Path) -> None:
+    write_data(repo, '[pr.10]\ntitle = "fix: upstream"\nstate = "merged"\nstatus = "merged-upstream"\n')
+    doc = render(repo)
+    assert "| fix: upstream | merged | taken | merged upstream; drop on rebuild; issues [5]" in doc
+    assert run(repo, "check") == 0
+
+
+def test_taken_pr_merged_upstream_is_promoted_by_reconcile() -> None:
+    patch = registry.Patch("abc", "fix: taken", ["10"], ["h"], [], [])
+    trailers = registry.Trailers([patch], taken={10: [patch]})
+    data = _data(p10={"title": "x", "state": "merged", "status": "pending"})
+    report = registry.reconcile(data, trailers)
+    assert data["pr"][10]["status"] == "merged-upstream"
+    assert report == ["pr 10: taken PR merged upstream: drop on rebuild"]
+    assert registry.validate_data(data, trailers) == []
+    data["pr"][10]["state"] = "open"
+    assert registry.validate_data(data, trailers) == ['[pr.10]: status merged-upstream requires state = "merged"']
 
 
 REBUILD_ENTRIES = """
@@ -435,7 +490,7 @@ def test_rebuild_that_drops_a_merged_pick_is_reconciled_by_sync(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_data(repo, REBUILD_ENTRIES)
-    render(repo)
+    assert "| partial | partly fixed by PR [10](https://github.com/owner/repo/pull/10); Half done. |" in render(repo)
     assert run(repo, "check") == 0
 
     # Rebuild: upstream merged PR 10, so the new queue drops its pick.
@@ -454,6 +509,8 @@ def test_rebuild_that_drops_a_merged_pick_is_reconciled_by_sync(
         "repos/owner/repo/issues?state=all&sort=updated&direction=desc&since=2026-01-02T00:00:00Z"
         "&per_page=100&page=1": [{**_item(10, "closed", merged=True), "title": "fix: upstream title"}],
         "repos/owner/repo/issues/6": {"number": 6, "title": "Bug six", "state": "open"},
+        "repos/owner/repo/pulls/13": {"number": 13, "title": "fix: older attempt", "state": "open"},
+        "repos/owner/repo/issues/5": {"number": 5, "title": "Bug five", "state": "open"},
     }
     monkeypatch.setattr(registry, "gh_api", _fetcher(responses, []))
     assert run(repo, "sync", "--snapshot", "2026-01-08") == 0

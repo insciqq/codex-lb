@@ -83,7 +83,9 @@ convenient. `check --strict` also fails on a stale document, on `pending`
 entries and on missing or invalid trailers.
 
 Every entry carries a `status`; a taken PR or a trailer-fixed issue stores
-`pending`, because its real status comes from the trailers. After a rebuild,
+`pending`, because its real status comes from the trailers. `sync` sets a PR
+that upstream merged to `merged-upstream`; while a branch still carries its
+pick it shows as taken with a "drop on rebuild" note. After a rebuild,
 set `[registry].base` to the new upstream `main` and run `sync` and `render`:
 `sync` turns a dropped pick that upstream merged into `merged-upstream`,
 removes its orphaned `rework` and resets an orphaned issue `partial` to
