@@ -10538,6 +10538,13 @@ async def test_backend_responses_http_bridge_retries_precreated_server_overload(
     assert connect_count == 2
 
 
+async def _wait_for_response_create_dumps() -> None:
+    """Dumps are written off the event loop; wait for the ones in flight."""
+    from app.modules.proxy._service import response_create
+
+    await asyncio.gather(*response_create._response_create_dump_tasks)
+
+
 @pytest.mark.asyncio
 async def test_v1_responses_http_bridge_rejects_oversized_response_create_before_upstream(
     async_client,
@@ -10575,6 +10582,7 @@ async def test_v1_responses_http_bridge_rejects_oversized_response_create_before
     assert payload["error"]["param"] == "input"
     assert "response.create is too large for upstream websocket" in payload["error"]["message"]
 
+    await _wait_for_response_create_dumps()
     meta_files = list(tmp_path.glob("*.meta.json"))
     assert len(meta_files) == 1
     meta = json.loads(meta_files[0].read_text(encoding="utf-8"))
@@ -10584,12 +10592,14 @@ async def test_v1_responses_http_bridge_rejects_oversized_response_create_before
 
     duplicate_response = await async_client.post("/v1/responses", json=request_json)
     assert duplicate_response.status_code == 400
+    await _wait_for_response_create_dumps()
     assert len(list(tmp_path.glob("*.response-create.json.gz"))) == 1
     assert len(list(tmp_path.glob("*.meta.json"))) == 1
 
     meta_files[0].unlink()
     orphan_retry_response = await async_client.post("/v1/responses", json=request_json)
     assert orphan_retry_response.status_code == 400
+    await _wait_for_response_create_dumps()
     complete_pairs = [
         dump_path
         for dump_path in tmp_path.glob("*.response-create.json.gz")

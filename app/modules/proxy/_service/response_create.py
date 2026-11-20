@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
 import logging
@@ -7,6 +8,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -36,6 +38,7 @@ from app.core.clients.proxy import (
     _ws_transport_payload_budget_bytes,
     apply_codex_installation_metadata,
 )
+from app.core.clock import REAL_SCHEDULER, Scheduler
 from app.core.config.settings import DEFAULT_HOME_DIR, get_settings
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
@@ -61,6 +64,61 @@ _RESPONSE_CREATE_DUMP_SUFFIX = ".response-create.json.gz"
 _RESPONSE_CREATE_META_SUFFIX = ".meta.json"
 _RESPONSE_CREATE_DUMP_SHA_SLUG_LEN = 16
 _RESPONSE_CREATE_DUMP_MAX_PAIRS = 20
+# Dumps run in a worker thread so hashing and gzip of a payload of up to the
+# upstream response.create limit never stall the event loop. They are written
+# one at a time, in submission order, so fingerprint dedup sees every earlier
+# dump. At most this many may be pending (the one being written included); each
+# pins its payload text until written, so a dump requested beyond the bound is
+# dropped with a warning that carries its fingerprint.
+_RESPONSE_CREATE_DUMP_MAX_PENDING = 4
+# The meta summary parses the whole payload and re-serializes its fields, which
+# holds the GIL -- and so the event loop -- for the whole parse even in a worker
+# thread. Above this size the summary is skipped; the payload file has it all.
+_RESPONSE_CREATE_DUMP_SUMMARY_MAX_BYTES = 1 << 20
+_response_create_dump_tasks: list[asyncio.Task[bool]] = []
+
+
+@dataclass(frozen=True, slots=True)
+class _ResponseCreateDumpSource:
+    """The request fields a dump records, detached from the live request state.
+
+    A background dump holds only these, so the rest of the request state (replay
+    buffers, futures, reservations) is not kept alive until the write finishes.
+    """
+
+    request_text: str | None
+    request_id: str
+    request_log_id: str | None
+    response_id: str | None
+    transport: str
+    model: str | None
+    reasoning_effort: str | None
+    service_tier: str | None
+    requested_service_tier: str | None
+    actual_service_tier: str | None
+    previous_response_id: str | None
+    awaiting_response_created: bool
+    replay_count: int
+
+    @classmethod
+    def of(cls, request_state: _WebSocketRequestState) -> _ResponseCreateDumpSource:
+        return cls(
+            request_text=request_state.request_text,
+            request_id=request_state.request_id,
+            request_log_id=request_state.request_log_id,
+            response_id=request_state.response_id,
+            transport=request_state.transport,
+            model=request_state.model,
+            reasoning_effort=request_state.reasoning_effort,
+            service_tier=request_state.service_tier,
+            requested_service_tier=request_state.requested_service_tier,
+            actual_service_tier=request_state.actual_service_tier,
+            previous_response_id=request_state.previous_response_id,
+            awaiting_response_created=request_state.awaiting_response_created,
+            replay_count=request_state.replay_count,
+        )
+
+
 _RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS = (
     "x-codex-turn-metadata",
     "x-openai-subagent",
@@ -638,8 +696,7 @@ def _enforce_response_create_size_limit(request_state: _WebSocketRequestState) -
 
     payload = _response_create_too_large_error_envelope(payload_size, max_bytes)
     error = payload["error"]
-    write_response_create_dump = _service_global_or("_write_response_create_dump", _write_response_create_dump)
-    write_response_create_dump(
+    _submit_response_create_dump(
         request_state,
         account_id_value=None,
         error_code=cast(str, error.get("code") or "payload_too_large"),
@@ -670,8 +727,7 @@ def _maybe_dump_oversized_response_create_request(
     )
     if not should_dump_oversized_response_create(error_code, error_message):
         return
-    write_response_create_dump = _service_global_or("_write_response_create_dump", _write_response_create_dump)
-    write_response_create_dump(
+    _submit_response_create_dump(
         request_state,
         account_id_value=account_id_value,
         error_code=error_code,
@@ -680,8 +736,106 @@ def _maybe_dump_oversized_response_create_request(
     )
 
 
-def _write_response_create_dump(
+def _submit_response_create_dump(
     request_state: _WebSocketRequestState,
+    *,
+    account_id_value: str | None,
+    error_code: str,
+    error_message: str | None,
+    log_prefix: str,
+    scheduler: Scheduler = REAL_SCHEDULER,
+) -> None:
+    """Write a response.create dump without blocking the running event loop.
+
+    Hashing and gzip-compressing a payload near the upstream size limit takes
+    seconds of CPU, so on a running loop the write is queued behind earlier
+    dumps and runs in a worker thread with a snapshot of the recorded request
+    fields. Without a running loop (synchronous callers) it is written inline.
+    """
+    write_response_create_dump = _service_global_or("_write_response_create_dump", _write_response_create_dump)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        write_response_create_dump(
+            request_state,
+            account_id_value=account_id_value,
+            error_code=error_code,
+            error_message=error_message,
+            log_prefix=log_prefix,
+        )
+        return
+    # A dump queued on a loop that has since closed can never finish.
+    _response_create_dump_tasks[:] = [task for task in _response_create_dump_tasks if task.get_loop() is loop]
+    if len(_response_create_dump_tasks) >= _RESPONSE_CREATE_DUMP_MAX_PENDING:
+        request_text = request_state.request_text or ""
+        logger.warning(
+            (
+                "Dropped %s response.create dump request_id=%s request_log_id=%s request_text_sha256=%s bytes=%s: "
+                "%s dumps already pending"
+            ),
+            log_prefix,
+            request_state.request_id,
+            request_state.request_log_id,
+            sha256(request_text.encode("utf-8")).hexdigest(),
+            len(request_text.encode("utf-8")),
+            len(_response_create_dump_tasks),
+        )
+        return
+    previous = _response_create_dump_tasks[-1] if _response_create_dump_tasks else None
+    task = scheduler.create_task(
+        _write_response_create_dump_after(
+            previous,
+            write_response_create_dump,
+            _ResponseCreateDumpSource.of(request_state),
+            account_id_value=account_id_value,
+            error_code=error_code,
+            error_message=error_message,
+            log_prefix=log_prefix,
+        )
+    )
+    _response_create_dump_tasks.append(task)
+    task.add_done_callback(_finish_response_create_dump)
+
+
+async def _write_response_create_dump_after(
+    previous: asyncio.Task[bool] | None,
+    write_response_create_dump: Any,
+    source: _ResponseCreateDumpSource,
+    **kwargs: Any,
+) -> bool:
+    if previous is not None:
+        # Whatever the earlier dump's outcome, this one starts after it.
+        await asyncio.wait((previous,))
+    return bool(await asyncio.to_thread(write_response_create_dump, source, **kwargs))
+
+
+async def drain_response_create_dumps(timeout_seconds: float, *, scheduler: Scheduler = REAL_SCHEDULER) -> bool:
+    """Wait for pending background dumps to finish; ``False`` if any is still pending.
+
+    Shutdown calls this so the process does not exit between a payload and its
+    ``.meta.json``. A write runs in a worker thread and cannot be cancelled, so
+    on timeout the caller can only report it.
+    """
+    pending = set(_response_create_dump_tasks)
+    if not pending:
+        return True
+    if timeout_seconds > 0:
+        await scheduler.wait(pending, timeout=timeout_seconds)
+    return all(task.done() for task in pending)
+
+
+def _finish_response_create_dump(task: asyncio.Task[bool]) -> None:
+    if task in _response_create_dump_tasks:
+        _response_create_dump_tasks.remove(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Failed to write response.create dump", exc_info=exc)
+
+
+def _write_response_create_dump(
+    request_state: _WebSocketRequestState | _ResponseCreateDumpSource,
     *,
     account_id_value: str | None,
     error_code: str,
@@ -760,15 +914,18 @@ def _write_response_create_dump(
         },
     }
 
-    try:
-        parsed_payload = json.loads(request_text)
-    except json.JSONDecodeError as exc:
-        meta["parse_error"] = str(exc)
+    summary_max_bytes = int(
+        _service_global_or("_RESPONSE_CREATE_DUMP_SUMMARY_MAX_BYTES", _RESPONSE_CREATE_DUMP_SUMMARY_MAX_BYTES)
+    )
+    if len(payload_bytes) > summary_max_bytes:
+        meta["summary"] = {"skipped": "payload larger than the summary limit", "limit_bytes": summary_max_bytes}
     else:
-        if isinstance(parsed_payload, dict):
-            meta["summary"] = _summarize_response_create_payload(parsed_payload)
+        try:
+            parsed_payload = json.loads(request_text)
+        except json.JSONDecodeError as exc:
+            meta["parse_error"] = str(exc)
         else:
-            meta["summary"] = {"payload_type": type(parsed_payload).__name__}
+            meta["summary"] = _summarize_parsed_response_create_payload(parsed_payload)
 
     max_pairs = _response_create_dump_max_pairs()
     # Trim any pre-existing over-cap backlog before the new write. If the volume
@@ -806,6 +963,12 @@ def _write_response_create_dump(
         len(payload_bytes),
     )
     return True
+
+
+def _summarize_parsed_response_create_payload(parsed_payload: object) -> JsonValue:
+    if isinstance(parsed_payload, dict):
+        return _summarize_response_create_payload(cast(dict[str, JsonValue], parsed_payload))
+    return {"payload_type": type(parsed_payload).__name__}
 
 
 def _should_dump_oversized_response_create(error_code: str, error_message: str | None) -> bool:

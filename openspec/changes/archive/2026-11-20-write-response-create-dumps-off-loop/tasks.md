@@ -1,0 +1,17 @@
+## 1. Off-loop write
+
+- [x] 1.1 Submit dumps to a worker thread with a snapshot of the recorded request fields
+- [x] 1.2 Write dumps one at a time in request order through a bounded queue; log a dropped dump with its fingerprint
+- [x] 1.3 Skip the whole-payload meta summary above a fixed size
+
+## 2. Shutdown
+
+- [x] 2.1 Wait for pending dumps within the remaining drain deadline; warn on timeout
+
+## 3. Tests
+
+- [x] 3.1 Rejections return while dumps are held; distinct payloads are written one at a time
+- [x] 3.2 A retry queued behind its dump is suppressed with its fingerprint and existing path
+- [x] 3.3 A dump beyond the bound is dropped with its fingerprint
+- [x] 3.4 A large payload is not parsed for the summary
+- [x] 3.5 Lifespan shutdown completes the dump pair before moving on

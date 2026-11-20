@@ -110,6 +110,7 @@ from app.modules.health import api as health_api
 from app.modules.model_sources import api as model_sources_api
 from app.modules.oauth import api as oauth_api
 from app.modules.proxy import api as proxy_api
+from app.modules.proxy._service.response_create import drain_response_create_dumps
 from app.modules.proxy.cap_partitioning import refresh_cap_partition
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeSessionCoordinator
 from app.modules.proxy.durable_bridge_repository import (
@@ -882,6 +883,13 @@ async def lifespan(app: FastAPI):
             failure_message="Failed to drain proxy persistence tasks during shutdown",
         )
         database_tasks_drained = database_tasks_drained and final_proxy_persistence_drained
+        # A response.create debug dump is written in a worker thread; let an
+        # admitted one finish so its payload and meta pair is not cut in half.
+        remaining_drain_seconds = shutdown_state.remaining_drain_timeout_seconds() or 0.0
+        if not await drain_response_create_dumps(remaining_drain_seconds):
+            logger.warning(
+                "A response.create debug dump was still being written at shutdown; its files may be incomplete"
+            )
 
         # Cancel heartbeat and age the shared ring row near expiry.
         if heartbeat_task is not None:

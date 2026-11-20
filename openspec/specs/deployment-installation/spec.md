@@ -243,7 +243,7 @@ Every project-owned launch path for the main application MUST disable server-lev
 
 ### Requirement: Response-create dump directory is bounded without configuration
 
-The oversized response-create dump directory under `<data-dir>/debug/response-create-dumps` MUST be bounded on the base install path with no operator configuration. When the service captures an oversized `response.create` payload, it MUST NOT write a new dump if a dump for the same payload fingerprint is already stored, and after storing a dump it MUST remove the oldest stored dumps so that at most a fixed number of dump pairs remain. Each dump is a pair of a gzipped payload file and a meta file that MUST be added and removed together. Suppressing a duplicate MUST remain operator-visible in the logs, because the recurrence signal is the reason the dump path exists.
+The oversized response-create dump directory under `<data-dir>/debug/response-create-dumps` MUST be bounded on the base install path with no operator configuration. When the service captures an oversized `response.create` payload, it MUST NOT write a new dump if a dump for the same payload fingerprint is already stored, and after storing a dump it MUST remove the oldest stored dumps so that at most a fixed number of dump pairs remain. Each dump is a pair of a gzipped payload file and a meta file that MUST be added and removed together. Suppressing a duplicate MUST remain operator-visible in the logs, because the recurrence signal is the reason the dump path exists. The service MUST write a dump without blocking request handling: the rejection is returned to the client while the dump completes asynchronously, and the dump is logged as saved only once both files are written. Dumps MUST be written one at a time in the order they were requested, so duplicate suppression applies to a retry that arrives while the earlier dump is still being written. At most a small fixed number of dumps MAY wait to be written; a dump requested while that bound is reached MUST be dropped and logged as a warning with its request id and payload fingerprint, so an operator knows that request has no dump. The meta file MAY omit the payload field summary for a payload above a fixed size, because computing it requires parsing the whole payload; the meta file MUST still record the payload size and fingerprint. Graceful shutdown MUST wait, within its remaining drain deadline, for dumps that are being written or waiting, and MUST log a warning if the deadline expires first, because a dump pair may then be incomplete.
 
 #### Scenario: Repeated identical payloads are stored once
 
@@ -255,9 +255,36 @@ The oversized response-create dump directory under `<data-dir>/debug/response-cr
 
 #### Scenario: Distinct payloads are stored separately
 
-- **GIVEN** an oversized `response.create` payload has already been dumped
+- **GIVEN** an oversized `response.create` payload has already been dumped or is waiting to be dumped
 - **WHEN** a different oversized payload is dumped
 - **THEN** a separate dump pair is written for it
+
+#### Scenario: Dump does not block the rejection
+
+- **GIVEN** an oversized `response.create` payload is rejected
+- **WHEN** its dump is written
+- **THEN** the rejection reaches the client without waiting for the dump to be hashed, compressed, or written
+
+#### Scenario: Retry arriving during its dump is suppressed as a duplicate
+
+- **GIVEN** the dump of an oversized payload is still being written
+- **WHEN** a byte-identical retry is rejected
+- **THEN** its dump waits for the first one and is then suppressed as a duplicate
+- **AND** the suppression is logged with the payload fingerprint and the path of the existing dump
+
+#### Scenario: Dump beyond the waiting bound is dropped
+
+- **GIVEN** the maximum number of dumps are being written or waiting
+- **WHEN** another oversized payload is rejected
+- **THEN** the rejection is returned as usual and no dump is written for it
+- **AND** a warning names that request and its payload fingerprint
+
+#### Scenario: Shutdown lets a dump in progress finish
+
+- **GIVEN** a dump is being written when graceful shutdown begins
+- **WHEN** shutdown drains the service
+- **THEN** it waits for that dump and any waiting dumps within the remaining drain deadline before it finishes
+- **AND** if the deadline expires first it logs a warning that the dump may be incomplete
 
 #### Scenario: Oldest dumps are pruned once the directory is full
 
