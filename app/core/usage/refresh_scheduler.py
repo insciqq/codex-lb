@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Protocol, cast
 
 from app.core.balancer.logic import RATE_LIMITED_MIN_COOLDOWN_SECONDS
+from app.core.metrics.accounts import publish_account_status_counts
 from app.core.plan_types import normalize_account_plan_type
 from app.core.resilience.toggles import resolve_resilience_toggles
 from app.core.scheduling.leader_election_handle import get_leader_election as _get_leader_election
@@ -218,7 +219,11 @@ class UsageRefreshScheduler:
                 async with get_background_session() as session:
                     usage_repo = UsageRepository(session)
                     accounts_repo = AccountsRepository(session)
-                    accounts = _ordered_usage_refresh_accounts(await accounts_repo.list_accounts())
+                    all_accounts = await accounts_repo.list_accounts()
+                    # Leader-only, but it also covers status writes no other read sees
+                    # (background recovery, reauth downgrades) on an otherwise idle replica.
+                    publish_account_status_counts(account.status for account in all_accounts)
+                    accounts = _ordered_usage_refresh_accounts(all_accounts)
                     selected_account, cycle_complete = self._select_next_account(accounts)
                     if selected_account is not None:
                         selected_account_ids = [selected_account.id]

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
+import subprocess
 import sys
 import types
 from collections.abc import Iterator
@@ -184,6 +187,77 @@ def test_cap_partition_replicas_gauge_has_no_multiprocess_mode_in_single_process
     gauge = prometheus_module.cap_partition_replicas
     assert gauge is not None
     assert gauge.multiprocess_mode is None
+
+
+def test_accounts_total_gauge_uses_livemostrecent_in_multiprocess_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(tmp_path))
+    prometheus_module, _ = _load_metrics_modules(monkeypatch, prometheus_client_module=_fake_prometheus_client_module())
+
+    gauge = prometheus_module.accounts_total
+    assert gauge.labelnames == ("status",)
+    # Every worker counts the same accounts table: "liveall" would export one
+    # series per PID (duplicating the inventory), "livesum" would multiply it.
+    assert gauge.multiprocess_mode == "livemostrecent"
+
+
+_ACCOUNTS_WORKER = """
+import os
+import sys
+from app.core.metrics.prometheus import accounts_total
+for status in ("active", "rate_limited", "quota_exceeded", "paused", "reauth_required", "deactivated"):
+    accounts_total.labels(status=status).set(int(sys.argv[1]) if status == "active" else 0)
+print(os.getpid())
+"""
+
+_ACCOUNTS_SCRAPE = """
+import json
+import sys
+from prometheus_client.multiprocess import mark_process_dead
+from app.core.metrics.prometheus import make_scrape_registry
+for pid in sys.argv[1:]:
+    mark_process_dead(int(pid))
+print(json.dumps([
+    [sample.labels, sample.value]
+    for family in make_scrape_registry().collect()
+    if family.name == "codex_lb_accounts_total"
+    for sample in family.samples
+]))
+"""
+
+
+def test_accounts_total_multiprocess_scrape_reports_newest_live_worker(tmp_path) -> None:
+    pytest.importorskip("prometheus_client")
+    env = {**os.environ, "PROMETHEUS_MULTIPROC_DIR": str(tmp_path)}
+
+    def run(script: str, *args: str) -> str:
+        return subprocess.run(
+            [sys.executable, "-c", script, *args],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout.strip()
+
+    def scrape_active(*dead_pids: str) -> float | None:
+        samples = json.loads(run(_ACCOUNTS_SCRAPE, *dead_pids))
+        if not samples:
+            return None
+        assert all("pid" not in labels for labels, _ in samples)
+        assert sorted(labels["status"] for labels, _ in samples) == sorted(
+            ("active", "rate_limited", "quota_exceeded", "paused", "reauth_required", "deactivated")
+        )
+        return next(value for labels, value in samples if labels["status"] == "active")
+
+    first = run(_ACCOUNTS_WORKER, "3")
+    second = run(_ACCOUNTS_WORKER, "2")
+    assert scrape_active() == 2  # newest observation, neither the sum nor the max
+    newest = run(_ACCOUNTS_WORKER, "0")
+    assert scrape_active() == 0  # a newer zero replaces older nonzero counts
+    assert scrape_active(newest) == 2  # a dead worker's observation is dropped
+    assert scrape_active(second, first) is None
 
 
 @pytest.mark.asyncio

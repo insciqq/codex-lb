@@ -80,6 +80,18 @@ def test_grafana_error_rate_aggregates_request_series_before_division() -> None:
     )
 
 
+def test_grafana_account_status_shows_one_series_per_status() -> None:
+    dashboard = json.loads((_CHART_DIR / "dashboards" / "codex-lb.json").read_text())
+    panel = next(panel for panel in dashboard["panels"] if panel["title"] == "Account Status")
+
+    # Every replica reports the same shared inventory: take one value per
+    # status instead of one stat per replica (and never sum replicas).
+    assert panel["targets"][0]["expr"] == (
+        'max by (status) (codex_lb_accounts_total{namespace="$namespace",job=~"$job"})'
+    )
+    assert panel["targets"][0]["legendFormat"] == "{{status}}"
+
+
 def test_grafana_latency_quantiles_aggregate_selected_bucket_series_by_le() -> None:
     latency_queries = {
         (dashboard_path.name, panel["title"], target["legendFormat"]): target["expr"]

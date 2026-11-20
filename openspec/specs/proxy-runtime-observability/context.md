@@ -18,6 +18,21 @@ See `openspec/specs/proxy-runtime-observability/spec.md` for normative requireme
   installation-specific datasource UIDs out of chart values while routing all
   four SQL panels through one explicit selection.
 
+- **Account inventory gauge reuses existing reads (issue 2426):** `codex_lb_accounts_total{status}` was declared but never set. It is now set from three full account listings that already exist, so it needs no extra query:
+  - the routing-availability snapshot refresh;
+  - the load balancer's selection-input account read;
+  - the scheduler leader's listing at the start of each usage-refresh tick.
+
+  The routing refresh alone would miss most status writes: rate-limit, quota and reauthentication writes, background cooldown recovery, and balancer marks made after the selection read do not bump `account_routing`. Freshness differs by instance:
+  - On the scheduler leader, an out-of-band write is reported within one usage-refresh tick (the gap between tick starts is at most the usage refresh interval, 60 s by default, plus the previous tick's own work), even with no traffic, including in a single-instance deployment.
+  - A non-leader replica runs no usage-refresh ticks. It reports such writes only on its own next selection rebuild (when it serves traffic) or its next `account_routing` refresh, so an idle non-leader can lag. Read the leader's series, or use `max by (status)` as the bundled dashboard does, rather than any single idle replica.
+
+  A scrape-time database refresh was rejected: the scrape server lives in the application lifespan, and a per-scrape refresh would race the routing snapshot. The routing refresh publishes before its awaited session close, so an older refresh that finishes late cannot overwrite newer counts. Metric errors are logged and never abort the refresh.
+
+  Multiprocess mode uses `livemostrecent` instead of `liveall`. `liveall` exported one series per worker PID for the same shared table. `livemostrecent` keeps the newest write per status label; that is not an atomic snapshot across labels. `mark_process_dead` removes dead workers' files. Several workers sharing one metrics directory is outside the supported topology; the mode only keeps such a setup from duplicating the inventory.
+
+  An availability gauge (routing-eligible accounts) is a separate feature and is not part of this fix.
+
 ## Operational Notes
 
 - Use request ids to correlate inbound proxy logs, outbound upstream traces, and client-visible failures.
