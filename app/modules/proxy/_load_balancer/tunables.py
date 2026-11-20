@@ -31,6 +31,13 @@ DEFAULT_ERROR_RATE_WEIGHTING_ENABLED = True
 DEFAULT_INFLIGHT_PENALTY_PCT = 2.5
 DEFAULT_LEASE_TOKEN_WEIGHT = 1.0
 DEFAULT_LEASE_TTL_SECONDS = 900.0
+# Largest per-request lease estimate: the 8,192-token input cap plus the
+# 2,048-token default output of ``_estimated_lease_tokens_from_request_usage_budget``.
+# A lease of this size adds ``lease_token_weight`` percentage points of usage.
+# Kept here rather than imported from ``app.modules.api_keys.service`` so the
+# balancer does not depend on the API-key service; a unit test pins it to
+# those reservation constants.
+MAX_LEASE_ESTIMATE_TOKENS = 8_192 + 2_048
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +49,15 @@ class RoutingTunables:
     inflight_penalty_pct: float = DEFAULT_INFLIGHT_PENALTY_PCT
     lease_token_weight: float = DEFAULT_LEASE_TOKEN_WEIGHT
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+
+    def lease_pressure_pct(self, leased_tokens: float) -> float:
+        """Percentage points of usage for in-flight leases, on every plan alike.
+
+        Like the in-flight penalty this is in percentage points: a max-size
+        lease adds ``lease_token_weight`` points. Plan capacity is in credits,
+        not tokens, so it plays no part here.
+        """
+        return self.lease_token_weight * leased_tokens / MAX_LEASE_ESTIMATE_TOKENS
 
 
 def resolve_routing_tunables(

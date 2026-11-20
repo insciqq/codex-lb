@@ -13,6 +13,7 @@ from app.core.cache.invalidation import (
     NAMESPACE_ACCOUNT_SELECTION,
     get_cache_invalidation_poller,
 )
+from app.core.metrics.accounts import publish_account_status_counts
 from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal, close_session
 
@@ -156,15 +157,24 @@ class RoutingAvailabilityCache:
         namespace version unacknowledged and retries on the next poll cycle, so
         a transient failure cannot make a replica permanently miss a pause,
         deletion, or deactivation.
+
+        The same rows also feed ``codex_lb_accounts_total``. Accounts pending
+        deletion stay in the routing snapshot (they are DEACTIVATED, hence
+        unavailable) but are left out of the counts, as they are of every
+        account listing.
         """
         marks_before_refresh = frozenset(self._local_marks)
         factory = self._session_factory or SessionLocal
         session = factory()
         try:
-            result = await session.execute(select(Account.id, Account.status))
-            snapshot: dict[str, AccountStatus] = {account_id: status for account_id, status in result.all()}
+            result = await session.execute(select(Account.id, Account.status, Account.delete_requested_at))
+            rows = result.all()
+            # Publish before the awaited close: a concurrent refresh that read
+            # later must not have its newer counts overwritten by these rows.
+            publish_account_status_counts(status for _, status, deleted_at in rows if deleted_at is None)
         finally:
             await close_session(session)
+        snapshot: dict[str, AccountStatus] = {account_id: status for account_id, status, _ in rows}
         self._snapshot = snapshot
         self._local_marks = {
             account_id

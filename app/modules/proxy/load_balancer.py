@@ -42,6 +42,7 @@ from app.core.config.dashboard_overrides import with_dashboard_overrides
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
+from app.core.metrics.accounts import publish_account_status_counts
 from app.core.metrics.prometheus import (
     PROMETHEUS_AVAILABLE,
     account_cap_rejections_total,
@@ -64,6 +65,7 @@ from app.core.usage.refresh_policy import usage_freshness_horizon_seconds
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import Account, AccountStatus, AdditionalUsageHistory, StickySessionKind, UsageHistory
 from app.db.snapshot import clone_row
+from app.modules.proxy._load_balancer import quota_recovery
 from app.modules.proxy._load_balancer.error_rate import (
     ErrorRateWeightingPolicy,
     error_rate_weight_multiplier,
@@ -1198,6 +1200,7 @@ class LoadBalancer:
 
         async with self._repo_factory() as repos:
             all_accounts = await repos.accounts.list_accounts()
+            publish_account_status_counts(account.status for account in all_accounts)
             quota_planner_repo = getattr(repos, "quota_planner", None)
             get_quota_planner_settings = getattr(quota_planner_repo, "get_settings", None)
             if callable(get_quota_planner_settings):
@@ -1713,8 +1716,10 @@ class LoadBalancer:
         lock = await self._get_account_lock(account.id)
         async with lock:
             state = self._state_for(account)
+            quota_recovery.preserve_non_quota_error(self._runtime[account.id], state)
             handle_rate_limit(state, error)
             self._sync_runtime_state(account, state)
+            self._runtime[account.id].quota_error_count += 1
             async with self._repo_factory() as repos:
                 await self._persist_state(repos.accounts, account, state)
             self._selection_inputs_cache.invalidate()
@@ -1797,6 +1802,7 @@ class LoadBalancer:
             state.error_count = max(state.error_count + count, minimum_error_count)
             state.last_error_at = self._clock.time()
             self._sync_runtime_state(account, state)
+            quota_recovery.record_non_quota_error(self._runtime[account.id], state, minimum_error_count)
             runtime = self._runtime.get(account.id)
             record_outcome_locked(self._runtime[account.id], state.last_error_at, success=False, count=count)
             if runtime and runtime.health_tier == HEALTH_TIER_PROBING:
@@ -1811,8 +1817,7 @@ class LoadBalancer:
             runtime = self._runtime.setdefault(account.id, RuntimeState())
             record_outcome_locked(runtime, self._clock.time(), success=True)
             if runtime and runtime.error_count > 0:
-                runtime.error_count = 0
-                runtime.last_error_at = None
+                quota_recovery.clear_error_history(runtime)
                 runtime.version += 1
                 runtime.health_version += 1
             if runtime and runtime.health_tier == HEALTH_TIER_PROBING:
@@ -1905,8 +1910,7 @@ class LoadBalancer:
 
             was_probe_eligible = runtime.health_tier == HEALTH_TIER_PROBING
             if was_probe_eligible and (runtime.error_count > 0 or runtime.last_error_at is not None):
-                runtime.error_count = 0
-                runtime.last_error_at = None
+                quota_recovery.clear_error_history(runtime)
                 runtime.version += 1
                 runtime.health_version += 1
 
@@ -1923,8 +1927,7 @@ class LoadBalancer:
             if runtime.health_tier != HEALTH_TIER_PROBING:
                 return
             if not was_probe_eligible and (runtime.error_count > 0 or runtime.last_error_at is not None):
-                runtime.error_count = 0
-                runtime.last_error_at = None
+                quota_recovery.clear_error_history(runtime)
                 runtime.version += 1
                 runtime.health_version += 1
 
@@ -1981,6 +1984,7 @@ class LoadBalancer:
             return False
 
         dirty = False
+        quota_recovery.sync_quota_error_history(runtime, state)
         if runtime.reset_at != state.reset_at:
             runtime.reset_at = state.reset_at
             dirty = True
@@ -2289,7 +2293,10 @@ def _state_from_account(
     effective_secondary_entry = normalized_usage.effective_secondary_entry
     secondary_used = normalized_usage.secondary_used
     secondary_reset = normalized_usage.secondary_reset
-    effective_blocked_at = float(account.blocked_at) if account.blocked_at is not None else runtime.blocked_at
+    runtime_reset_at, runtime_blocked_at, runtime_cooldown_until = quota_recovery.recovered_runtime_holds(
+        account, runtime, primary_entry, primary_window_minutes, effective_secondary_entry, now=now
+    )
+    effective_blocked_at = float(account.blocked_at) if account.blocked_at is not None else runtime_blocked_at
     credits_has, credits_unlimited, credits_balance = _extract_credit_status(
         primary_entry,
         effective_secondary_entry,
@@ -2340,10 +2347,10 @@ def _state_from_account(
             rate_limited_cooldown_deadline = persisted_deadline
         if (
             rate_limited_cooldown_deadline is not None
-            and runtime.cooldown_until is not None
-            and runtime.cooldown_until <= now
-            and runtime.blocked_at is not None
-            and runtime.blocked_at >= effective_blocked_at
+            and runtime_cooldown_until is not None
+            and runtime_cooldown_until <= now
+            and runtime_blocked_at is not None
+            and runtime_blocked_at >= effective_blocked_at
         ):
             # Only the replica that observed this block may recover before its persisted deadline.
             early_freshness_entry = _rate_limited_freshness_entry(
@@ -2382,7 +2389,6 @@ def _state_from_account(
     # Use account.reset_at from DB as the authoritative source for runtime reset
     # and to survive process restarts.
     persisted_reset_at = float(account.reset_at) if account.reset_at is not None else None
-    runtime_reset_at = runtime.reset_at
     # Validate only future RATE_LIMITED hints. Elapsed deadlines must still
     # reach apply_usage_quota's ordinary expiry transition, and QUOTA_EXCEEDED
     # deadlines have separate recovery semantics.
@@ -2398,7 +2404,7 @@ def _state_from_account(
         and account.reset_at > now
     )
     db_reset_at = None if ignore_zero_capacity_primary_runtime_reset else persisted_reset_at
-    if status_seed in (AccountStatus.RATE_LIMITED, AccountStatus.QUOTA_EXCEEDED) or runtime.blocked_at is not None:
+    if status_seed in (AccountStatus.RATE_LIMITED, AccountStatus.QUOTA_EXCEEDED) or runtime_blocked_at is not None:
         effective_runtime_reset = db_reset_at or runtime_reset_at
     else:
         effective_runtime_reset = None
@@ -2434,11 +2440,11 @@ def _state_from_account(
             effective_blocked_at is not None and now >= effective_blocked_at + QUOTA_EXCEEDED_COOLDOWN_SECONDS
         )
     elif (
-        runtime.cooldown_until is not None
-        and runtime.cooldown_until <= now
-        and runtime.blocked_at is not None
+        runtime_cooldown_until is not None
+        and runtime_cooldown_until <= now
+        and runtime_blocked_at is not None
         and effective_blocked_at is not None
-        and runtime.blocked_at >= effective_blocked_at
+        and runtime_blocked_at >= effective_blocked_at
     ):
         cooldown_ready = True
 
@@ -2490,7 +2496,7 @@ def _state_from_account(
     # it. Evidence-gated clearing above always starts from a persisted or
     # runtime reset, so this only matches the truly resetless case.
     resetless_rate_limit_without_evidence = (
-        status_seed == AccountStatus.RATE_LIMITED and account.reset_at is None and runtime.reset_at is None
+        status_seed == AccountStatus.RATE_LIMITED and account.reset_at is None and runtime_reset_at is None
     )
 
     quota_secondary_used = secondary_used
@@ -2554,14 +2560,11 @@ def _state_from_account(
     inflight_pressure_pct = (
         runtime.inflight_response_creates + runtime.inflight_streams
     ) * tunables.inflight_penalty_pct
-    leased_token_pressure_pct = 0.0
     long_window_key = "secondary"
     if effective_secondary_entry is not None and effective_secondary_entry.window == "monthly":
         long_window_key = "monthly"
     capacity_credits = usage_core.capacity_for_plan(account.plan_type, long_window_key) or 0.0
-    if capacity_credits > 0.0 and runtime.leased_tokens > 0:
-        leased_token_pressure_pct = runtime.leased_tokens * tunables.lease_token_weight / capacity_credits * 100.0
-    pressure_pct = inflight_pressure_pct + leased_token_pressure_pct
+    pressure_pct = inflight_pressure_pct + tunables.lease_pressure_pct(runtime.leased_tokens)
     effective_used_percent = None if used_percent is None else min(100.0, used_percent + pressure_pct)
     effective_secondary_used_percent = None if secondary_used is None else min(100.0, secondary_used + pressure_pct)
     usage_exhaustion_evidence_status = status in (AccountStatus.QUOTA_EXCEEDED, AccountStatus.RATE_LIMITED)
@@ -2574,7 +2577,7 @@ def _state_from_account(
         primary_reset_at=primary_reset,
         primary_window_minutes=primary_window_minutes,
         blocked_at=next_blocked_at,
-        cooldown_until=runtime.cooldown_until,
+        cooldown_until=runtime_cooldown_until,
         secondary_used_percent=effective_secondary_used_percent,
         secondary_reset_at=secondary_reset,
         last_error_at=runtime.last_error_at,

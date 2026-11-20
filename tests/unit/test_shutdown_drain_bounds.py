@@ -153,8 +153,14 @@ def test_h14_nested_lifespan_cleanup_uses_remaining_drain_budget() -> None:
         "shutdown_state.remaining_post_drain_cleanup_timeout_seconds() or 0.0",
         "shutdown_state.remaining_drain_timeout_seconds() or 0.0",
     ]
-    source = inspect.getsource(__import__("app.main", fromlist=["lifespan"]).lifespan)
-    assert "settings.shutdown_drain_timeout_seconds" not in source.split("finally:")[-1]
+    app_main = __import__("app.main", fromlist=["lifespan"])
+    source = inspect.getsource(app_main.lifespan)
+    commit = "shutdown_state.commit_shutdown(timeout_seconds=settings.shutdown_drain_timeout_seconds)"
+    assert source.count(commit) == 1
+    # Only the shutdown commit itself may use the configured drain; every
+    # nested cleanup after it, including the extracted tail, uses remainders.
+    assert "settings.shutdown_drain_timeout_seconds" not in source.split(commit)[-1]
+    assert "shutdown_drain_timeout_seconds" not in inspect.getsource(app_main._finish_shutdown_after_lease_release)
 
 
 @pytest.mark.parametrize("value", [0, -5])

@@ -2,6 +2,29 @@
 
 See `openspec/specs/api-keys/spec.md` for normative requirements.
 
+## Background reset sweep progress
+
+The sweep pages through due limits in `(reset_at, id)` order on the `reset_at`
+index and keeps the stored sort key of the last selected row as its cursor.
+It advances past every selected row, including guarded misses, so batches stay
+bounded and a skipped row is reconsidered only on the next scheduled sweep.
+With nothing due it reads only the index range below `now`.
+
+On SQLite `reset_at` is text. Older binders wrote other spellings of the same
+value, for example `2026-09-19 10:30:18`, `2026-09-19T10:30:18` or
+`2030-01-02T03:04:05.123456`, which parse to the same datetime as the bound
+`...SS.ffffff` form but never equal it as text. The guards therefore match the
+stored text against every lossless spelling of the expected value (separator,
+trailing fractional zeros, missing seconds). A value that differs, even below
+the millisecond (`.123400` versus `.123000`), never matches. A `T`-spelled
+deadline earlier today sorts after today's space spellings, so the SQLite sweep
+also scans today's `T` range below `now`. Each range ends at the shortest
+spelling of `now`, so a deadline equal to `now` is not due in any spelling. The
+sweep guards each reset with a compare-and-set on the exact stored text it
+selected, and does not attempt a guarded miss again in the same call, even when
+a concurrent writer moved it to a later deadline that is still due. The guarded write stores the
+canonical form, so legacy rows heal on their next reset without a migration.
+
 ## Request-aware reservation estimate
 
 The admission budget for token and `cost_usd` limits (Requirement

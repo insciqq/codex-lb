@@ -12,6 +12,7 @@ import pytest
 from app.core.shutdown import wait_for_tasks_to_drain
 from app.main import (
     InFlightMiddleware,
+    _close_http_client_within,
     _close_proxy_http_bridge_sessions_for_shutdown,
     _drain_detached_control_plane_tasks,
     _drain_proxy_persistence_tasks,
@@ -300,6 +301,111 @@ async def test_release_leader_lease_within_propagates_unsuccessful_release(
     # A completed release task can still report that detached work or the row
     # deletion was not durably completed; that result must suppress CLEAN.
     assert await _release_leader_lease_within(5) is False
+
+
+@pytest.mark.asyncio
+async def test_close_http_client_within_returns_when_close_wedged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: close_http_client() force-closes every managed client and
+    # then waits on their closed events with no deadline. A stalled TLS or TCP
+    # teardown leaves one event unset, which stranded shutdown before
+    # mark_process_dead() and close_db() in the surrounding finally chain.
+    gate = asyncio.Event()
+    started = asyncio.Event()
+    cancelled = False
+
+    async def wedged_close() -> None:
+        nonlocal cancelled
+        started.set()
+        try:
+            await gate.wait()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    monkeypatch.setattr(app_main, "close_http_client", wedged_close)
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await _close_http_client_within(0.2)
+    elapsed = loop.time() - start
+
+    assert 0.2 <= elapsed < 1.0
+    assert started.is_set()
+    # Abandoned rather than cancelled: each client owns its own close task, so
+    # cancelling the wait would only unwind the waiter.
+    assert cancelled is False
+
+    # The coordinator owns the abandoned wait until it completes.
+    retained = set(app_main._abandoned_http_client_closes)
+    assert len(retained) == 1
+    gate.set()
+    await asyncio.gather(*retained)
+    await asyncio.sleep(0)
+    assert not app_main._abandoned_http_client_closes
+
+
+@pytest.mark.asyncio
+async def test_close_http_client_within_awaits_quick_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = False
+
+    async def quick_close() -> None:
+        nonlocal closed
+        closed = True
+
+    monkeypatch.setattr(app_main, "close_http_client", quick_close)
+
+    await _close_http_client_within(5)
+
+    assert closed is True
+
+
+@pytest.mark.asyncio
+async def test_close_http_client_within_swallows_close_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken_close() -> None:
+        raise RuntimeError("transport gone")
+
+    monkeypatch.setattr(app_main, "close_http_client", broken_close)
+
+    # Must not raise: a failed client close must never fail shutdown.
+    await _close_http_client_within(5)
+
+
+@pytest.mark.asyncio
+async def test_close_http_client_within_swallows_self_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def cancelled_close() -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(app_main, "close_http_client", cancelled_close)
+    await _close_http_client_within(1)
+    assert not app_main._abandoned_http_client_closes
+
+
+@pytest.mark.asyncio
+async def test_abandoned_http_client_close_reports_late_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    gate = asyncio.Event()
+
+    async def delayed_failure() -> None:
+        await gate.wait()
+        raise RuntimeError("late close failure")
+
+    monkeypatch.setattr(app_main, "close_http_client", delayed_failure)
+    await _close_http_client_within(0)
+    retained = set(app_main._abandoned_http_client_closes)
+    assert len(retained) == 1
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        gate.set()
+        await asyncio.gather(*retained, return_exceptions=True)
+        await asyncio.sleep(0)
+    assert "Managed HTTP client close finished with error" in caplog.text
+    assert not app_main._abandoned_http_client_closes
 
 
 @pytest.fixture(autouse=True)
@@ -1183,7 +1289,7 @@ async def test_clean_shutdown_is_recorded_after_successful_disposal(
 ) -> None:
     order: list[str] = []
 
-    async def _close_db() -> bool:
+    async def _close_db(**_kwargs: object) -> bool:
         order.append("close_db")
         return True
 
@@ -1204,7 +1310,7 @@ async def test_clean_shutdown_is_not_recorded_when_wedged_teardown_is_abandoned(
 ) -> None:
     marked = False
 
-    async def _close_db() -> bool:
+    async def _close_db(**_kwargs: object) -> bool:
         return False
 
     def _mark_clean() -> None:
@@ -1230,7 +1336,7 @@ async def test_clean_shutdown_is_not_recorded_when_database_drain_is_incomplete(
 ) -> None:
     marked = False
 
-    async def _close_db() -> bool:
+    async def _close_db(**_kwargs: object) -> bool:
         return True
 
     def _mark_clean() -> None:
@@ -1270,7 +1376,7 @@ async def test_clean_shutdown_is_not_recorded_when_disposal_does_not_complete(
     """An incomplete teardown is exactly what the next startup's scan is for."""
     marked = False
 
-    async def _close_db() -> bool:
+    async def _close_db(**_kwargs: object) -> bool:
         raise failure
 
     def _mark_clean() -> None:
@@ -1287,3 +1393,158 @@ async def test_clean_shutdown_is_not_recorded_when_disposal_does_not_complete(
         )
 
     assert marked is False
+
+
+@pytest.mark.parametrize(
+    ("remaining", "expected"),
+    # The response.create dump margin (1 s) is reserved before the later bounds.
+    [(None, 10.0), (60.0, 10.0), (18.0, 2.0), (16.0, 0.0), (5.0, 0.0)],
+)
+def test_http_client_close_timeout_leaves_metrics_stop_and_close_db_their_bounds(
+    monkeypatch: pytest.MonkeyPatch, remaining: float | None, expected: float
+) -> None:
+    monkeypatch.setattr(app_main, "remaining_post_drain_cleanup_timeout_seconds", lambda: remaining)
+
+    assert app_main._http_client_close_timeout_seconds() == pytest.approx(expected)
+
+
+@pytest.mark.asyncio
+async def test_wedged_http_client_close_under_short_reserve_keeps_close_db_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wedged client close must not consume the reserve ``close_db()`` needs before force-exit."""
+    clock = _SimulatedShutdownClock()
+    monkeypatch.setattr(shutdown_state, "time", clock)
+    gate = asyncio.Event()
+
+    async def wedged_close() -> None:
+        await gate.wait()
+
+    monkeypatch.setattr(app_main, "close_http_client", wedged_close)
+    # Drain already over: only the post-drain reserve remains, and it is short.
+    later_bounds = app_main._METRICS_SERVER_STOP_TIMEOUT_SECONDS + app_main.close_db_teardown_wait_seconds()
+    reserve = later_bounds + app_main._RESPONSE_CREATE_DUMP_SHUTDOWN_MARGIN_SECONDS + 0.3
+    shutdown_state.set_post_drain_cleanup_timeout_seconds(reserve)
+    shutdown_state.begin_drain(timeout_seconds=0)
+
+    timeout = app_main._http_client_close_timeout_seconds()
+    try:
+        await _close_http_client_within(timeout)
+    finally:
+        gate.set()
+        await asyncio.sleep(0)
+
+    assert timeout == pytest.approx(0.3)
+    remaining = shutdown_state.remaining_post_drain_cleanup_timeout_seconds()
+    assert remaining is not None
+    assert remaining - timeout >= later_bounds + app_main._RESPONSE_CREATE_DUMP_SHUTDOWN_MARGIN_SECONDS - 1e-9
+
+
+class _SimulatedShutdownClock:
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reserve", [18.0, 25.0, 12.0, 3.0])
+async def test_dump_settlement_starts_before_force_exit_when_every_wait_hits_its_bound(
+    monkeypatch: pytest.MonkeyPatch, reserve: float
+) -> None:
+    """Drive every bounded wait to its limit on a simulated clock.
+
+    The HTTP close, metrics stop and SQLite registry drain each consume their
+    whole allowance; the dump settlement must still start before the shared
+    shutdown deadline (the graceful server's force-exit) with its margin left.
+    """
+    clock = _SimulatedShutdownClock()
+    monkeypatch.setattr(shutdown_state, "time", clock)
+    shutdown_state.set_post_drain_cleanup_timeout_seconds(reserve)
+    shutdown_state.begin_drain(timeout_seconds=0)
+    force_exit_at = clock.now + reserve
+    spent: dict[str, float] = {}
+
+    async def no_native_client() -> None:
+        return None
+
+    async def wedged_http_close(timeout: float) -> None:
+        spent["http"] = timeout
+        clock.now += timeout
+
+    async def wedged_metrics_stop(_task: object, timeout: float) -> None:
+        spent["metrics"] = timeout
+        clock.now += timeout
+        raise TimeoutError
+
+    async def wedged_close_db(*, registry_wait_seconds: float | None = None) -> bool:
+        assert registry_wait_seconds is not None
+        spent["close_db"] = registry_wait_seconds
+        clock.now += registry_wait_seconds
+        return False
+
+    settled_at: list[float] = []
+
+    async def settle_dumps() -> None:
+        settled_at.append(clock.now)
+
+    monkeypatch.setattr(app_main, "close_discovered_native_egress_client", no_native_client)
+    monkeypatch.setattr(app_main, "_close_http_client_within", wedged_http_close)
+    monkeypatch.setattr(app_main, "_await_metrics_server_stop", wedged_metrics_stop)
+    monkeypatch.setattr(app_main, "close_db", wedged_close_db)
+    monkeypatch.setattr(app_main, "mark_process_dead", lambda: None)
+    monkeypatch.setattr(app_main, "_finish_response_create_dumps_for_shutdown", settle_dumps)
+
+    await app_main._finish_shutdown_after_lease_release(
+        metrics_server_task=cast(asyncio.Task[None], object()),
+        database_tasks_drained=True,
+        leader_lease_release_completed=True,
+    )
+
+    assert settled_at, "dump settlement did not run"
+    margin = app_main._RESPONSE_CREATE_DUMP_SHUTDOWN_MARGIN_SECONDS
+    assert settled_at[0] <= force_exit_at - min(margin, reserve) + 1e-9
+    assert sum(spent.values()) <= max(0.0, reserve - margin) + 1e-9
+    assert shutdown_state._lifespan_completed is True
+
+
+@pytest.mark.asyncio
+async def test_failing_mark_process_dead_still_closes_db_settles_dumps_and_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    async def no_native_client() -> None:
+        return None
+
+    async def quick_http_close(_timeout: float) -> None:
+        events.append("http")
+
+    def failing_mark_process_dead() -> None:
+        events.append("mark_process_dead")
+        raise RuntimeError("metrics bookkeeping failed")
+
+    async def close_db(**_kwargs: object) -> bool:
+        events.append("close_db")
+        return True
+
+    async def settle_dumps() -> None:
+        events.append("dumps")
+
+    monkeypatch.setattr(app_main, "close_discovered_native_egress_client", no_native_client)
+    monkeypatch.setattr(app_main, "_close_http_client_within", quick_http_close)
+    monkeypatch.setattr(app_main, "mark_process_dead", failing_mark_process_dead)
+    monkeypatch.setattr(app_main, "close_db", close_db)
+    monkeypatch.setattr(app_main, "mark_sqlite_shutdown_clean", lambda: events.append("mark_clean"))
+    monkeypatch.setattr(app_main, "_finish_response_create_dumps_for_shutdown", settle_dumps)
+
+    with pytest.raises(RuntimeError, match="metrics bookkeeping failed"):
+        await app_main._finish_shutdown_after_lease_release(
+            metrics_server_task=None,
+            database_tasks_drained=True,
+            leader_lease_release_completed=True,
+        )
+
+    assert events == ["http", "mark_process_dead", "close_db", "mark_clean", "dumps"]
+    assert shutdown_state._lifespan_completed is True

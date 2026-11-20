@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config.settings import get_settings
 from app.core.shutdown import DRAIN_DEADLINE_HEADER
+from app.core.socket_peer import raw_socket_peer_host
 from app.core.utils.time import utcnow
 from app.db.models import BridgeRingMember
 from app.db.session import get_session
@@ -31,6 +32,44 @@ def _is_internal_client_host(client_host: str | None) -> bool:
     except ValueError:
         return False
     return address.is_loopback
+
+
+# Headers a reverse proxy adds when it relays a client request. A same-host
+# proxy connects over loopback, so their presence means the real caller is
+# somewhere else.
+_FORWARDING_EVIDENCE_HEADERS = frozenset(
+    {
+        "forwarded",
+        "x-real-ip",
+        "x-client-ip",
+        "x-cluster-client-ip",
+        "true-client-ip",
+        "cf-connecting-ip",
+        "fastly-client-ip",
+        "x-envoy-external-address",
+        "via",
+    }
+)
+
+
+def _carries_forwarding_evidence(request: Request) -> bool:
+    return any(
+        name in _FORWARDING_EVIDENCE_HEADERS or name.startswith("x-forwarded-") for name in request.headers.keys()
+    )
+
+
+def _require_internal_client(request: Request) -> None:
+    """Authorize drain control from a direct local caller only.
+
+    ``request.client`` carries Uvicorn's forwarded projection, so a remote
+    caller can present a loopback address here whenever ``FORWARDED_ALLOW_IPS``
+    trusts its peer. These endpoints are unauthenticated, so they resolve the
+    launcher-preserved socket peer and fail closed when it is unavailable. A
+    loopback peer that relays forwarding headers is a same-host reverse proxy
+    acting for another client, so it is rejected as well.
+    """
+    if not _is_internal_client_host(raw_socket_peer_host(request)) or _carries_forwarding_evidence(request):
+        raise HTTPException(status_code=403, detail="Internal access required")
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -94,9 +133,7 @@ async def health_ready() -> HealthCheckResponse:
 
 @router.post("/internal/drain/start", include_in_schema=False)
 async def start_internal_drain(request: Request) -> HealthCheckResponse:
-    client_host = request.client.host if request.client is not None else None
-    if not _is_internal_client_host(client_host):
-        raise HTTPException(status_code=403, detail="Internal access required")
+    _require_internal_client(request)
 
     import app.core.shutdown as shutdown_state
 
@@ -135,9 +172,7 @@ async def start_internal_drain(request: Request) -> HealthCheckResponse:
 
 @router.post("/internal/drain/stop", include_in_schema=False)
 async def stop_internal_drain(request: Request) -> HealthCheckResponse:
-    client_host = request.client.host if request.client is not None else None
-    if not _is_internal_client_host(client_host):
-        raise HTTPException(status_code=403, detail="Internal access required")
+    _require_internal_client(request)
 
     import app.core.shutdown as shutdown_state
 
@@ -149,9 +184,7 @@ async def stop_internal_drain(request: Request) -> HealthCheckResponse:
 
 @router.get("/internal/drain/status", include_in_schema=False)
 async def internal_drain_status(request: Request) -> HealthCheckResponse:
-    client_host = request.client.host if request.client is not None else None
-    if not _is_internal_client_host(client_host):
-        raise HTTPException(status_code=403, detail="Internal access required")
+    _require_internal_client(request)
 
     import app.core.shutdown as shutdown_state
 

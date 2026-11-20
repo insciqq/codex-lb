@@ -20,15 +20,17 @@ no releases, packages or images.
 
 ## What goes into `patched`
 
-* Pull requests opened in upstream Soju06/codex-lb: fixes, dependency and
-  security updates, maintenance. Upstream feature PRs are taken case by case.
+* Pull requests opened in upstream Soju06/codex-lb within the fork's scope:
+  bug fixes, security, compatibility with current Codex clients and the OpenAI
+  backend, dependency updates. No features; the registry records feature PRs
+  as `out-of-scope`.
 * Own fixes for bugs observed in production, with `Upstream-PR: none` and
   `Upstream-Issue` when an upstream report exists.
 * No functionality from other forks and no fork-specific features.
 * One fork commit per upstream PR, keeping the PR author as the commit
   author. Squash the PR's commits when it has several.
-* A patch that adds an Alembic revision needs a documented rollback path
-  before it is picked.
+* No new Alembic revisions: the database schema stays identical to upstream,
+  so switching between upstream and the fork is an image swap.
 
 ## Commit trailers
 
@@ -56,6 +58,39 @@ The report lists every patch with its upstream PR and issue state. Signals:
 * `merged upstream: drop on rebuild` — upstream now contains the fix.
 * `closed without merge` / `issue closed upstream` — re-check the patch.
 * `head moved` — the upstream PR changed after the pick; review the delta.
+
+## Decisions registry
+
+[fork/REGISTRY.md](fork/REGISTRY.md) records publicly what the fork did with
+every upstream PR and issue in scope. `taken` PRs and `fixed` issues come only
+from the commit trailers in `base..HEAD`; every other decision (rejected,
+superseded, out of scope, not applicable, own fix, merged or fixed upstream,
+pending) lives in `fork/decisions.toml`. The document is generated; never edit
+it by hand. The data schema and the status rules are in the docstring of
+`scripts/fork_registry.py`.
+
+```bash
+python3 scripts/fork_registry.py sync            # gh api: add new upstream PRs/issues, refresh, reconcile
+python3 scripts/fork_registry.py render          # rewrite the data canonically and the document
+python3 scripts/fork_registry.py check           # offline, run by CI
+python3 scripts/fork_registry.py check --strict  # before a release
+```
+
+CI fails when the data does not parse, is not canonical, has an invalid entry
+or contradicts the trailers, and when `fork/REGISTRY.md` is missing or not
+committed. A stale document is only a warning; refresh it with `render` when
+convenient. `check --strict` also fails on a stale document, on `pending`
+entries and on missing or invalid trailers.
+
+Every entry carries a `status`; a taken PR or a trailer-fixed issue stores
+`pending`, because its real status comes from the trailers. `sync` sets a PR
+that upstream merged to `merged-upstream`; while a branch still carries its
+pick it shows as taken with a "drop on rebuild" note. After a rebuild,
+set `[registry].base` to the new upstream `main` and run `sync` and `render`:
+`sync` turns a dropped pick that upstream merged into `merged-upstream`,
+removes its orphaned `rework` and resets an orphaned issue `partial` to
+`pending`. `sync` refreshes what changed upstream since the previous snapshot;
+`sync --full` refreshes everything updated since `closed_since`.
 
 ## Rebuilding on a new upstream
 

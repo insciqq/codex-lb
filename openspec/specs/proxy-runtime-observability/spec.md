@@ -733,6 +733,46 @@ The service MUST expose a Prometheus gauge named `codex_lb_cap_partition_replica
 - **THEN** `codex_lb_cap_partition_replicas` reports 2
 - **AND** an info-level log records the rebalance from count 1 to count 2 with the replica's rank
 
+### Requirement: Account inventory by status is observable
+
+When the Prometheus client is available the service MUST set the gauge `codex_lb_accounts_total{status}` to the number of stored accounts in each `AccountStatus` (`active`, `rate_limited`, `quota_exceeded`, `paused`, `reauth_required`, `deactivated`). Every status MUST be written on each update, with zero for a status that has no accounts, so a status whose last account changed state does not keep reporting its previous count. Accounts pending deletion MUST NOT be counted. The counts MUST come from full account listings the service already reads: the routing-availability snapshot refresh (at startup and on every `account_routing` invalidation), the load balancer's unscoped account read when it rebuilds selection inputs, and the scheduler leader's account listing at the start of each usage-refresh tick. Status changes that do not invalidate account routing (rate limit, quota, reauthentication, background cooldown recovery) MUST therefore be reported without a restart: by the next selection-input rebuild on the replica that serves traffic, and on the scheduler leader within one usage-refresh tick even when it serves no traffic. A routing refresh MUST publish its counts before it awaits anything after its read, so a slower, older refresh cannot overwrite newer counts. A failure to update the metric MUST NOT abort the read that feeds it. The metrics scrape MUST NOT query the database. In Prometheus multiprocess mode the gauge MUST use `livemostrecent` aggregation: one series per status without a `pid` label, holding the newest write from a live worker for that label (not an atomic snapshot across labels); `mark_process_dead` removes dead workers' files. When the Prometheus client is absent, updates MUST be no-ops.
+
+#### Scenario: Empty pool reports explicit zeroes
+
+- **GIVEN** no accounts are stored
+- **WHEN** the routing-availability snapshot refreshes and metrics are scraped
+- **THEN** `codex_lb_accounts_total` reports `0` for every account status
+
+#### Scenario: Populated pool reports per-status counts
+
+- **GIVEN** stored accounts in several statuses, plus one account pending deletion
+- **WHEN** the routing-availability snapshot refreshes and metrics are scraped
+- **THEN** each status reports its number of accounts, excluding the account pending deletion
+
+#### Scenario: Cooldown transition is reported without a routing refresh
+
+- **GIVEN** an account moves from `active` to `rate_limited` without an `account_routing` invalidation
+- **WHEN** the load balancer next rebuilds its selection inputs
+- **THEN** `codex_lb_accounts_total` reports one fewer `active` account and one more `rate_limited` account
+
+#### Scenario: Idle leader reports an out-of-band status write
+
+- **GIVEN** an account's status changes through a path that invalidates neither account routing nor selection inputs (for example a reauthentication downgrade)
+- **WHEN** the scheduler leader runs its next usage-refresh tick
+- **THEN** `codex_lb_accounts_total` reports the new status, counting every listed account including ones the tick does not refresh
+
+#### Scenario: Slower routing refresh does not overwrite newer counts
+
+- **GIVEN** a routing refresh has read the accounts and is still closing its session
+- **WHEN** a status change commits and a second refresh completes first
+- **THEN** the gauge keeps the second refresh's counts after the first refresh finishes
+
+#### Scenario: Multiprocess scrape does not duplicate the inventory
+
+- **GIVEN** several live workers have published account counts in multiprocess mode
+- **WHEN** metrics are scraped
+- **THEN** each status appears once without a `pid` label and carries the newest value written for that status, including a newer zero
+
 ### Requirement: Source-routed requests report upstream-measured generation timings
 
 The proxy MUST record upstream-reported generation timing on the request log

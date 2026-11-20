@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import json
+import threading
+from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, cast
 
 import pytest
 
@@ -360,3 +364,69 @@ def test_prestop_rejects_invalid_timeout_contract(
             routing_dwell_seconds=routing_dwell_seconds,
             drain_timeout_seconds=drain_timeout_seconds,
         )
+
+
+class _RecordingHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802 - http.server API
+        server = cast(_RecordingServer, self.server)
+        server.paths.append(self.path)
+        if server.answer_forbidden:
+            # What the drain endpoint answers a relayed request.
+            self.send_response(403)
+            self.end_headers()
+            return
+        body = json.dumps(
+            {
+                "status": "ok",
+                "checks": {"draining": "true", "shutdown_committed": "true", "deadline_monotonic": "123.5"},
+            }
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - http.server signature
+        del format, args
+
+
+class _RecordingServer(ThreadingHTTPServer):
+    def __init__(self, *, answer_forbidden: bool) -> None:
+        super().__init__(("127.0.0.1", 0), _RecordingHandler)
+        self.answer_forbidden = answer_forbidden
+        self.paths: list[str] = []
+
+
+@pytest.fixture
+def recording_servers() -> Iterator[tuple[_RecordingServer, _RecordingServer]]:
+    app_server = _RecordingServer(answer_forbidden=False)
+    proxy_server = _RecordingServer(answer_forbidden=True)
+    threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in (app_server, proxy_server)]
+    for thread in threads:
+        thread.start()
+    try:
+        yield app_server, proxy_server
+    finally:
+        for server in (app_server, proxy_server):
+            server.shutdown()
+            server.server_close()
+
+
+def test_local_drain_client_ignores_environment_http_proxy(
+    monkeypatch: pytest.MonkeyPatch, recording_servers: tuple[_RecordingServer, _RecordingServer]
+) -> None:
+    """A forward proxy from the environment would relay the drain call and get 403."""
+    app_server, proxy_server = recording_servers
+    proxy_url = f"http://127.0.0.1:{proxy_server.server_address[1]}"
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(name, proxy_url)
+
+    client = LocalDrainClient(f"http://127.0.0.1:{app_server.server_address[1]}")
+    effective_deadline = client.start_drain(deadline_monotonic=123.5, timeout_seconds=2.0)
+
+    assert effective_deadline == 123.5
+    assert app_server.paths == ["/internal/drain/start"]
+    assert proxy_server.paths == []

@@ -15,6 +15,10 @@ from app.core.shutdown import DRAIN_DEADLINE_HEADER
 logger = logging.getLogger(__name__)
 
 PRESTOP_REQUEST_TIMEOUT_SECONDS = 2.0
+# The drain endpoints accept only direct loopback callers and reject relayed
+# requests, so the hook must never go through an HTTP_PROXY from the
+# environment (urllib applies it to loopback URLs too).
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _POLL_INTERVAL_SECONDS = 1.0
 
 
@@ -44,7 +48,7 @@ class LocalDrainClient:
         self,
         base_url: str,
         *,
-        urlopen: Callable[..., Any] = urllib.request.urlopen,
+        urlopen: Callable[..., Any] = _DIRECT_OPENER.open,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._urlopen = urlopen

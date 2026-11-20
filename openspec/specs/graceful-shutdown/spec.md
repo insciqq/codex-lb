@@ -51,6 +51,44 @@ The project-owned Uvicorn server MUST commit graceful drain before Uvicorn close
 - **WHEN** an embedded application lifespan has completed and another embedded lifespan starts in the same process
 - **THEN** the new lifecycle starts with admission open and no inherited committed deadline
 
+### Requirement: Internal drain control authorizes the raw socket peer
+
+The unauthenticated `/internal/drain/start`, `/internal/drain/stop`, and `/internal/drain/status` endpoints MUST authorize the caller against the launcher-preserved raw socket peer. A forwarded-client projection MUST NOT satisfy that authorization, regardless of which peers `FORWARDED_ALLOW_IPS` trusts. A request whose raw peer is not a loopback address MUST be rejected with 403, and MUST NOT begin drain, commit the shutdown barrier, or report drain state. If raw-peer capture is unavailable the request MUST be rejected on the same terms. A loopback raw peer MUST be rejected on the same terms when the request carries forwarding evidence (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `X-Client-IP`, `X-Cluster-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `Fastly-Client-IP`, `X-Envoy-External-Address` or `Via`), because a same-host reverse proxy connects over loopback on behalf of another client. A relay that adds no forwarding header is indistinguishable from a direct local caller, so same-host public proxies MUST NOT expose `/internal/drain/*`.
+
+#### Scenario: Spoofed loopback from a remote peer is rejected
+
+- **WHEN** forwarding projection trusts every peer
+- **AND** a request from a remote transport peer supplies a loopback forwarded client address
+- **AND** it posts to the drain-start endpoint with a drain-deadline header
+- **THEN** the response is 403
+- **AND** the process is not draining
+- **AND** the one-way shutdown barrier is not committed
+
+#### Scenario: Spoofed loopback cannot read or stop drain
+
+- **WHEN** forwarding projection trusts every peer
+- **AND** a request from a remote transport peer supplies a loopback forwarded client address
+- **THEN** the drain-stop endpoint responds 403
+- **AND** the drain-status endpoint responds 403
+
+#### Scenario: Direct loopback caller is authorized
+
+- **WHEN** a loopback caller without forwarding headers requests drain status
+- **THEN** the request is authorized
+- **AND** the response reports current drain state
+
+#### Scenario: Same-host reverse proxy cannot relay drain control
+
+- **WHEN** a request arrives from a loopback transport peer
+- **AND** it carries a forwarded client address or another forwarding header
+- **THEN** the drain-start, drain-stop and drain-status endpoints respond 403
+- **AND** the process is not draining
+
+#### Scenario: Missing raw-peer capture fails closed
+
+- **WHEN** an internal drain endpoint receives a request without preserved raw socket provenance
+- **THEN** the response is 403
+
 ### Requirement: Graceful drain closes WebSocket admission
 
 Once graceful drain begins, the application MUST reject every new external WebSocket connection before invoking the route handler. A Responses WebSocket scope admitted before the barrier MUST remain tracked until its handler exits. Other WebSocket protocols MUST receive the same late-admission rejection but MUST NOT hold the Responses in-flight counter for their full connection lifetime.
@@ -265,3 +303,30 @@ Recovery-settlement cleanup runs after the drain barrier, so it MUST be bounded 
 - **WHEN** configuration supplies zero, a negative value, or a value above 300
 - **THEN** settings validation fails
 
+### Requirement: Managed HTTP client shutdown wait is bounded
+
+The managed HTTP client close MUST force-close each client and then wait for its completion for at most 10 seconds before shutdown continues to process-death marking and database disposal. When a shutdown deadline is committed, the HTTP client close, the metrics-server stop and the database-disposal teardown-registry drain MUST each be bounded so that, together, they end no later than the shared shutdown deadline minus the response.create dump margin; the HTTP close MUST leave the later bounds their time, and the metrics stop MUST leave the registry drain its time. When that deadline passes the wait MUST be abandoned rather than cancelled, because each client owns its own close task and cancelling the waiter would not unwind a stalled transport teardown. The shutdown coordinator MUST retain the close task until it settles and consume any terminal exception. A close that fails or cancels itself MUST NOT fail shutdown.
+
+#### Scenario: A stalled transport teardown does not pin shutdown
+
+- **WHEN** a managed HTTP client never reports itself closed
+- **THEN** the close step returns once its deadline elapses
+- **AND** the abandoned close is left running rather than cancelled
+- **AND** shutdown continues to process-death marking and database disposal
+
+#### Scenario: Every bounded wait hits its limit
+
+- **GIVEN** a committed shutdown deadline and a post-drain cleanup reserve of any size
+- **WHEN** the HTTP client close, the metrics-server stop and the teardown-registry drain each wait for their whole allowance
+- **THEN** the response.create dump settlement starts before the shared shutdown deadline, with its margin left when the reserve allows it
+
+#### Scenario: A prompt close is awaited normally
+
+- **WHEN** every managed HTTP client closes before the deadline
+- **THEN** the close step returns as soon as they finish
+
+#### Scenario: A failing close does not fail shutdown
+
+- **WHEN** the managed HTTP client close raises
+- **THEN** the failure is reported
+- **AND** shutdown continues

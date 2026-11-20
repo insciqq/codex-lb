@@ -456,6 +456,8 @@ terminationGracePeriodSeconds (65s) bounds preStop, SIGTERM, and final cleanup
 
 1. **preStop / preStopSleepSeconds (15s default)**: Pod termination begins
    - Calls `/internal/drain/start` so readiness fails and new app requests are rejected
+   - The `/internal/drain/*` endpoints accept only loopback callers that send no forwarding header (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `X-Client-IP`, `X-Cluster-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `Fastly-Client-IP`, `X-Envoy-External-Address`, `Via`); a request that carries one gets 403
+   - This header check cannot detect a relay that adds no such header (for example nginx `proxy_pass` without `proxy_set_header`, a TCP proxy, `ssh -L`, `socat` or `kubectl port-forward`): such a relay looks like a direct local caller. A proxy or tunnel on the same host that is reachable by other clients MUST NOT forward `/internal/drain/*`
    - When the Python helper starts, it establishes the routing-dwell clock and sends that helper-anchored monotonic deadline to the loopback endpoint; that deadline-bearing call commits the one-way shutdown barrier
    - The app clamps the deadline to its configured timeout and returns the effective absolute deadline for the hook to reuse
    - Starts the same `config.shutdownDrainTimeoutSeconds` deadline later reused by SIGTERM

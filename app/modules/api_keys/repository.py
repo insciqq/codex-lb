@@ -6,7 +6,25 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import BigInteger, Integer, cast, delete, func, insert, literal, or_, select, text, true, update
+from sqlalchemy import (
+    BigInteger,
+    ColumnElement,
+    DateTime,
+    Integer,
+    Select,
+    String,
+    cast,
+    delete,
+    func,
+    insert,
+    literal,
+    or_,
+    select,
+    text,
+    true,
+    tuple_,
+    update,
+)
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only, raiseload, selectinload
@@ -107,6 +125,39 @@ class _Unset(Enum):
 
 _UNSET = _Unset.UNSET
 _EXPIRED_LIMIT_RESET_BATCH_SIZE = 500
+
+
+def _lossless_sqlite_timestamp_spellings(value: datetime) -> list[str]:
+    """Every SQLite text spelling that parses to exactly ``value``.
+
+    Covers the space and ``T`` separators and the fractional part with
+    insignificant trailing zeros trimmed, down to no fraction when it is zero
+    (and no seconds when they are zero too). The canonical bound form
+    ``YYYY-MM-DD HH:MM:SS.ffffff`` is always included.
+    """
+    digits = f"{value.microsecond:06d}"
+    significant = len(digits.rstrip("0"))
+    fractions = [("." + digits[:width]) if width else "" for width in range(significant, 7)]
+    times = [value.strftime("%H:%M:%S") + fraction for fraction in fractions]
+    if value.second == 0 and value.microsecond == 0:
+        times.append(value.strftime("%H:%M"))
+    date = value.strftime("%Y-%m-%d")
+    return [f"{date}{separator}{time}" for separator in (" ", "T") for time in times]
+
+
+def _shortest_sqlite_timestamp_spelling(value: datetime, separator: str) -> str:
+    """The shortest lossless spelling of ``value`` with ``separator``.
+
+    Every spelling of an equal value sorts at or above it as text, and every
+    spelling of an earlier value sorts below it, so it is the exact exclusive
+    upper bound for "earlier than ``value``" over the supported spellings.
+    """
+    return min(
+        (spelling for spelling in _lossless_sqlite_timestamp_spellings(value) if spelling[10] == separator),
+        key=len,
+    )
+
+
 _STALE_USAGE_RESERVATION_RELEASE_BATCH_SIZE = 500
 
 
@@ -609,44 +660,124 @@ class ApiKeysRepository:
         result = await self._session.execute(
             update(ApiKeyLimit)
             .where(ApiKeyLimit.id == limit_id)
-            .where(ApiKeyLimit.reset_at == expected_reset_at)
+            .where(self._limit_reset_at_matches(expected_reset_at))
             .values(current_value=0, reset_at=new_reset_at)
             .returning(ApiKeyLimit.id)
         )
         await self._session.commit()
         return result.scalar_one_or_none() is not None
 
+    def _is_sqlite(self) -> bool:
+        return self._session.get_bind().dialect.name == "sqlite"
+
+    def _limit_reset_at_matches(self, expected_reset_at: datetime) -> ColumnElement[bool]:
+        """Guard on ``reset_at`` by exact value, including legacy SQLite text.
+
+        SQLite stores this column as text. Rows written by older binders spell
+        the same naive UTC value differently (a ``T`` separator, trailing
+        fractional zeros trimmed down to no fraction, no seconds), and those
+        spellings never equal the bound ``...SS.ffffff`` text. On SQLite the
+        guard therefore matches the stored text against every lossless
+        spelling of the expected value, so a different value never matches and
+        an equal one always does. Other backends compare timestamps natively.
+        The guarded statements stay primary-key point lookups, and the guarded
+        write stores the canonical form.
+        """
+        if not self._is_sqlite():
+            return ApiKeyLimit.reset_at == expected_reset_at
+        return cast(ApiKeyLimit.reset_at, String).in_(_lossless_sqlite_timestamp_spellings(expected_reset_at))
+
+    def _expired_limit_ranges(self, now: datetime) -> list[tuple[ColumnElement[bool], ...]]:
+        """Index ranges of ``reset_at`` that hold limits due before ``now``.
+
+        On SQLite the stored text orders as text: a legacy ``T``-separated
+        spelling of today's date sorts after every space-separated value of the
+        same day. Due limits therefore lie in two disjoint ranges, the values
+        below the shortest space spelling of ``now`` and today's ``T``
+        spellings below the shortest ``T`` spelling of ``now``. The shortest
+        spelling keeps a deadline equal to ``now`` out of both ranges whatever
+        its spelling. Each is a plain range of ``idx_api_key_limits_reset_at``.
+        """
+        if not self._is_sqlite():
+            return [(ApiKeyLimit.reset_at < now,)]
+        return [
+            (ApiKeyLimit.reset_at < literal(_shortest_sqlite_timestamp_spelling(now, " "), String),),
+            (
+                ApiKeyLimit.reset_at >= literal(now.strftime("%Y-%m-%dT"), String),
+                ApiKeyLimit.reset_at < literal(_shortest_sqlite_timestamp_spelling(now, "T"), String),
+            ),
+        ]
+
+    def _expired_limits_batch_stmt(
+        self,
+        *,
+        bounds: tuple[ColumnElement[bool], ...],
+        cursor: tuple[Any, int] | None,
+    ) -> Select[Any]:
+        """Select the next batch in ``(reset_at, id)`` order within one index range.
+
+        The order follows ``idx_api_key_limits_reset_at``, so a sweep with
+        nothing to reset reads only the index range below ``now``. On SQLite the
+        cursor keeps the stored text of the last selected row, so pagination
+        advances past legacy spellings and guarded misses.
+        """
+        if self._is_sqlite():
+            sort_key: Any = cast(ApiKeyLimit.reset_at, String).label("reset_at_key")
+        else:
+            sort_key = ApiKeyLimit.reset_at.label("reset_at_key")
+        stmt = select(ApiKeyLimit.id, ApiKeyLimit.reset_at, ApiKeyLimit.limit_window, sort_key).where(*bounds)
+        if cursor is not None:
+            cursor_key, cursor_id = cursor
+            key_literal = literal(cursor_key, String) if self._is_sqlite() else literal(cursor_key, DateTime)
+            stmt = stmt.where(tuple_(ApiKeyLimit.reset_at, ApiKeyLimit.id) > tuple_(key_literal, literal(cursor_id)))
+        return stmt.order_by(ApiKeyLimit.reset_at.asc(), ApiKeyLimit.id.asc()).limit(_EXPIRED_LIMIT_RESET_BATCH_SIZE)
+
+    def _selected_reset_at_matches(self, limit: Any) -> ColumnElement[bool]:
+        """Compare-and-set on the exact ``reset_at`` the sweep selected.
+
+        On SQLite this compares the stored text it read, so any spelling the
+        sweep could select is guarded exactly.
+        """
+        if self._is_sqlite():
+            return cast(ApiKeyLimit.reset_at, String) == literal(limit.reset_at_key, String)
+        return ApiKeyLimit.reset_at == limit.reset_at
+
     async def reset_expired_limits(self, *, now: datetime) -> int:
         reset_count = 0
-        while True:
-            result = await self._session.execute(
-                select(
-                    ApiKeyLimit.id,
-                    ApiKeyLimit.reset_at,
-                    ApiKeyLimit.limit_window,
-                )
-                .where(ApiKeyLimit.reset_at < now)
-                .order_by(ApiKeyLimit.reset_at.asc(), ApiKeyLimit.id.asc())
-                .limit(_EXPIRED_LIMIT_RESET_BATCH_SIZE)
-            )
-            expired_limits = result.all()
-            if not expired_limits:
-                return reset_count
+        # A concurrent writer can move a row between the select and its guarded
+        # update, possibly to a later deadline that is still due and sorts
+        # after the cursor. Such a guarded miss is not attempted again in this
+        # call; the next scheduled sweep reconsiders it.
+        missed_ids: set[int] = set()
+        for bounds in self._expired_limit_ranges(now):
+            # Advance past every selected row, including guarded misses.
+            cursor: tuple[Any, int] | None = None
+            while True:
+                result = await self._session.execute(self._expired_limits_batch_stmt(bounds=bounds, cursor=cursor))
+                candidates = result.all()
+                if not candidates:
+                    break
+                cursor = (candidates[-1].reset_at_key, candidates[-1].id)
 
-            for limit in expired_limits:
-                update_result = await self._session.execute(
-                    update(ApiKeyLimit)
-                    .where(ApiKeyLimit.id == limit.id)
-                    .where(ApiKeyLimit.reset_at == limit.reset_at)
-                    .values(
-                        current_value=0,
-                        reset_at=advance_limit_reset(limit.reset_at, now, limit.limit_window),
+                for limit in candidates:
+                    if limit.id in missed_ids:
+                        continue
+                    update_result = await self._session.execute(
+                        update(ApiKeyLimit)
+                        .where(ApiKeyLimit.id == limit.id)
+                        .where(self._selected_reset_at_matches(limit))
+                        .values(
+                            current_value=0,
+                            reset_at=advance_limit_reset(limit.reset_at, now, limit.limit_window),
+                        )
+                        .returning(ApiKeyLimit.id)
                     )
-                    .returning(ApiKeyLimit.id)
-                )
-                if update_result.scalar_one_or_none() is not None:
-                    reset_count += 1
-            await self._session.commit()
+                    if update_result.scalar_one_or_none() is not None:
+                        reset_count += 1
+                    else:
+                        missed_ids.add(limit.id)
+                await self._session.commit()
+        return reset_count
 
     async def try_reserve_usage(
         self,
@@ -668,7 +799,7 @@ class ApiKeysRepository:
         result = await self._session.execute(
             update(ApiKeyLimit)
             .where(ApiKeyLimit.id == limit_id)
-            .where(ApiKeyLimit.reset_at == expected_reset_at)
+            .where(self._limit_reset_at_matches(expected_reset_at))
             .where(ApiKeyLimit.current_value + delta <= ApiKeyLimit.max_value)
             .values(current_value=ApiKeyLimit.current_value + delta)
             .returning(
@@ -711,7 +842,9 @@ class ApiKeysRepository:
         delta: int,
         expected_reset_at: datetime,
     ) -> bool:
-        stmt = update(ApiKeyLimit).where(ApiKeyLimit.id == limit_id).where(ApiKeyLimit.reset_at == expected_reset_at)
+        stmt = (
+            update(ApiKeyLimit).where(ApiKeyLimit.id == limit_id).where(self._limit_reset_at_matches(expected_reset_at))
+        )
         if delta < 0:
             stmt = stmt.where(ApiKeyLimit.current_value >= -delta)
         result = await self._session.execute(

@@ -126,12 +126,16 @@ if PROMETHEUS_AVAILABLE:
         registry=REGISTRY,
         **({"multiprocess_mode": "liveall"} if MULTIPROCESS_MODE else {}),
     )
+    # Workers would count the same shared accounts table, so per-PID series
+    # ("liveall") would duplicate the inventory. "livemostrecent" keeps the
+    # newest write per status label (not an atomic snapshot across labels);
+    # mark_process_dead() removes dead workers' files.
     accounts_total = Gauge(
         "codex_lb_accounts_total",
         "Total accounts by status",
         ["status"],
         registry=REGISTRY,
-        **({"multiprocess_mode": "liveall"} if MULTIPROCESS_MODE else {}),
+        **({"multiprocess_mode": "livemostrecent"} if MULTIPROCESS_MODE else {}),
     )
     bridge_instance_mismatch_total = Counter(
         "codex_lb_bridge_instance_mismatch_total",

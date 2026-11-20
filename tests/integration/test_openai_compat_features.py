@@ -669,6 +669,94 @@ async def test_v1_chat_completions_maps_response_format(async_client, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_v1_chat_completions_json_object_keeps_json_instruction_in_input(async_client, monkeypatch):
+    """JSON mode is accepted upstream only when an input message mentions JSON.
+
+    A client that asks for JSON only in its system message used to get a 400,
+    because the system message moved into top-level ``instructions``.
+    """
+    await _import_account(async_client, "acc_chat_json_object", "chat-json-object@example.com")
+
+    seen = {}
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen["payload"] = payload
+        yield _completed_event("resp_chat_json_object")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {
+        "model": "gpt-5.2",
+        "messages": [
+            {"role": "system", "content": "Reply with a JSON object."},
+            {"role": "user", "content": "Say hello."},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    resp = await async_client.post("/v1/chat/completions", json=payload)
+
+    assert resp.status_code == 200
+    forwarded = seen["payload"].to_payload()
+    assert forwarded["instructions"] == ""
+    assert forwarded["input"] == [
+        {"role": "developer", "content": [{"type": "input_text", "text": "Reply with a JSON object."}]},
+        {"role": "user", "content": [{"type": "input_text", "text": "Say hello."}]},
+    ]
+    assert forwarded["text"] == {"format": {"type": "json_object"}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_field", "expected_input"),
+    [
+        (
+            "input",
+            [
+                {"role": "developer", "content": "Reply with a JSON object."},
+                {"role": "user", "content": "Say hello."},
+            ],
+        ),
+        (
+            "messages",
+            [
+                {"role": "developer", "content": [{"type": "input_text", "text": "Reply with a JSON object."}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "Say hello."}]},
+            ],
+        ),
+    ],
+)
+async def test_v1_responses_json_object_keeps_json_instruction_in_input(
+    async_client, monkeypatch, input_field, expected_input
+):
+    await _import_account(
+        async_client, f"acc_responses_json_object_{input_field}", f"responses-json-{input_field}@example.com"
+    )
+
+    seen = {}
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen["payload"] = payload
+        yield _completed_event("resp_responses_json_object")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {
+        "model": "gpt-5.2",
+        input_field: [
+            {"role": "system", "content": "Reply with a JSON object."},
+            {"role": "user", "content": "Say hello."},
+        ],
+        "text": {"format": {"type": "json_object"}},
+    }
+    resp = await async_client.post("/v1/responses", json=payload)
+
+    assert resp.status_code == 200
+    forwarded = seen["payload"].to_payload()
+    assert forwarded["instructions"] == ""
+    assert forwarded["input"] == expected_input
+
+
+@pytest.mark.asyncio
 async def test_v1_chat_completions_rejects_strict_schema_violation(async_client):
     """Strict-mode schema violations are rejected locally with 400.
 
@@ -1139,6 +1227,7 @@ async def test_v1_chat_completions_normalizes_tools_and_tool_choice(async_client
             "name": "get_weather",
             "description": "Get weather",
             "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+            "strict": False,
         }
     ]
     assert seen["payload"].tool_choice == {"type": "function", "name": "get_weather"}

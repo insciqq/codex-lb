@@ -181,7 +181,23 @@ when upstream reports a different actual tier.
 - `message.input_image.image_url`
 - `message.output_text.logprobs`
 - `reasoning.encrypted_content`
+- `output.encrypted_content`
 - `web_search_call.action.sources`
+
+The output selector is additive: Codex can request it alongside reasoning
+encryption. Its [client request construction](https://github.com/openai/codex/blob/33d306d457a4632b22bebf214e0c25d91f90f6e8/codex-rs/core/src/client.rs#L1130)
+adds `output.encrypted_content` when output token replay is enabled for the
+OpenAI provider. The [ResponseItem model](https://github.com/openai/codex/blob/33d306d457a4632b22bebf214e0c25d91f90f6e8/codex-rs/protocol/src/models.rs#L1052)
+also carries ciphertext on messages and tool calls.
+
+The proxy forwards these fields as opaque values. For example, a returned
+message with `id: "msg_1"`, `phase: "final_answer"` and
+`encrypted_content: "opaque+/="` retains those fields when sent back in the
+next turn. Item IDs and encrypted function arguments travel with the content;
+the proxy does not decrypt it or treat it as account-neutral replay state.
+Synthetic transport tests verify field preservation, not provider-side
+cryptographic validity. Unknown selectors and malformed include arrays still
+fail validation before dispatch.
 
 ## Failure Modes
 
@@ -395,3 +411,16 @@ A failed account-error health write must not replace a Responses terminal that t
 ## Ready transcript backlog
 
 The background spooler continues bounded passes while eligible events remain, giving each operation one batch per pass. For example, 320 events queued before the first pass at batch size 32 require ten writes, without nine extra flush-interval waits. This changes backlog scheduling; paced-event coalescing and terminal persistence retain their existing behavior. Isolated database measurements and limits are recorded in `openspec/changes/archive/2026-09-10-drain-ready-http-bridge-spool/verification.md`.
+
+## Native WebSocket receive bursts
+
+The decoded native WebSocket receive queue shares byte accounting with the
+existing helper event queue. A 4096-event cap permits ordinary small-frame
+bursts; a 32 MiB accounted-payload cap bounds stalled consumers. Interpreted
+Responses frames retain text and a decoded representation, so both count.
+Overflow is a local consumer condition, not evidence of an unhealthy account.
+
+For example, a 256-frame reasoning burst can remain queued while a send
+acknowledgement completes. Sustained overflow still terminates that connection
+without stopping the shared helper reader or unrelated connections. No automatic
+replay is added because a dispatched request may already have had effects.

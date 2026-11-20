@@ -11050,3 +11050,54 @@ classification MUST remain unchanged.
 - **WHEN** an event or the final unterminated block contains invalid UTF-8
 - **THEN** the receiver replaces the invalid bytes with U+FFFD
 - **AND** continues delivering subsequent events when present
+
+### Requirement: Responses accept encrypted output inclusion
+
+The service MUST accept `output.encrypted_content` in the `include` array of native and OpenAI-compatible Responses requests over HTTP and WebSocket. It MUST forward that selector unchanged, including when it accompanies `reasoning.encrypted_content`. Existing supported selectors and omitted or empty `include` arrays MUST retain their behavior. Unknown selectors, null arrays and non-string entries MUST remain invalid.
+
+#### Scenario: Encrypted output is requested through either Responses API
+- **WHEN** a client requests `include: ["reasoning.encrypted_content", "output.encrypted_content"]` through `/backend-api/codex/responses` or `/v1/responses`, using HTTP or a WebSocket `response.create`
+- **THEN** include validation succeeds
+- **AND** the upstream request retains both selectors
+
+#### Scenario: Existing selectors and defaults remain accepted
+- **WHEN** a request uses an existing supported selector or omits `include` or provides an empty array
+- **THEN** its include validation and forwarding behavior remain unchanged
+
+#### Scenario: Invalid include values remain rejected
+- **WHEN** a request contains an unknown include selector, a null include array, or a non-string array entry
+- **THEN** the request is rejected before upstream dispatch
+- **AND** the HTTP response is a 400 `invalid_request_error` whose parameter identifies `include` or its invalid entry
+
+### Requirement: Responses preserve opaque encrypted output for subsequent turns
+
+For supported output item types, the service MUST preserve `encrypted_content` string values, item IDs, message `phase`, tool `call_id` and `encrypted_function_args` when present through HTTP responses and WebSocket item events. Subsequent requests containing those returned items MUST retain those fields during forwarding. The existing public terminal-output backfill and native item-event semantics MUST remain unchanged. An input payload retaining ciphertext on a message or tool call MUST NOT be classified as account-neutral fresh replay, including after item-ID projection.
+
+#### Scenario: Encrypted items survive transport and replay
+- **WHEN** upstream returns supported encrypted output items and the client sends them back in the next turn
+- **THEN** the downstream output and next upstream input retain the opaque fields and corresponding item identities
+
+#### Scenario: Output arrives in item events before an empty terminal response
+- **WHEN** upstream emits encrypted items in `response.output_item.done` and an empty terminal `output` array
+- **THEN** native SSE preserves the item events and terminal semantics
+- **AND** public SSE and collected JSON responses backfill the same encrypted items
+
+#### Scenario: Ciphertext prevents account-neutral replay
+- **WHEN** an input payload retains encrypted message or tool-call content after any item-ID projection
+- **THEN** account-neutral fresh-replay classification rejects the payload
+
+### Requirement: Native WebSocket bursts retain bounded ordered delivery
+The native WebSocket adapter MUST retain ordered delivery of at least 256 small frames while its consumer is temporarily unscheduled. Its decoded receive queue MUST be bounded by 4096 events and 32 MiB of accounted payload bytes, including UTF-8 text, binary data and the second payload representation for interpreted Responses frames. It MUST continue processing send acknowledgements without waiting for the data consumer. A genuinely overflowing connection MUST fail locally without blocking unrelated connections or penalizing account health. This change MUST preserve the existing HTTP event-queue single-event allowance.
+
+#### Scenario: Small-frame burst
+- **WHEN** 256 small frames arrive before the consumer next runs
+- **THEN** all frames remain available in order without a transport failure
+
+#### Scenario: Send acknowledgement during a burst
+- **WHEN** an acknowledgement arrives after queued data while the consumer has not drained
+- **THEN** the send completes without waiting for the data consumer
+
+#### Scenario: Genuine overflow
+- **WHEN** the event or accounted-byte budget would be exceeded
+- **THEN** the connection fails with an account-neutral local-buffer classification
+- **AND** pending sends and the connection are finalized while unrelated connections remain usable

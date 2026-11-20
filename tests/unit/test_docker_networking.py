@@ -6,6 +6,9 @@ from typing import Any
 import pytest
 import yaml
 
+from app.core.config.settings import Settings
+from app.core.server import POST_DRAIN_CLEANUP_TIMEOUT_SECONDS
+
 pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -70,3 +73,40 @@ def test_running_container_resolver_runbook_uses_bridge_scoped_systemd_listener(
     assert "docker exec --user 0 codex-lb" in context
     assert "without restarting codex-lb" in context
     assert "rather than `0.0.0.0`" in context
+
+
+def _duration_seconds(value: str) -> float:
+    units = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+    for suffix in ("ms", "s", "m", "h"):
+        if value.endswith(suffix):
+            return float(value[: -len(suffix)]) * units[suffix]
+    raise AssertionError(f"unsupported duration {value!r}")
+
+
+# deployment-installation: drain timeout + post-drain cleanup reserve + 5 s.
+_COMPOSE_STOP_GRACE_MARGIN_SECONDS = 5
+
+
+def _compose_minimum_stop_grace_seconds() -> float:
+    drain_timeout = Settings.model_fields["shutdown_drain_timeout_seconds"].default
+    return drain_timeout + POST_DRAIN_CLEANUP_TIMEOUT_SECONDS + _COMPOSE_STOP_GRACE_MARGIN_SECONDS
+
+
+@pytest.mark.parametrize("compose_name", ["docker-compose.yml", "docker-compose.prod.yml"])
+def test_stock_compose_stop_grace_covers_drain_and_cleanup(compose_name: str) -> None:
+    """Docker's default 10 s stop grace would SIGKILL the app drain mid-stream."""
+    compose: dict[str, Any] = yaml.safe_load((_REPO_ROOT / compose_name).read_text(encoding="utf-8"))
+
+    grace = _duration_seconds(compose["services"]["server"]["stop_grace_period"])
+
+    assert grace >= _compose_minimum_stop_grace_seconds()
+
+
+def test_docker_guide_states_the_compose_stop_grace_minimum() -> None:
+    guide = " ".join((_REPO_ROOT / "docs/deployment/docker.md").read_text(encoding="utf-8").split())
+    drain_timeout = Settings.model_fields["shutdown_drain_timeout_seconds"].default
+    extra = int(_compose_minimum_stop_grace_seconds() - drain_timeout)
+    minimum = int(_compose_minimum_stop_grace_seconds())
+
+    assert f"at least the drain timeout plus {extra} seconds" in guide
+    assert f"which is {minimum} seconds at the default" in guide

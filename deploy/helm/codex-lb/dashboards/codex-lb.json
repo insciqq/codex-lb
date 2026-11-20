@@ -349,7 +349,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "codex_lb_accounts_total{namespace=\"$namespace\"}",
+          "expr": "max by (status) (codex_lb_accounts_total{namespace=\"$namespace\",job=~\"$job\"})",
           "legendFormat": "{{status}}",
           "refId": "A"
         }

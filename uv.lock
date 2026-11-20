@@ -730,7 +730,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.13.4" },
+    { name = "aiohttp", specifier = ">=3.14.4" },
     { name = "aiohttp-retry", specifier = ">=2.9.1" },
     { name = "aiohttp-socks", specifier = ">=0.10.1" },
     { name = "aiosqlite", specifier = ">=0.22.1" },
@@ -738,7 +738,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.14.0" },
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "bcrypt", specifier = ">=4.3.0" },
-    { name = "brotli", specifier = ">=1.2.0" },
+    { name = "brotli", specifier = ">=1.2.1" },
     { name = "certifi", specifier = ">=2026.10.19" },
     { name = "cryptography", specifier = ">=46.0.6" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.162.0" },
