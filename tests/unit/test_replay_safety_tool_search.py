@@ -7,6 +7,7 @@ import pytest
 from app.core.types import JsonValue
 from app.modules.proxy.replay_safety import (
     project_responses_input_for_account_neutral_fresh_replay,
+    responses_input_carries_owner_bound_tool_search_state,
     responses_input_items_are_self_contained_fresh_replay,
     responses_payload_is_account_neutral_fresh_replay,
 )
@@ -243,3 +244,32 @@ def test_account_neutral_fresh_replay_rejects_malformed_tool_search_tools_field(
     input_items = _tool_search_pair(tools=tools)
 
     assert responses_payload_is_account_neutral_fresh_replay({"input": input_items}) is False
+
+
+@pytest.mark.parametrize(
+    ("item", "owner_bound"),
+    [
+        ({"type": "tool_search_call", "call_id": "c", "execution": "client", "arguments": {"query": "q"}}, False),
+        ({"type": "tool_search_call", "call_id": None, "execution": "server", "arguments": {"query": "q"}}, True),
+        (
+            {
+                "type": "tool_search_output",
+                "call_id": "c",
+                "execution": "client",
+                "tools": [{"type": "file_search", "vector_store_ids": ["vs_owner"]}],
+            },
+            True,
+        ),
+        (
+            {
+                "type": "tool_search_output",
+                "call_id": "c",
+                "execution": "client",
+                "tools": [{"type": "function", "name": "f", "parameters": {"type": "object", "properties": {}}}],
+            },
+            False,
+        ),
+    ],
+)
+def test_owner_bound_tool_search_state_is_detected(item, owner_bound) -> None:
+    assert responses_input_carries_owner_bound_tool_search_state([item]) is owner_bound

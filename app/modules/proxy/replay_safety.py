@@ -261,6 +261,28 @@ def _project_account_neutral_replay_item(
     return projected_item
 
 
+def responses_input_carries_owner_bound_tool_search_state(input_value: JsonValue) -> bool:
+    """Return whether input carries tool-search state only its owner can serve.
+
+    A server-executed tool search, or a discovered tool declaration that is
+    not account-neutral (for example one bound to the owner's vector store),
+    cannot follow the conversation to another account.
+    """
+    if not isinstance(input_value, list):
+        return False
+    for item in cast(list[JsonValue], input_value):
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type not in ("tool_search_call", "tool_search_output"):
+            continue
+        if item.get("execution") not in (None, "client"):
+            return True
+        if item_type == "tool_search_output" and not _tool_search_output_tools_are_account_neutral(item.get("tools")):
+            return True
+    return False
+
+
 def responses_input_items_are_self_contained_fresh_replay(input_items: list[JsonValue]) -> bool:
     unsettled_call_ids_by_type: dict[str, set[str]] = {item_type: set() for item_type in _TOOL_CALL_TYPES}
     seen_call_ids: set[str] = set()

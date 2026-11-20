@@ -271,6 +271,7 @@ from app.modules.proxy.helpers import (
 from app.modules.proxy.replay_safety import (
     AccountNeutralReplayProjection,
     project_responses_input_for_account_neutral_fresh_replay,
+    responses_input_carries_owner_bound_tool_search_state,
     responses_input_suffix_matches_pending_tool_calls,
     responses_input_suffix_retains_prior_output,
     responses_payload_is_account_neutral_fresh_replay,
@@ -2280,6 +2281,10 @@ class _HTTPBridgeStreamingMixin:
                 # ``no_durable_lookup`` shape tracked separately.
                 return False
             if durable_lookup.account_id != retiring_account_id:
+                return False
+            if responses_input_carries_owner_bound_tool_search_state(untrimmed_effective_payload.input):
+                # The body this rebind would send keeps tool-search state only
+                # the owner can serve; it stays owner-unavailable instead.
                 return False
             owner_retirement_attempted = True
             retired = await self._durable_bridge.retire_continuity_owner_if_unavailable(

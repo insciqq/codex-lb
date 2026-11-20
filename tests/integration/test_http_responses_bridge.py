@@ -8948,11 +8948,13 @@ async def test_v1_responses_http_bridge_resumes_a_thread_whose_owner_was_retired
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("owner_bound_tool_search", [False, True], ids=["plain", "owner-bound-tool-search"])
 async def test_v1_responses_http_bridge_rebinds_immediately_when_the_owner_cannot_return(
     async_client,
     app_instance,
     monkeypatch,
     caplog,
+    owner_bound_tool_search,
 ):
     """#1707 without the wait: the first resume after the owner dies must serve.
 
@@ -9051,6 +9053,26 @@ async def test_v1_responses_http_bridge_rebinds_immediately_when_the_owner_canno
         await session.commit()
 
     caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
+    second_input: object = "continue"
+    if owner_bound_tool_search:
+        second_input = [
+            {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+            {
+                "type": "tool_search_call",
+                "call_id": "call_tool_search",
+                "execution": "client",
+                "status": "completed",
+                "arguments": {"query": "docs"},
+            },
+            {
+                "type": "tool_search_output",
+                "call_id": "call_tool_search",
+                "execution": "client",
+                "status": "completed",
+                "tools": [{"type": "file_search", "vector_store_ids": ["vs_owner"]}],
+            },
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+        ]
     second = await asyncio.wait_for(
         async_client.post(
             "/backend-api/codex/responses",
@@ -9058,13 +9080,21 @@ async def test_v1_responses_http_bridge_rebinds_immediately_when_the_owner_canno
             json={
                 "model": "gpt-5.1",
                 "instructions": "Return exactly OK.",
-                "input": "continue",
+                "input": second_input,
                 "prompt_cache_key": "http-bridge-instant-retire",
             },
         ),
         timeout=_TEST_SYNC_TIMEOUT_SECONDS,
     )
 
+    if owner_bound_tool_search:
+        # A discovered declaration bound to the owner's vector store cannot
+        # follow the thread to another account, so the owner is not retired
+        # and the turn never reaches the healthy account.
+        assert second.status_code != 200
+        assert healthy_account.id not in served_account_ids
+        assert not [record for record in caplog.records if "owner_retired_on_request" in record.getMessage()]
+        return
     assert second.status_code == 200
     assert served_account_ids[-1] == healthy_account.id
     retired = [record.getMessage() for record in caplog.records if "owner_retired_on_request" in record.getMessage()]
