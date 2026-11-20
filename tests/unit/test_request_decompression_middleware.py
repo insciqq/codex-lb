@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import logging
 import zlib
 from collections.abc import AsyncIterator
 
@@ -520,12 +521,14 @@ async def test_request_decompression_ends_quietly_on_client_disconnect():
 
 
 @pytest.mark.asyncio
-async def test_client_disconnect_while_draining_compressed_body_does_not_escape_the_app():
-    """Through the whole middleware stack: no exception reaches the server.
+async def test_client_disconnect_while_draining_compressed_body_does_not_escape_the_app(caplog):
+    """Through a FastAPI app with the decompression and body-limit middlewares: no exception escapes.
 
     An exception escaping the ASGI app is what the server logs as
-    "Exception in ASGI application".
+    "Exception in ASGI application". The aborted upload still leaves a
+    debug-level trace.
     """
+    caplog.set_level(logging.DEBUG, logger=request_decompression_module.logger.name)
     app = _build_echo_app()
     messages = iter(
         [
@@ -544,6 +547,11 @@ async def test_client_disconnect_while_draining_compressed_body_does_not_escape_
 
     await app(_encoded_post_scope(), receive, send)
     assert sent == []
+    assert any(
+        record.levelno == logging.DEBUG
+        and "Client disconnected while sending an encoded request body" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio

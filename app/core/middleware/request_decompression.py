@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import logging
 import zlib
 from typing import Protocol
 
@@ -17,6 +18,8 @@ from app.core.middleware.request_body_limit import (
     request_body_limit_for_path,
     request_ingress_error_response,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _DecompressedBodyTooLarge(Exception):
@@ -168,6 +171,11 @@ class RequestDecompressionMiddleware:
             # The client left before sending the whole body: there is no
             # request to serve and nobody to answer. Ending here keeps an
             # ordinary disconnect from surfacing as an application error.
+            logger.debug(
+                "Client disconnected while sending an encoded request body method=%s path=%s",
+                scope.get("method"),
+                get_route_path(scope),
+            )
             return
         try:
             decompressed = _decompress_body(body, encodings, max_size)
