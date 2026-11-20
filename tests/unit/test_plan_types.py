@@ -37,6 +37,12 @@ def test_self_serve_business_prolite_alias_canonicalizes_to_prolite():
     assert account_plan_matches_allowed(upstream_plan, frozenset({"pro"})) is True
 
 
+def test_legacy_plan_alias_in_allowed_plans_matches_canonical_account_plan():
+    assert account_plan_matches_allowed("prolite", frozenset({"self_serve_business_prolite"})) is True
+    assert account_plan_matches_allowed("prolite", frozenset({" Self_Serve_Business_ProLite "})) is True
+    assert account_plan_matches_allowed("plus", frozenset({"self_serve_business_prolite"})) is False
+
+
 def test_unknown_plan_passes_when_explicitly_allowed():
     assert account_plan_matches_allowed("future_plan", frozenset({"future_plan", "plus"})) is True
 

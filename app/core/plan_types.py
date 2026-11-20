@@ -84,7 +84,9 @@ def account_plan_matches_allowed(value: str | None, allowed_plans: AbstractSet[s
     cleaned = _clean_plan_type(value)
     if cleaned is None:
         return False
-    normalized_allowed = {plan.lower() for plan in allowed_plans}
+    # Registry snapshots persisted before an alias was canonicalized can still
+    # name the raw upstream plan, so canonicalize both sides of the match.
+    normalized_allowed = {_canonical_plan_name(plan.strip()) for plan in allowed_plans}
     normalized = normalize_account_plan_type(cleaned)
     candidate = normalized or cleaned.lower()
     if candidate in normalized_allowed:

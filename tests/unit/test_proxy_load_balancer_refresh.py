@@ -3181,6 +3181,59 @@ async def test_select_account_treats_promax_as_pro_for_registry_plan_filter(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("account_plan", "snapshot_plans"),
+    [
+        ("prolite", frozenset({"self_serve_business_prolite"})),
+        ("self_serve_business_prolite", frozenset({"SELF_SERVE_BUSINESS_PROLITE"})),
+        ("prolite", frozenset({"self_serve_business_prolite", "pro"})),
+    ],
+)
+async def test_select_account_canonicalizes_legacy_plan_alias_in_registry_snapshot(
+    monkeypatch, account_plan: str, snapshot_plans: frozenset[str]
+) -> None:
+    # A registry snapshot persisted before the plan alias was canonicalized can
+    # still name the raw upstream plan; it must keep matching the account.
+    account = _make_account("acc-legacy-plan-alias", "legacy-plan-alias@example.com")
+    account.plan_type = account_plan
+    now = utcnow()
+    now_epoch = int(now.replace(tzinfo=timezone.utc).timestamp())
+    primary_entry = UsageHistory(
+        id=1,
+        account_id=account.id,
+        recorded_at=now,
+        window="primary",
+        used_percent=5.0,
+        reset_at=now_epoch + 300,
+        window_minutes=300,
+    )
+    secondary_entry = UsageHistory(
+        id=2,
+        account_id=account.id,
+        recorded_at=now,
+        window="secondary",
+        used_percent=5.0,
+        reset_at=now_epoch + 604800,
+        window_minutes=10080,
+    )
+    accounts_repo = StubAccountsRepository([account])
+    usage_repo = StubUsageRepository(primary={account.id: primary_entry}, secondary={account.id: secondary_entry})
+    sticky_repo = StubStickySessionsRepository()
+
+    monkeypatch.setattr(
+        "app.modules.proxy.load_balancer.get_model_registry",
+        lambda: SimpleNamespace(plan_types_for_model=lambda _model: snapshot_plans),
+    )
+
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+    selection = await balancer.select_account(model="gpt-5.4")
+
+    assert selection.account is not None
+    assert selection.account.id == account.id
+    assert selection.error_code is None
+
+
+@pytest.mark.asyncio
 async def test_select_account_returns_plan_support_error_for_ungated_model(monkeypatch) -> None:
     account = _make_account("acc-ungated-plan-filtered", "ungated-plan-filtered@example.com")
     now = utcnow()
