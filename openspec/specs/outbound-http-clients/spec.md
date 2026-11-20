@@ -410,7 +410,7 @@ SHALL track the current public Codex CLI release.
 
 ### Requirement: OAuth routing distinguishes targeted accounts from bootstrap flows
 
-Targeted OAuth operations MUST resolve the intended local account's current route: its active binding, or normal default/direct policy if unbound. Unknown targets and unusable active bindings MUST fail before upstream I/O. Untargeted OAuth MUST retain bootstrap policy: when active account bindings exist, use the default pool or fail closed if unavailable.
+Targeted OAuth operations for an intended local account with an active binding MUST use that binding. A targeted account without a binding, and untargeted OAuth, MUST follow bootstrap policy: when any active account binding exists, use the default pool or fail closed if it is unavailable; otherwise follow the dashboard default/direct setting. Unknown targets and unusable active bindings MUST fail before upstream I/O.
 
 #### Scenario: Targeted bound account needs no default pool
 - **GIVEN** the intended local account has an active bound proxy pool and no global default exists
@@ -418,12 +418,17 @@ Targeted OAuth operations MUST resolve the intended local account's current rout
 - **THEN** the operation MUST use the intended account's bound route
 - **AND** direct egress MUST be disabled for that operation
 
-#### Scenario: Targeted unbound account retains direct routing
+#### Scenario: Targeted unbound account keeps the bootstrap guard
 - **GIVEN** a targeted local account has no binding and global proxy routing is disabled
 - **AND** another local account has an active binding
 - **WHEN** the targeted account reauthenticates
-- **THEN** its server-side OAuth operations MAY use the existing direct route
-- **AND** MUST NOT use the other account's proxy
+- **THEN** its server-side OAuth operations MUST use the default pool, or fail before upstream I/O when no default pool is available
+- **AND** MUST NOT use direct egress or the other account's proxy
+
+#### Scenario: Targeted unbound account without any binding may use direct egress
+- **GIVEN** no active account binding exists and global proxy routing is disabled
+- **WHEN** a targeted account reauthenticates
+- **THEN** its server-side OAuth operations MAY use direct egress as before
 
 #### Scenario: Bound route failure prevents token exchange
 - **GIVEN** the targeted account's bound pool is inactive or has no active endpoint

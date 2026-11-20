@@ -188,3 +188,25 @@ The selected payload string is needed for native request bytes or enabled raw pa
 For example, an explicit Python HTTP request with a large tool result and tracing disabled reaches the real upstream with the same body while avoiding two full preparation encodes. The local-origin regression checks the exact body hash and observes the owning encodes. A separate enabled-trace case retains the required string, an auto-mode case retains the size decision, and an auto image-generation case below the byte budget skips the unused estimate. If a WebSocket handshake falls back to HTTP, active tracing regenerates its string from the rewritten HTTP payload so WebSocket-only metadata cannot remain in the trace.
 
 The controlled 1 MB and 8 MB workload confirms preparation CPU savings and exact body identity. Those savings apply to this local preparation work; they do not establish native latency parity or explain historical minute-scale waits. Retained clients with small incremental tool results have much less serialization work to remove.
+
+## Targeted OAuth routing
+
+The server cannot see which seat signs in until the code exchange returns
+tokens; the seat check runs after the exchange. Routing therefore follows
+the strictest route the flow can need before that point:
+
+* A bound target uses its own pool, with or without a default pool. This
+  fixes reauthentication of bound seats, which used to fail with
+  `default_pool_unconfigured` or go through the default pool.
+* An unbound target keeps the bootstrap guard of untargeted OAuth. While any
+  account has an active binding, the exchange uses the default pool or fails
+  closed. Letting it go direct would also send the code of a bound seat that
+  signs in by mistake through direct egress before the seat check rejects it.
+* With no active binding anywhere, the dashboard default/direct setting
+  applies as before.
+
+One case is inherent and not covered: for a bound target A, a sign-in as a
+different bound seat C exchanges C's code through A's pool before the seat
+check rejects the result. The credential is discarded, but the exchange has
+already left through A's route; the server cannot pick C's route without
+knowing the identity in advance.

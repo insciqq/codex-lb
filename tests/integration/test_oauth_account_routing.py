@@ -55,7 +55,7 @@ async def _isolate_oauth(db_setup, monkeypatch):
     await _drain_store()
 
 
-async def _seed_accounts(*, pool_active: bool = True) -> None:
+async def _seed_accounts(*, pool_active: bool = True, default_pool: bool = True, bound: bool = True) -> None:
     encrypted = TokenEncryptor().encrypt("test-token")
     async with SessionLocal() as session:
         for account_id in ("proxied", "direct"):
@@ -77,20 +77,32 @@ async def _seed_accounts(*, pool_active: bool = True) -> None:
         endpoint = ProxyEndpoint(
             id="proxied-endpoint", name="Proxied test endpoint", scheme="http", host="proxy.example.test", port=8080
         )
-        session.add_all(
-            [
-                pool,
-                endpoint,
-                ProxyPoolMember(id="member", pool=pool, endpoint=endpoint),
-                AccountProxyBinding(id="binding", account_id="proxied", pool_id="proxied-pool"),
-            ]
-        )
+        session.add_all([pool, endpoint, ProxyPoolMember(id="member", pool=pool, endpoint=endpoint)])
+        if bound:
+            session.add(AccountProxyBinding(id="binding", account_id="proxied", pool_id="proxied-pool"))
+        if default_pool:
+            fallback_pool = ProxyPool(id="default-pool", name="Default test pool")
+            fallback_endpoint = ProxyEndpoint(
+                id="default-endpoint",
+                name="Default test endpoint",
+                scheme="http",
+                host="default.example.test",
+                port=8080,
+            )
+            session.add_all(
+                [
+                    fallback_pool,
+                    fallback_endpoint,
+                    ProxyPoolMember(id="default-member", pool=fallback_pool, endpoint=fallback_endpoint),
+                ]
+            )
         settings = await session.get(DashboardSettings, 1)
         if settings is None:
             settings = DashboardSettings(id=1)
             session.add(settings)
+        # Global routing stays off: only the bootstrap guard uses the default pool.
         settings.upstream_proxy_routing_enabled = False
-        settings.upstream_proxy_default_pool_id = None
+        settings.upstream_proxy_default_pool_id = "default-pool" if default_pool else None
         await session.commit()
 
 
@@ -104,8 +116,12 @@ def _assert_route(account_id, kwargs):
         assert not route.fallbacks
         assert kwargs["allow_direct_egress"] is False
     else:
-        assert route is None
-        assert kwargs["allow_direct_egress"] is True
+        # An unbound target keeps the bootstrap guard while another account
+        # has a binding: the default pool, never direct egress.
+        assert route is not None
+        assert route.mode == "default_pool"
+        assert route.pool_id == "default-pool"
+        assert kwargs["allow_direct_egress"] is False
 
 
 @pytest.mark.parametrize("account_id", ["proxied", "direct"])
@@ -180,6 +196,37 @@ async def test_targeted_device_flow_uses_same_account_route_at_both_stages(async
     persist.assert_awaited_once()
     assert persist.await_args is not None
     assert persist.await_args.kwargs["intended_account_id"] == account_id
+
+
+async def test_unbound_target_without_default_pool_fails_closed_while_bindings_exist(async_client, monkeypatch):
+    await _seed_accounts(default_pool=False)
+    device = AsyncMock()
+    monkeypatch.setattr(oauth, "request_device_code", device)
+    response = await async_client.post("/api/oauth/start", json={"forceMethod": "device", "accountId": "direct"})
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "default_pool_unconfigured", response.json()
+    device.assert_not_awaited()
+
+
+async def test_unbound_target_uses_direct_egress_without_any_binding(async_client, monkeypatch):
+    await _seed_accounts(default_pool=False, bound=False)
+    device = AsyncMock(
+        return_value=DeviceCode(
+            verification_url="https://auth.example.test/device",
+            user_code="TEST-CODE",
+            device_auth_id="test-device",
+            interval_seconds=30,
+            expires_in_seconds=30,
+        )
+    )
+    monkeypatch.setattr(oauth, "request_device_code", device)
+    monkeypatch.setattr(oauth, "exchange_device_token", AsyncMock(return_value=None))
+    response = await async_client.post("/api/oauth/start", json={"forceMethod": "device", "accountId": "direct"})
+    assert response.status_code == 200, response.json()
+    device.assert_awaited_once()
+    assert device.await_args is not None
+    assert device.await_args.kwargs["route"] is None
+    assert device.await_args.kwargs["allow_direct_egress"] is True
 
 
 async def test_targeted_inactive_pool_never_opens_device_connection(async_client, monkeypatch):

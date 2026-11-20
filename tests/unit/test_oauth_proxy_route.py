@@ -44,12 +44,15 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize(
-    ("target_id", "default_enabled", "expected_pool"),
+    ("target_id", "default_enabled", "default_configured", "expected_pool"),
     [
-        ("bound", False, "bound_pool"),
-        ("bound", True, "bound_pool"),
-        ("direct", False, None),
-        ("direct", True, "default_pool"),
+        ("bound", False, False, "bound_pool"),
+        ("bound", True, True, "bound_pool"),
+        # An unbound target keeps the bootstrap guard while another account is
+        # bound: default pool when one is configured, otherwise fail closed.
+        ("direct", False, False, "default_pool_unconfigured"),
+        ("direct", False, True, "default_pool"),
+        ("direct", True, True, "default_pool"),
     ],
 )
 async def test_targeted_oauth_uses_local_account_routing_policy(
@@ -57,7 +60,8 @@ async def test_targeted_oauth_uses_local_account_routing_policy(
     monkeypatch: pytest.MonkeyPatch,
     target_id: str,
     default_enabled: bool,
-    expected_pool: str | None,
+    default_configured: bool,
+    expected_pool: str,
 ) -> None:
     @asynccontextmanager
     async def fake_background_session() -> AsyncIterator[AsyncSession]:
@@ -80,20 +84,23 @@ async def test_targeted_oauth_uses_local_account_routing_policy(
                 DashboardSettings(
                     id=1,
                     upstream_proxy_routing_enabled=default_enabled,
-                    upstream_proxy_default_pool_id="default_pool" if default_enabled else None,
+                    upstream_proxy_default_pool_id="default_pool" if default_configured else None,
                 ),
             ]
         )
         await session.commit()
 
+    if expected_pool == "default_pool_unconfigured":
+        with pytest.raises(OAuthError) as exc_info:
+            await oauth_service_module._oauth_route(account_id=target_id)
+        assert exc_info.value.code == "default_pool_unconfigured"
+        return
+
     route = await oauth_service_module._oauth_route(account_id=target_id)
 
-    if expected_pool is None:
-        assert route is None
-    else:
-        assert route is not None
-        assert route.pool_id == expected_pool
-        assert route.mode == ("account_bound" if target_id == "bound" else "default_pool")
+    assert route is not None
+    assert route.pool_id == expected_pool
+    assert route.mode == ("account_bound" if target_id == "bound" else "default_pool")
 
 
 async def test_targeted_oauth_rejects_unknown_account_before_resolving_route(

@@ -105,17 +105,32 @@ async def _require_oauth_target(session: AsyncSession, account_id: str) -> None:
 
 async def _oauth_route(*, account_id: str | None = None) -> ResolvedUpstreamRoute | None:
     async with get_background_session() as session:
-        if account_id is not None:
-            await _require_oauth_target(session, account_id)
-        strict = await _has_active_proxy_bindings(session) if account_id is None else False
         try:
+            if account_id is not None:
+                await _require_oauth_target(session, account_id)
+                # A bound target uses its own pool, with or without a default.
+                # strict=False stops the lookup at the binding: an unbound
+                # target falls through to the bootstrap policy below.
+                bound = await resolve_upstream_route(
+                    session,
+                    account_id=account_id,
+                    operation="oauth",
+                    scope="account",
+                    strict=False,
+                )
+                if bound is not None:
+                    return bound
+            # Untargeted flows and unbound targets keep the bootstrap guard:
+            # the browser sign-in may be performed as a different, bound seat,
+            # and its code is exchanged before the seat check can run, so any
+            # active binding requires the default pool or fails closed.
+            strict = await _has_active_proxy_bindings(session)
             return await resolve_upstream_route(
                 session,
-                account_id=account_id,
+                account_id=None,
                 operation="oauth",
-                scope="account" if account_id is not None else "bootstrap",
-                # Untargeted bootstrap retains its default-pool guard. Targeted
-                # flows use the selected account's binding or default policy.
+                scope="bootstrap",
+                # strict=True forces default-pool requirement; None defers to dashboard setting
                 strict=strict or None,
             )
         except UpstreamProxyRouteError as exc:
