@@ -47180,7 +47180,9 @@ async def test_process_http_bridge_upstream_text_fast_path_only_frames_text_that
     assert _relay_parity_parallel_patch_inputs(downstream_blocks[-1]) == ["C"]
     assert "response.output_text.delta" in fast_path_event_types
     assert "response.reasoning_summary_text.delta" in fast_path_event_types
-    assert "response.output_item.done" not in fast_path_event_types
+    # Each upstream frame is framed once from its unmodified text before
+    # processing; the relay path must never take the fast path for these items.
+    assert fast_path_event_types.count("response.output_item.done") == 2
 
 
 @pytest.mark.asyncio
