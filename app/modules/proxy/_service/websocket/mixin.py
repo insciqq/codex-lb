@@ -1162,8 +1162,15 @@ async def _process_and_forward_upstream_websocket_text(
                     exc_info=True,
                 )
             return True
-    if not suppress_downstream_event and parsed_frame.event_type == "response.completed":
-        upstream_control.completed_response_delivered = True
+    if not suppress_downstream_event and parsed_frame.event_type in _WEBSOCKET_RESPONSE_ID_DELIVERY_EVENT_TYPES:
+        # Once the client has seen a response id from this upstream it may
+        # chain its next turn on it: Codex does so after a completed response
+        # and after one that ended ``interrupted``. A transparent replay
+        # suppresses its upstream's ``response.created`` and delivers only the
+        # terminal under the already visible id, so every delivered lifecycle
+        # frame counts. Losing the idle upstream behind any such response
+        # loses context the client relies on.
+        upstream_control.response_id_delivered = True
     if upstream_control.reconnect_requested:
         should_reconnect = upstream_control.replay_request_state is not None
         if not should_reconnect:
@@ -1254,6 +1261,116 @@ async def _claim_sent_websocket_requests_for_reader(
         pending_lock.release()
 
 
+_WEBSOCKET_RESPONSE_ID_DELIVERY_EVENT_TYPES = frozenset(
+    {"response.created", "response.completed", "response.incomplete"}
+)
+
+
+async def _notify_codex_client_of_idle_upstream_loss(
+    websocket: WebSocket,
+    *,
+    upstream_control: _WebSocketUpstreamControl,
+    pending_requests: deque[_WebSocketRequestState],
+    pending_lock: anyio.Lock,
+    client_send_lock: anyio.Lock,
+    downstream_activity: _DownstreamWebSocketActivity,
+    continuity_state: _WebSocketContinuityState | None,
+) -> bool:
+    """Close an idle Codex downstream with 1012 after its upstream was lost.
+
+    Applies only once the client has seen a response from this upstream and
+    no request is pending or replay-owned. Returns whether the upstream was
+    idle; the caller then retires it.
+    """
+    if not upstream_control.response_id_delivered:
+        return False
+    async with client_send_lock:
+        async with pending_lock:
+            idle_codex_loss = not pending_requests and upstream_control.replay_request_state is None
+            if idle_codex_loss:
+                _retire_websocket_continuity_anchor_of_upstream(continuity_state, upstream_control)
+                # Publish the disconnect before yielding to the close handshake.
+                downstream_was_connected = not downstream_activity.disconnected
+                downstream_activity.mark_disconnected()
+                if downstream_was_connected:
+                    downstream_activity.closed_for_upstream_loss = True
+        if idle_codex_loss and downstream_was_connected:
+            try:
+                await websocket.close(code=1012, reason="Upstream connection lost; reconnect with full context")
+            except Exception:
+                _facade().logger.debug("Downstream already closed after idle upstream loss", exc_info=True)
+    return idle_codex_loss
+
+
+def _retire_websocket_continuity_anchor_of_upstream(
+    continuity_state: _WebSocketContinuityState | None,
+    upstream_control: _WebSocketUpstreamControl,
+) -> None:
+    """Retire the session anchor recorded on a lost idle upstream connection.
+
+    The client is told to reconnect with its full context, so that resend must
+    not receive the lost connection's anchor. An anchor recorded on another
+    connection is left intact.
+    """
+    if continuity_state is not None and continuity_state.last_completed_connection_id == upstream_control.connection_id:
+        _retire_websocket_continuity_anchor(continuity_state)
+
+
+async def _process_upstream_websocket_reader_crash(
+    proxy: _WebSocketServiceProtocol,
+    websocket: WebSocket,
+    *,
+    account: Account,
+    account_id_value: str,
+    pending_requests: deque[_WebSocketRequestState],
+    pending_lock: anyio.Lock,
+    client_send_lock: anyio.Lock,
+    api_key: ApiKeyData | None,
+    upstream_control: _WebSocketUpstreamControl,
+    response_create_gate: asyncio.Semaphore,
+    downstream_activity: _DownstreamWebSocketActivity,
+    continuity_state: _WebSocketContinuityState | None,
+    codex_session_affinity: bool,
+) -> bool:
+    """Finalize the requests sent on a transport whose reader crashed.
+
+    Like a transport end, only requests that crossed this transport's send
+    boundary are claimed; registered unsent requests stay with their sender,
+    which the reconnect latch makes transfer them at the send boundary. With
+    nothing in flight, a Codex client is told to reconnect. Returns ``True``:
+    the reader stops, as after a transport end.
+    """
+    reader_owned = await _claim_sent_websocket_requests_for_reader(
+        pending_requests,
+        pending_lock=pending_lock,
+    )
+    if reader_owned:
+        await proxy._fail_pending_websocket_requests(
+            account=account,
+            account_id_value=account_id_value,
+            pending_requests=reader_owned,
+            pending_lock=anyio.Lock(),
+            error_code="stream_incomplete",
+            error_message="Upstream websocket reader crashed before response.completed",
+            api_key=api_key,
+            websocket=websocket,
+            client_send_lock=client_send_lock,
+            response_create_gate=response_create_gate,
+            downstream_activity=downstream_activity,
+        )
+    elif codex_session_affinity:
+        await _notify_codex_client_of_idle_upstream_loss(
+            websocket,
+            upstream_control=upstream_control,
+            pending_requests=pending_requests,
+            pending_lock=pending_lock,
+            client_send_lock=client_send_lock,
+            downstream_activity=downstream_activity,
+            continuity_state=continuity_state,
+        )
+    return True
+
+
 async def _process_upstream_websocket_transport_end(
     proxy: _WebSocketServiceProtocol,
     websocket: WebSocket,
@@ -1288,30 +1405,24 @@ async def _process_upstream_websocket_transport_end(
         pending_requests,
         pending_lock=pending_lock,
     )
-    if codex_session_affinity and not reader_owned and upstream_control.completed_response_delivered:
-        async with client_send_lock:
-            async with pending_lock:
-                idle_codex_loss = not pending_requests and upstream_control.replay_request_state is None
-                if idle_codex_loss:
-                    if (
-                        continuity_state is not None
-                        and continuity_state.last_completed_connection_id == upstream_control.connection_id
-                    ):
-                        _retire_websocket_continuity_anchor(continuity_state)
-                    # Publish the disconnect before yielding to the close handshake.
-                    downstream_was_connected = not downstream_activity.disconnected
-                    downstream_activity.mark_disconnected()
-            if idle_codex_loss and downstream_was_connected:
-                try:
-                    await websocket.close(code=1012, reason="Upstream connection lost; reconnect with full context")
-                except Exception:
-                    _facade().logger.debug("Downstream already closed after idle upstream loss", exc_info=True)
-        if idle_codex_loss:
-            try:
-                await upstream.close()
-            except Exception:
-                _facade().logger.debug("Failed to close lost idle upstream websocket", exc_info=True)
-            return True
+    if (
+        codex_session_affinity
+        and not reader_owned
+        and await _notify_codex_client_of_idle_upstream_loss(
+            websocket,
+            upstream_control=upstream_control,
+            pending_requests=pending_requests,
+            pending_lock=pending_lock,
+            client_send_lock=client_send_lock,
+            downstream_activity=downstream_activity,
+            continuity_state=continuity_state,
+        )
+    ):
+        try:
+            await upstream.close()
+        except Exception:
+            _facade().logger.debug("Failed to close lost idle upstream websocket", exc_info=True)
+        return True
     replay_refusal_reasons: list[str] = []
     replay_request_state = None
     message_error_code = getattr(message, "error_code", None)
@@ -3105,15 +3216,24 @@ class _WebSocketMixin:
                         penalize_account=False,
                     )
                 client_disconnected = downstream_activity.disconnected
+                # A turn dropped because the proxy closed the downstream after
+                # losing the idle upstream was not abandoned by the client.
+                closed_for_upstream_loss = downstream_activity.closed_for_upstream_loss
                 cleanup_phase = "pending_requests"
                 await proxy._fail_pending_websocket_requests(
                     account=None if client_disconnected or scope_cancelled else account,
                     account_id_value=account.id if account is not None else upstream_account_id,
                     pending_requests=pending_requests,
                     pending_lock=pending_lock,
-                    error_code="client_disconnected" if client_disconnected else "stream_incomplete",
+                    error_code=(
+                        "client_disconnected"
+                        if client_disconnected and not closed_for_upstream_loss
+                        else "stream_incomplete"
+                    ),
                     error_message=(
-                        "Downstream websocket disconnected before response.completed"
+                        "Upstream websocket lost while idle; downstream told to reconnect before request was sent"
+                        if closed_for_upstream_loss
+                        else "Downstream websocket disconnected before response.completed"
                         if client_disconnected
                         else "Websocket scope cancelled before response.completed"
                         if scope_cancelled
@@ -5381,24 +5501,51 @@ class _WebSocketMixin:
                     exc_info=True,
                 )
         except Exception:
+            # Latch before the first await: a sender resuming from an
+            # admission or lease wait must not dispatch on a transport that has
+            # no reader. It transfers its unsent request at the send boundary.
+            upstream_control.reconnect_requested = True
             _facade().logger.warning(
                 "Upstream websocket reader crashed account_id=%s",
                 account_id_value,
                 exc_info=True,
             )
-            await proxy._fail_pending_websocket_requests(
-                account=account,
-                account_id_value=account_id_value,
-                pending_requests=pending_requests,
-                pending_lock=pending_lock,
-                error_code="stream_incomplete",
-                error_message="Upstream websocket reader crashed before response.completed",
-                api_key=api_key,
-                websocket=websocket,
-                client_send_lock=client_send_lock,
-                response_create_gate=response_create_gate,
-                downstream_activity=downstream_activity,
+            # Like a transport end, the claim and finalization of the sent
+            # requests run in an owned child task, so cancelling this reader
+            # cannot orphan a request after it left ``pending_requests``.
+            crash_task = scheduler.create_task(
+                _process_upstream_websocket_reader_crash(
+                    proxy,
+                    websocket,
+                    account=account,
+                    account_id_value=account_id_value,
+                    pending_requests=pending_requests,
+                    pending_lock=pending_lock,
+                    client_send_lock=client_send_lock,
+                    api_key=api_key,
+                    upstream_control=upstream_control,
+                    response_create_gate=response_create_gate,
+                    downstream_activity=downstream_activity,
+                    continuity_state=continuity_state,
+                    codex_session_affinity=codex_session_affinity,
+                ),
+                name=f"proxy-websocket-reader-crash-{account_id_value}",
             )
+            upstream_control.terminal_message_task = crash_task
+            _track_websocket_owned_task(proxy, crash_task)
+            try:
+                try:
+                    await asyncio.shield(crash_task)
+                except asyncio.CancelledError:
+                    await _await_owned_websocket_task_after_reader_cancellation(
+                        crash_task,
+                        failure_message="Websocket reader-crash task failed during reader cancellation",
+                        scheduler=scheduler,
+                    )
+                    raise
+            finally:
+                if upstream_control.terminal_message_task is crash_task:
+                    upstream_control.terminal_message_task = None
         finally:
             async with pending_lock:
                 has_pending_requests = bool(pending_requests)

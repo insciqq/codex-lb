@@ -1874,6 +1874,85 @@ async def test_reader_cancellation_after_transport_end_claim_waits_for_child_own
 
 
 @pytest.mark.asyncio
+async def test_reader_cancellation_after_reader_crash_claim_waits_for_child_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A reader that crashes claims the requests sent on its transport for
+    # finalization. Cancelling the reader after that claim must not orphan
+    # them: the claimed request is still finalized exactly once.
+    @asynccontextmanager
+    async def repo_factory() -> AsyncGenerator[SimpleNamespace]:
+        yield SimpleNamespace(request_logs=_RequestLogsRecorder(), api_keys=object())
+
+    service = proxy_service.ProxyService(cast(proxy_service.ProxyRepoFactory, repo_factory))
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings",
+        lambda: SimpleNamespace(sse_keepalive_interval_seconds=0.0),
+    )
+    monkeypatch.setattr(service, "_next_websocket_receive_timeout", AsyncMock(return_value=None))
+    cleanup_claimed = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleaned_request_ids: list[str] = []
+    request_state = _request_state("request_reader_crashed_after_claim", response_create_sent_at=1.0)
+    request_state.downstream_visible = True
+    pending_requests = deque([request_state])
+
+    async def blocking_cleanup(
+        *_args: object,
+        pending_requests: deque[proxy_service._WebSocketRequestState],
+        **_kwargs: object,
+    ) -> None:
+        cleaned_request_ids.extend(state.request_id for state in pending_requests)
+        cleanup_claimed.set()
+        await release_cleanup.wait()
+        pending_requests.clear()
+
+    monkeypatch.setattr(service, "_fail_pending_websocket_requests", blocking_cleanup)
+
+    class _CrashingUpstream:
+        async def receive(self) -> SimpleNamespace:
+            raise RuntimeError("reader bug")
+
+        async def close(self) -> None:
+            return None
+
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    relay = asyncio.create_task(
+        service._relay_upstream_websocket_messages(
+            cast(WebSocket, _DownstreamWebSocket()),
+            cast(UpstreamWebSocket, _CrashingUpstream()),
+            account=cast(Account, SimpleNamespace(id="account_reader_crash_claim")),
+            account_id_value="account_reader_crash_claim",
+            pending_requests=pending_requests,
+            pending_lock=anyio.Lock(),
+            client_send_lock=anyio.Lock(),
+            api_key=None,
+            upstream_control=upstream_control,
+            response_create_gate=asyncio.Semaphore(1),
+            proxy_request_budget_seconds=30.0,
+            stream_idle_timeout_seconds=30.0,
+            downstream_activity=proxy_service._DownstreamWebSocketActivity(),
+        )
+    )
+    await asyncio.wait_for(cleanup_claimed.wait(), timeout=1)
+    assert pending_requests == deque()
+    assert upstream_control.reconnect_requested is True
+
+    relay.cancel()
+    await asyncio.sleep(0)
+    release_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(relay, timeout=1)
+    await asyncio.sleep(0)
+
+    assert cleaned_request_ids == [request_state.request_id]
+    assert upstream_control.terminal_message_task is None
+    assert service._background_cleanup_tasks == set()
+
+
+@pytest.mark.asyncio
 async def test_scope_cancellation_finalizes_turn_when_connection_lease_release_fails(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

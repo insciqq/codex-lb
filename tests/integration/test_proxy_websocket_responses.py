@@ -13726,6 +13726,7 @@ class _TwoAccountWebSocketFailover:
         self.hard_sticky_owner_by_legacy_key: dict[str, str] = {}
         self.stream_errors: list[tuple[str, str]] = []
         self.turn_events: list[list[dict[str, Any]]] = []
+        self.final_close_code: int | None = None
         self.request_logs: list[dict[str, Any]] = []
 
     @staticmethod
@@ -13851,9 +13852,12 @@ class _TwoAccountWebSocketFailover:
         *,
         requests: list[dict[str, Any]] | None = None,
         headers: dict[str, str] | None = None,
+        await_close_after_last_turn: bool = False,
     ) -> tuple[list[dict[str, Any]], WebSocketDisconnect | None]:
         """Send each ``response.create`` in turn on one client socket and return
-        the last turn's frames; every turn's frames are kept in ``turn_events``."""
+        the last turn's frames; every turn's frames are kept in ``turn_events``.
+        With ``await_close_after_last_turn`` the downstream close that follows
+        the last turn is recorded in ``final_close_code``."""
         payloads = requests if requests is not None else [self.response_create([self.HISTORICAL_INPUT])]
         connect_kwargs: dict[str, Any] = {"headers": headers} if headers is not None else {}
         result: tuple[list[dict[str, Any]], WebSocketDisconnect | None] = ([], None)
@@ -13865,6 +13869,10 @@ class _TwoAccountWebSocketFailover:
                     self.turn_events.append(result[0])
                     if result[1] is not None:
                         break
+                if await_close_after_last_turn and result[1] is None:
+                    with pytest.raises(WebSocketDisconnect) as closed:
+                        websocket.receive_text()
+                    self.final_close_code = closed.value.code
                 return result
 
     def run_anchored_follow_up(
@@ -13872,6 +13880,7 @@ class _TwoAccountWebSocketFailover:
         app_instance,
         *,
         headers: dict[str, str] | None = None,
+        await_close_after_last_turn: bool = False,
     ) -> tuple[list[dict[str, Any]], WebSocketDisconnect | None]:
         """First turn completes, then a follow-up that repeats the history: the
         proxy injects the completed id as ``previous_response_id`` (Lite
@@ -13887,6 +13896,7 @@ class _TwoAccountWebSocketFailover:
                 self.response_create([self.HISTORICAL_INPUT, self.FOLLOW_UP_INPUT]),
             ],
             headers=headers if headers is not None else {"Authorization": "Bearer external-token"},
+            await_close_after_last_turn=await_close_after_last_turn,
         )
 
     BARE_SESSION_ID = "sid-ws-legacy-hard-owner"
@@ -14362,10 +14372,14 @@ def test_backend_responses_websocket_retries_anchored_accepted_abrupt_close_with
         ],
     )
     recovered_upstream = _recovered_upstream("resp_ws_anchored_close_recovered")
+    # The replay's upstream goes away right after the replayed response
+    # completes. Its response.created was suppressed, but the client chains on
+    # the response it saw, so it must be told to reconnect.
+    recovered_upstream._deferred_message_batches[0].append(_FakeUpstreamMessage("close", close_code=1000))
     failover = _TwoAccountWebSocketFailover(first_upstream, recovered_upstream)
     failover.install(monkeypatch)
 
-    events, disconnect = failover.run_anchored_follow_up(app_instance)
+    events, disconnect = failover.run_anchored_follow_up(app_instance, await_close_after_last_turn=True)
 
     created_id = _assert_ws_single_response_lifecycle_completed(events, disconnect)
     assert created_id == "resp_ws_anchored_accepted_closed"
@@ -14375,6 +14389,7 @@ def test_backend_responses_websocket_retries_anchored_accepted_abrupt_close_with
         recovered_upstream=recovered_upstream,
         anchor_response_id="resp_ws_anchor_turn_1",
     )
+    assert failover.final_close_code == 1012
 
 
 @pytest.mark.parametrize(

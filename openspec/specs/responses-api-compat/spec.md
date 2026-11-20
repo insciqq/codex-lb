@@ -1126,17 +1126,35 @@ The proxy MUST configure direct and routed upstream Responses WebSocket transpor
 - **AND** connections accepted before the change keep the value they were bound with
 
 ### Requirement: Idle upstream loss invalidates the Codex downstream transport
-When an ordinary Codex WebSocket upstream ends after completed work and there are no pending or replay-owned requests, the proxy MUST close the downstream with reconnect code 1012 and retire only the continuity anchor belonging to that physical upstream. It MUST NOT silently attach a later delta to a new physical upstream. Durable account ownership MUST remain unchanged. Active request termination and public OpenAI-compatible WebSocket behavior MUST retain their existing contracts.
+When an ordinary Codex WebSocket upstream ends after completed work and there are no pending or replay-owned requests, the proxy MUST close the downstream with reconnect code 1012 and retire only the continuity anchor belonging to that physical upstream. Completed work means that the client has received a `response.created`, `response.completed` or `response.incomplete` frame from that upstream, including a transparent replay's terminal delivered under an already visible response id, because Codex chains its next turn on a completed response and on one that ended `interrupted`. The same applies when the upstream reader fails unexpectedly; requests already sent on that upstream then fail as on a transport end, and a request registered but not yet sent stays with its sender, which moves it to a new upstream and dispatches it once. A turn that the proxy drops because it closed the downstream this way MUST NOT be recorded as a client disconnect. It MUST NOT silently attach a later delta to a new physical upstream. Durable account ownership MUST remain unchanged. Active request termination and public OpenAI-compatible WebSocket behavior MUST retain their existing contracts.
 
 #### Scenario: Completed upstream disappears
 - **WHEN** an upstream closes or fails after a completed Codex response with no pending request
 - **THEN** the downstream receives close code 1012 before a subsequent turn
 - **AND** a full-context reconnect does not receive an injected anchor from the lost socket
 
+#### Scenario: Upstream disappears after an interrupted response
+- **WHEN** an upstream closes after a delivered Codex `response.incomplete` with reason `interrupted` and no pending request
+- **THEN** the downstream receives close code 1012 before a subsequent turn
+
+#### Scenario: Upstream disappears after a transparent replay
+- **WHEN** a request completes through a transparent replay whose `response.created` was suppressed, and the replay's upstream then closes with no pending request
+- **THEN** the downstream receives close code 1012 before a subsequent turn
+
+#### Scenario: Reader fails while a turn waits to be sent
+- **WHEN** the reader of a Codex upstream fails while a registered request is still waiting for admission or its account lease
+- **THEN** that request is not failed by the reader and the downstream is not closed
+- **AND** the request is dispatched once on a new upstream
+
+#### Scenario: Upstream reader fails while idle
+- **WHEN** the reader of a Codex upstream that delivered a response fails unexpectedly with no pending request
+- **THEN** the downstream receives close code 1012 before a subsequent turn
+
 #### Scenario: Preparation overlaps the idle close
 - **WHEN** a new turn is received but request preparation or admission has not completed when the idle close commits
 - **THEN** that turn MUST NOT be dispatched upstream after the downstream reconnect notification
 - **AND** its reservation and admission ownership MUST be finalized
+- **AND** its request log records `stream_incomplete`, not `client_disconnected`
 
 #### Scenario: Another connection owns the newer anchor
 - **WHEN** an idle upstream ends after another connection has established the shared continuity anchor

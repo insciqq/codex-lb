@@ -21,6 +21,13 @@ client no longer has; a delta alone must still follow existing fail-closed
 continuity rules. Public OpenAI-compatible routes and active requests retain
 their existing lifecycle behavior.
 
+The notice arms once the client has seen a response id from the upstream: a
+`response.created`, or the terminal of a transparent replay that suppressed its
+own `response.created`. A crashed reader with nothing in flight triggers it too;
+requests already sent on that upstream fail as on a transport end, while a
+registered request still waiting to be sent stays with its sender, which moves
+it to a new upstream.
+
 A turn received during an idle close may still be awaiting preparation or admission. Registration shares the pending lock with the close decision and checks the disconnected state before dispatch; the registered state then uses normal scope cleanup.
 
 ## Client-supplied anchors are never replayed without them

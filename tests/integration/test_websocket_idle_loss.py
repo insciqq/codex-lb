@@ -23,7 +23,9 @@ from tests.integration.test_proxy_websocket_responses import (
     _FakeUpstreamMessage,
     _receive_until_terminal,
     _SequencedUpstreamWebSocket,
+    _websocket_response_batch,
     _websocket_settings,
+    _ws_event,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(20)]
@@ -220,6 +222,12 @@ def test_idle_loss_during_request_preparation_never_dispatches_the_late_turn(app
         if code == 1012:
             closed.set()
 
+    logs = []
+
+    async def record_request_log(service, **kwargs):
+        logs.append(kwargs)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", record_request_log)
     monkeypatch.setattr(proxy_module.ProxyService, "_prepare_websocket_response_create_request", prepare)
     monkeypatch.setattr(proxy_module.ProxyService, "_acquire_request_state_response_create_admission", admit)
     monkeypatch.setattr(proxy_module.ProxyService, "proxy_responses_websocket", proxy)
@@ -243,3 +251,195 @@ def test_idle_loss_during_request_preparation_never_dispatches_the_late_turn(app
             assert not states[1].response_create_gate_acquired
             client.portal.call(assert_reservation_released)
     assert fixture.released_leases == ["retained-test-0"]
+    # The proxy closed the downstream; the dropped turn is not a client disconnect.
+    late_turn_logs = [log for log in logs if log.get("status") != "success"]
+    assert [log.get("error_code") for log in late_turn_logs] == ["stream_incomplete"]
+
+
+def _previous_response_miss(response_id):
+    return _FakeUpstreamMessage(
+        "text",
+        text=json.dumps(
+            {
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "previous_response_not_found",
+                    "param": "previous_response_id",
+                    "message": f"Previous response with id '{response_id}' not found.",
+                },
+            }
+        ),
+    )
+
+
+def test_new_socket_does_not_replay_anchored_input_without_the_prior_reply(app_instance, monkeypatch):
+    # Socket A completes the first turn. Socket B shares its thread headers and
+    # anchors on that response with an input that repeats A's input prefix but
+    # not A's reply. Replaying it without the anchor would silently drop the
+    # reply, so the miss must reach the client instead.
+    first = _SequencedUpstreamWebSocket([], deferred_message_batches=[_completed_first_turn_upstream_batch(_PARENT)])
+    miss = _SequencedUpstreamWebSocket([], deferred_message_batches=[[_previous_response_miss(_PARENT)]])
+    replay = _SequencedUpstreamWebSocket(
+        [], deferred_message_batches=[_completed_first_turn_upstream_batch("resp_replay")]
+    )
+    fixture = _IdleSocketFixture(monkeypatch, [first, miss, replay])
+    with TestClient(app_instance) as client:
+        assert client.portal is not None
+        client.portal.call(fixture.prepare)
+        with client.websocket_connect(_PATH, headers=fixture.headers()) as downstream:
+            _complete(downstream, _create([_FIRST]), _PARENT)
+        with client.websocket_connect(_PATH, headers=fixture.headers()) as downstream:
+            downstream.send_json(_create([_FIRST, _DELTA], parent=_PARENT))
+            events, _disconnect = _receive_until_terminal(downstream)
+    assert replay.sent_text == []
+    assert events[-1]["type"] == "response.failed"
+    assert events[-1]["response"]["error"]["code"] == "previous_response_not_found"
+
+
+def test_idle_upstream_loss_after_an_interrupted_response_signals_reconnect(app_instance, monkeypatch):
+    # Codex treats a response that ended ``incomplete`` with reason
+    # ``interrupted`` as the parent of its next turn, so losing the idle
+    # upstream behind it loses that context just like after a completion.
+    batch = _completed_first_turn_upstream_batch(_PARENT)
+    batch[-1] = _ws_event(
+        {
+            "type": "response.incomplete",
+            "response": {"id": _PARENT, "status": "incomplete", "incomplete_details": {"reason": "interrupted"}},
+        }
+    )
+    first = _SequencedUpstreamWebSocket([], deferred_message_batches=[batch])
+    fixture = _IdleSocketFixture(monkeypatch, [first])
+    closed = threading.Event()
+    close_codes = []
+    original_close = WebSocket.close
+
+    async def close(ws, code=1000, reason=None):
+        close_codes.append(code)
+        await original_close(ws, code, reason)
+        closed.set()
+
+    monkeypatch.setattr(WebSocket, "close", close)
+    with TestClient(app_instance) as client:
+        assert client.portal is not None
+        client.portal.call(fixture.prepare)
+        with client.websocket_connect(_PATH, headers=fixture.headers()) as downstream:
+            downstream.send_json(_create([_FIRST]))
+            events, disconnect = _receive_until_terminal(downstream)
+            assert disconnect is None
+            assert events[-1]["type"] == "response.incomplete"
+            client.portal.call(first._messages.put_nowait, _FakeUpstreamMessage(kind="close", close_code=1000))
+            assert closed.wait(2), "client was left connected to a lost upstream cache"
+            assert close_codes[0] == 1012
+    assert fixture.released_leases == ["retained-test-0"]
+
+
+class _CrashingUpstreamWebSocket(_SequencedUpstreamWebSocket):
+    async def receive(self):
+        message = await super().receive()
+        if message.kind == "crash":
+            raise RuntimeError("reader bug")
+        return message
+
+
+def test_idle_upstream_reader_crash_signals_reconnect(app_instance, monkeypatch):
+    # A crashed reader leaves the upstream unusable just like a lost one.
+    first = _CrashingUpstreamWebSocket([], deferred_message_batches=[_completed_first_turn_upstream_batch(_PARENT)])
+    fixture = _IdleSocketFixture(monkeypatch, [first])
+    closed = threading.Event()
+    close_codes = []
+    original_close = WebSocket.close
+
+    async def close(ws, code=1000, reason=None):
+        close_codes.append(code)
+        await original_close(ws, code, reason)
+        closed.set()
+
+    monkeypatch.setattr(WebSocket, "close", close)
+    with TestClient(app_instance) as client:
+        assert client.portal is not None
+        client.portal.call(fixture.prepare)
+        with client.websocket_connect(_PATH, headers=fixture.headers()) as downstream:
+            _complete(downstream, _create([_FIRST]), _PARENT)
+            client.portal.call(first._messages.put_nowait, _FakeUpstreamMessage(kind="crash"))
+            assert closed.wait(2), "client was left connected to a crashed upstream reader"
+            assert close_codes[0] == 1012
+
+
+def test_reader_crash_leaves_a_turn_waiting_for_its_lease_with_the_sender(app_instance, monkeypatch):
+    # A turn registered on the socket but still waiting for its account lease
+    # was not sent on the crashed transport. The crash must neither fail it
+    # nor tell the client to reconnect; the sender moves it to a new upstream
+    # and dispatches it exactly once.
+    first = _CrashingUpstreamWebSocket([], deferred_message_batches=[_completed_first_turn_upstream_batch(_PARENT)])
+    replacement = _SequencedUpstreamWebSocket(
+        [], deferred_message_batches=[_completed_first_turn_upstream_batch("resp_after_crash")]
+    )
+    fixture = _IdleSocketFixture(monkeypatch, [first, replacement])
+    waiting = threading.Event()
+    resume = asyncio.Event()
+    lease_calls = []
+    original_acquire = proxy_module.ProxyService._acquire_account_response_create_lease_or_overload
+
+    async def acquire(service, *args, **kwargs):
+        lease_calls.append(1)
+        if len(lease_calls) == 2:
+            waiting.set()
+            await resume.wait()
+        return await original_acquire(service, *args, **kwargs)
+
+    close_codes = []
+    original_close = WebSocket.close
+
+    async def close(ws, code=1000, reason=None):
+        close_codes.append(code)
+        await original_close(ws, code, reason)
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_acquire_account_response_create_lease_or_overload", acquire)
+    monkeypatch.setattr(WebSocket, "close", close)
+    with TestClient(app_instance) as client:
+        assert client.portal is not None
+        client.portal.call(fixture.prepare)
+        with client.websocket_connect(_PATH, headers=fixture.headers()) as downstream:
+            _complete(downstream, _create([_FIRST]), _PARENT)
+            downstream.send_json(_create([_DELTA]))
+            assert waiting.wait(2)
+            client.portal.call(first._messages.put_nowait, _FakeUpstreamMessage(kind="crash"))
+            client.portal.call(asyncio.sleep, 0.2)
+            client.portal.call(resume.set)
+            events, disconnect = _receive_until_terminal(downstream)
+            assert disconnect is None
+            assert events[-1]["type"] == "response.completed"
+            assert events[-1]["response"]["id"] == "resp_after_crash"
+    assert len(first.sent_text) == 1
+    assert len(replacement.sent_text) == 1
+    assert 1012 not in close_codes
+
+
+def test_reader_crash_during_an_active_turn_fails_it_without_a_reconnect_notice(app_instance, monkeypatch):
+    # A turn already sent on the crashed transport fails as before; the
+    # upstream was not idle, so the client is not told to reconnect.
+    first = _CrashingUpstreamWebSocket(
+        [], deferred_message_batches=[_websocket_response_batch(_PARENT, completed=False)]
+    )
+    fixture = _IdleSocketFixture(monkeypatch, [first])
+    close_codes = []
+    original_close = WebSocket.close
+
+    async def close(ws, code=1000, reason=None):
+        close_codes.append(code)
+        await original_close(ws, code, reason)
+
+    monkeypatch.setattr(WebSocket, "close", close)
+    with TestClient(app_instance) as client:
+        assert client.portal is not None
+        client.portal.call(fixture.prepare)
+        with client.websocket_connect(_PATH, headers=fixture.headers()) as downstream:
+            downstream.send_json(_create([_FIRST]))
+            assert downstream.receive_json()["type"] == "response.created"
+            client.portal.call(first._messages.put_nowait, _FakeUpstreamMessage(kind="crash"))
+            events, disconnect = _receive_until_terminal(downstream)
+            assert disconnect is None
+            assert events[-1]["type"] == "response.failed"
+    assert 1012 not in close_codes

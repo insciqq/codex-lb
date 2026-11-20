@@ -35796,6 +35796,9 @@ async def test_websocket_reader_unexpected_processing_error_fails_pending_reques
         started_at=time.monotonic(),
         transport="websocket",
     )
+    # The request was sent on the transport whose reader crashes; a request
+    # still waiting to be sent would stay with its sender.
+    request_state.response_create_sent_at = time.monotonic()
     gate = asyncio.Semaphore(1)
     await gate.acquire()
     request_state.response_create_gate_acquired = True

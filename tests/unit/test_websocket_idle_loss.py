@@ -26,7 +26,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 @pytest.mark.parametrize("newer_anchor", [False, True])
 async def test_idle_loss_retires_only_the_physical_upstream_anchor(newer_anchor: bool) -> None:
-    control = _WebSocketUpstreamControl(completed_response_delivered=True)
+    control = _WebSocketUpstreamControl(response_id_delivered=True)
     continuity = _WebSocketContinuityState(
         last_completed_response_id="resp_current",
         last_completed_connection_id="newer_connection" if newer_anchor else control.connection_id,
@@ -64,7 +64,7 @@ async def test_idle_loss_retires_only_the_physical_upstream_anchor(newer_anchor:
 
 @pytest.mark.parametrize("boundary", ["public", "not_completed", "pending", "replay"])
 async def test_idle_notification_preserves_other_lifecycle_boundaries(boundary: str) -> None:
-    control = _WebSocketUpstreamControl(completed_response_delivered=boundary != "not_completed")
+    control = _WebSocketUpstreamControl(response_id_delivered=boundary != "not_completed")
     pending = deque()
     if boundary == "pending":
         pending.append(_request_state("unsent"))
@@ -95,7 +95,7 @@ async def test_idle_notification_preserves_other_lifecycle_boundaries(boundary: 
 
 
 async def test_request_admitted_while_close_waits_is_not_treated_as_idle() -> None:
-    control = _WebSocketUpstreamControl(completed_response_delivered=True)
+    control = _WebSocketUpstreamControl(response_id_delivered=True)
     socket = SimpleNamespace(close=AsyncMock())
     upstream = SimpleNamespace(close=AsyncMock())
     proxy = SimpleNamespace(_fail_pending_websocket_requests=AsyncMock())

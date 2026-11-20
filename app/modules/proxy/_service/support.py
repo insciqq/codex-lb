@@ -1571,7 +1571,7 @@ class _WebSocketContinuityAnchor:
 @dataclass(slots=True)
 class _WebSocketUpstreamControl:
     connection_id: str = field(default_factory=lambda: uuid4().hex)
-    completed_response_delivered: bool = False
+    response_id_delivered: bool = False
     reconnect_requested: bool = False
     retire_after_drain: bool = False
     suppress_downstream_event: bool = False
@@ -1594,6 +1594,9 @@ class _DownstreamWebSocketActivity:
     clock: Clock = field(default=REAL_CLOCK, kw_only=True)
     last_activity_at: float = field(init=False)
     disconnected: bool = False
+    # Set when the proxy closed the downstream because its idle upstream was
+    # lost, so cleanup does not attribute dropped turns to the client.
+    closed_for_upstream_loss: bool = False
 
     def __post_init__(self) -> None:
         self.last_activity_at = self.clock.monotonic()
