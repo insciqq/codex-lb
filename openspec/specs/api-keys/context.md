@@ -4,9 +4,22 @@ See `openspec/specs/api-keys/spec.md` for normative requirements.
 
 ## Background reset sweep progress
 
-The sweep pages by increasing limit ID and advances from the last selected row even when a guarded update misses. This keeps batches bounded without accumulating skipped IDs or weakening the exact `reset_at` ownership guard.
+The sweep pages through due limits in `(reset_at, id)` order on the `reset_at`
+index and keeps the stored sort key of the last selected row as its cursor.
+It advances past every selected row, including guarded misses, so batches stay
+bounded and a skipped row is reconsidered only on the next scheduled sweep.
+With nothing due it reads only the index range below `now`.
 
-For example, SQLite text `2026-09-19 10:30:18` parses to the same datetime as `2026-09-19 10:30:18.000000`, but does not equal SQLAlchemy's bound representation. That row remains expired and unchanged; it no longer keeps the sweep in a busy loop or blocks later rows. Timestamp normalization and compatibility in lazy-reset/reservation paths are outside this fix. A row already passed by the cursor is reconsidered on the next scheduled sweep.
+On SQLite `reset_at` is text. Older binders wrote other spellings of the same
+value, for example `2026-09-19 10:30:18`, `2026-09-19T10:30:18` or
+`2030-01-02T03:04:05.123456`, which parse to the same datetime as the bound
+`...SS.ffffff` form but never equal it as text. The guards therefore match the
+stored text against every lossless spelling of the expected value (separator,
+trailing fractional zeros, missing seconds). A value that differs, even below
+the millisecond (`.123400` versus `.123000`), never matches. A `T`-spelled
+deadline earlier today sorts after today's space spellings, so the SQLite sweep
+also scans today's `T` range below `now`. The guarded write stores the
+canonical form, so legacy rows heal on their next reset without a migration.
 
 ## Request-aware reservation estimate
 

@@ -4055,15 +4055,11 @@ async def test_reset_expired_limits_background_fallback_processes_batches(async_
         assert by_window[LimitWindow.MONTHLY].reset_at == now + timedelta(days=30)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("batch_size", [1, 2])
-async def test_reset_expired_limits_skips_legacy_sqlite_timestamps(async_client, monkeypatch, batch_size):
-    monkeypatch.setattr(api_keys_repository_module, "_EXPIRED_LIMIT_RESET_BATCH_SIZE", batch_size)
-
+async def _create_daily_limits_key(async_client, name: str) -> str:
     created = await async_client.post(
         "/api/api-keys/",
         json={
-            "name": "legacy-timestamp-reset",
+            "name": name,
             "allowedModels": [],
             "limits": [
                 {"limitType": limit_type, "limitWindow": "daily", "maxValue": 1000}
@@ -4072,59 +4068,302 @@ async def test_reset_expired_limits_skips_legacy_sqlite_timestamps(async_client,
         },
     )
     assert created.status_code == 200
-    key_id = created.json()["id"]
+    return created.json()["id"]
+
+
+async def _set_raw_reset_at(session, limit_id: int, raw_text: str) -> None:
+    # Bypass SQLAlchemy's datetime binder to reproduce legacy SQLite text.
+    await session.execute(
+        text("UPDATE api_key_limits SET reset_at = :reset_at WHERE id = :id"),
+        {"reset_at": raw_text, "id": limit_id},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize(
+    "legacy_text",
+    ["2026-09-19 10:30:18", "2026-09-19T10:30:18", "2026-09-19 10:30:18.000", "2026-09-19T10:30:18.000000"],
+)
+async def test_reset_expired_limits_resets_legacy_sqlite_timestamps(async_client, monkeypatch, batch_size, legacy_text):
+    """Legacy spellings reset; a row changed after selection is skipped once without stalling the sweep."""
+    monkeypatch.setattr(api_keys_repository_module, "_EXPIRED_LIMIT_RESET_BATCH_SIZE", batch_size)
+    key_id = await _create_daily_limits_key(async_client, "legacy-timestamp-reset")
     now = datetime(2026, 10, 19)
     expired_at = datetime(2026, 9, 19, 10, 30, 18)
     future_reset_at = now + timedelta(days=1)
+    concurrent_reset_at = now + timedelta(hours=6)
 
     async with SessionLocal() as session:
         if session.get_bind().dialect.name != "sqlite":
-            pytest.skip("Second-precision DateTime text comparison is SQLite-specific")
+            pytest.skip("Legacy DateTime text spellings are SQLite-specific")
         repo = ApiKeysRepository(session)
         limits = sorted(await repo.get_limits_by_key(key_id), key=lambda limit: limit.id)
         assert len(limits) == 5
-        skipped_ids = [limit.id for limit in limits[:2]]
-        resettable_ids = [limit.id for limit in limits[2:4]]
+        legacy_ids = [limit.id for limit in limits[:2]]
+        resettable_id = limits[2].id
+        moved_id = limits[3].id
         future_id = limits[4].id
         for limit in limits:
             limit.current_value = 42
             limit.reset_at = future_reset_at if limit.id == future_id else expired_at
         await session.commit()
-        # Bypass SQLAlchemy's datetime binder to reproduce legacy SQLite text.
-        for limit_id in skipped_ids:
-            await session.execute(
-                text("UPDATE api_key_limits SET reset_at = :reset_at WHERE id = :id"),
-                {"reset_at": "2026-09-19 10:30:18", "id": limit_id},
-            )
+        for limit_id in legacy_ids:
+            await _set_raw_reset_at(session, limit_id, legacy_text)
         await session.commit()
 
     async with SessionLocal() as session:
         select_count = 0
-        expected_selects = 4 // batch_size + 1
+        # Four due rows in the space-ordered range, then one empty batch per range.
+        expected_selects = -(-4 // batch_size) + 2
+        moved = False
         execute = session.execute
 
-        async def bounded_execute(statement, *args, **kwargs):
-            nonlocal select_count
-            if statement.is_select:
-                select_count += 1
-                assert select_count <= expected_selects, "Expired-limit sweep reselected guarded misses"
-            return await execute(statement, *args, **kwargs)
+        async def racing_execute(statement, *args, **kwargs):
+            nonlocal select_count, moved
+            if not statement.is_select:
+                return await execute(statement, *args, **kwargs)
+            select_count += 1
+            assert select_count <= expected_selects, "Expired-limit sweep reselected guarded misses"
+            rows = (await execute(statement, *args, **kwargs)).all()
+            if not moved and any(row.id == moved_id for row in rows):
+                # A request resets this limit between the sweep's select and its
+                # guarded update, so the update misses for a real reason.
+                moved = True
+                await execute(
+                    update(ApiKeyLimit)
+                    .where(ApiKeyLimit.id == moved_id)
+                    .values(current_value=0, reset_at=concurrent_reset_at)
+                )
+            return SimpleNamespace(all=lambda: rows)
 
-        monkeypatch.setattr(session, "execute", bounded_execute)
+        monkeypatch.setattr(session, "execute", racing_execute)
         reset_count = await ApiKeysRepository(session).reset_expired_limits(now=now)
-        assert reset_count == 2
+        assert moved
+        assert reset_count == 3
         assert select_count == expected_selects
 
     async with SessionLocal() as session:
         limits = {limit.id: limit for limit in await ApiKeysRepository(session).get_limits_by_key(key_id)}
-        for limit_id in skipped_ids:
-            assert limits[limit_id].current_value == 42
-            assert limits[limit_id].reset_at == expired_at
-        for limit_id in resettable_ids:
+        for limit_id in [*legacy_ids, resettable_id]:
             assert limits[limit_id].current_value == 0
             assert limits[limit_id].reset_at == datetime(2026, 10, 19, 10, 30, 18)
+        assert limits[moved_id].current_value == 0
+        assert limits[moved_id].reset_at == concurrent_reset_at
         assert limits[future_id].current_value == 42
         assert limits[future_id].reset_at == future_reset_at
+        # The guarded write stores the canonical text form.
+        stored = (
+            await session.execute(
+                text("SELECT reset_at FROM api_key_limits WHERE id = :id"),
+                {"id": legacy_ids[0]},
+            )
+        ).scalar_one()
+        assert stored == "2026-10-19 10:30:18.000000"
+
+
+@pytest.mark.asyncio
+async def test_reset_expired_limits_resets_same_day_t_separated_deadline(async_client):
+    """A ``T``-spelled deadline earlier today sorts after today's space spellings but is still due."""
+    key_id = await _create_daily_limits_key(async_client, "same-day-t-reset")
+    now = datetime(2026, 10, 19, 12, 0, 0)
+    async with SessionLocal() as session:
+        if session.get_bind().dialect.name != "sqlite":
+            pytest.skip("Legacy DateTime text spellings are SQLite-specific")
+        repo = ApiKeysRepository(session)
+        limits = sorted(await repo.get_limits_by_key(key_id), key=lambda limit: limit.id)
+        due_t, later_t, later_space = limits[0].id, limits[1].id, limits[2].id
+        for limit in limits:
+            limit.current_value = 42
+            limit.reset_at = now + timedelta(days=1)
+        await session.commit()
+        await _set_raw_reset_at(session, due_t, "2026-10-19T08:00:00")
+        await _set_raw_reset_at(session, later_t, "2026-10-19T13:00:00")
+        await _set_raw_reset_at(session, later_space, "2026-10-19 13:00:00")
+        await session.commit()
+
+    async with SessionLocal() as session:
+        assert await ApiKeysRepository(session).reset_expired_limits(now=now) == 1
+
+    async with SessionLocal() as session:
+        limits = {limit.id: limit for limit in await ApiKeysRepository(session).get_limits_by_key(key_id)}
+        assert limits[due_t].current_value == 0
+        assert limits[due_t].reset_at > now
+        assert limits[later_t].current_value == 42
+        assert limits[later_space].current_value == 42
+
+
+@pytest.mark.asyncio
+async def test_expired_limit_sweep_select_uses_the_deadline_index(async_client):
+    async with SessionLocal() as session:
+        if session.get_bind().dialect.name != "sqlite":
+            pytest.skip("EXPLAIN QUERY PLAN is SQLite-specific")
+        repo = ApiKeysRepository(session)
+        now = datetime(2026, 10, 19, 12, 0, 0)
+        for bounds in repo._expired_limit_ranges(now):
+            for cursor in (None, ("2026-09-19 10:30:18", 7)):
+                stmt = repo._expired_limits_batch_stmt(bounds=bounds, cursor=cursor)
+                compiled = stmt.compile(dialect=session.get_bind().dialect, compile_kwargs={"literal_binds": True})
+                plan = (await session.execute(text(f"EXPLAIN QUERY PLAN {compiled}"))).all()
+                details = " | ".join(str(row[-1]) for row in plan)
+                assert "USING INDEX idx_api_key_limits_reset_at" in details, details
+                assert "SCAN api_key_limits" not in details, details
+                assert "TEMP B-TREE" not in details, details
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("legacy_text", "reset_at"),
+    [
+        ("2030-01-02 03:04:05", datetime(2030, 1, 2, 3, 4, 5)),
+        ("2030-01-02T03:04:05", datetime(2030, 1, 2, 3, 4, 5)),
+        ("2030-01-02 03:04:05.000", datetime(2030, 1, 2, 3, 4, 5)),
+        ("2030-01-02 03:04:05.5", datetime(2030, 1, 2, 3, 4, 5, 500000)),
+        ("2030-01-02 03:04", datetime(2030, 1, 2, 3, 4)),
+        ("2030-01-02T03:04:05.123456", datetime(2030, 1, 2, 3, 4, 5, 123456)),
+        ("2030-01-02 03:04:05.1234", datetime(2030, 1, 2, 3, 4, 5, 123400)),
+    ],
+)
+async def test_usage_reservation_guards_match_legacy_sqlite_reset_text(async_client, legacy_text, reset_at):
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": f"legacy-timestamp-reserve-{legacy_text}",
+            "allowedModels": [],
+            "limits": [{"limitType": "total_tokens", "limitWindow": "daily", "maxValue": 1000}],
+        },
+    )
+    assert created.status_code == 200
+    key_id = created.json()["id"]
+
+    async with SessionLocal() as session:
+        if session.get_bind().dialect.name != "sqlite":
+            pytest.skip("Second-precision DateTime text comparison is SQLite-specific")
+        (limit,) = await ApiKeysRepository(session).get_limits_by_key(key_id)
+        limit_id = limit.id
+        await session.execute(
+            text("UPDATE api_key_limits SET reset_at = :reset_at, current_value = 0 WHERE id = :id"),
+            {"reset_at": legacy_text, "id": limit_id},
+        )
+        await session.commit()
+
+    async with SessionLocal() as session:
+        repo = ApiKeysRepository(session)
+        reserved = await repo.try_reserve_usage(limit_id, delta=10, expected_reset_at=reset_at)
+        assert reserved.success is True
+        assert reserved.current_value == 10
+        assert await repo.adjust_reserved_usage(limit_id, delta=-4, expected_reset_at=reset_at) is True
+        await session.commit()
+        assert (
+            await repo.reset_limit(limit_id, expected_reset_at=reset_at, new_reset_at=reset_at + timedelta(days=1))
+            is True
+        )
+
+    async with SessionLocal() as session:
+        (limit,) = await ApiKeysRepository(session).get_limits_by_key(key_id)
+        assert limit.current_value == 0
+        assert limit.reset_at == reset_at + timedelta(days=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_text", "expected_reset_at"),
+    [
+        # Equal to the millisecond, different at microsecond precision.
+        ("2030-01-02 03:04:05.123400", datetime(2030, 1, 2, 3, 4, 5, 123000)),
+        ("2030-01-02 03:04:05.123", datetime(2030, 1, 2, 3, 4, 5, 123400)),
+        ("2030-01-02T03:04:05.5", datetime(2030, 1, 2, 3, 4, 5, 500001)),
+    ],
+)
+async def test_usage_reservation_guards_reject_a_different_deadline(async_client, stored_text, expected_reset_at):
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": f"stale-deadline-{stored_text}",
+            "allowedModels": [],
+            "limits": [{"limitType": "total_tokens", "limitWindow": "daily", "maxValue": 1000}],
+        },
+    )
+    assert created.status_code == 200
+    key_id = created.json()["id"]
+
+    async with SessionLocal() as session:
+        if session.get_bind().dialect.name != "sqlite":
+            pytest.skip("Legacy DateTime text spellings are SQLite-specific")
+        (limit,) = await ApiKeysRepository(session).get_limits_by_key(key_id)
+        limit_id = limit.id
+        await session.execute(
+            text("UPDATE api_key_limits SET reset_at = :reset_at, current_value = 7 WHERE id = :id"),
+            {"reset_at": stored_text, "id": limit_id},
+        )
+        await session.commit()
+
+    async with SessionLocal() as session:
+        repo = ApiKeysRepository(session)
+        reserved = await repo.try_reserve_usage(limit_id, delta=10, expected_reset_at=expected_reset_at)
+        assert reserved.success is False
+        assert await repo.adjust_reserved_usage(limit_id, delta=-4, expected_reset_at=expected_reset_at) is False
+        await session.commit()
+        assert (
+            await repo.reset_limit(
+                limit_id, expected_reset_at=expected_reset_at, new_reset_at=expected_reset_at + timedelta(days=1)
+            )
+            is False
+        )
+
+    async with SessionLocal() as session:
+        stored = (
+            await session.execute(
+                text("SELECT reset_at, current_value FROM api_key_limits WHERE id = :id"), {"id": limit_id}
+            )
+        ).one()
+        assert tuple(stored) == (stored_text, 7)
+
+
+@pytest.mark.asyncio
+async def test_reset_expired_limits_matches_sub_millisecond_deadlines_exactly(async_client, monkeypatch):
+    """A sub-millisecond ``T`` spelling resets; a deadline changed below the millisecond is not reset."""
+    key_id = await _create_daily_limits_key(async_client, "sub-ms-sweep")
+    now = datetime(2026, 10, 19)
+    async with SessionLocal() as session:
+        if session.get_bind().dialect.name != "sqlite":
+            pytest.skip("Legacy DateTime text spellings are SQLite-specific")
+        limits = sorted(await ApiKeysRepository(session).get_limits_by_key(key_id), key=lambda limit: limit.id)
+        t_spelled, changed = limits[0].id, limits[1].id
+        for limit in limits:
+            limit.current_value = 42
+            limit.reset_at = now + timedelta(days=1)
+        await session.commit()
+        await _set_raw_reset_at(session, t_spelled, "2026-09-19T10:30:18.123456")
+        await _set_raw_reset_at(session, changed, "2026-09-19 10:30:18.123000")
+        await session.commit()
+
+    async with SessionLocal() as session:
+        execute = session.execute
+        changed_after_select = False
+
+        async def racing_execute(statement, *args, **kwargs):
+            nonlocal changed_after_select
+            result = await execute(statement, *args, **kwargs)
+            if statement.is_select and not changed_after_select:
+                rows = result.all()
+                if any(row.id == changed for row in rows):
+                    # Another writer moves the deadline by 400 microseconds.
+                    changed_after_select = True
+                    await _set_raw_reset_at(session, changed, "2026-09-19 10:30:18.123400")
+                return SimpleNamespace(all=lambda: rows)
+            return result
+
+        monkeypatch.setattr(session, "execute", racing_execute)
+        assert await ApiKeysRepository(session).reset_expired_limits(now=now) == 1
+        assert changed_after_select
+
+    async with SessionLocal() as session:
+        limits = {limit.id: limit for limit in await ApiKeysRepository(session).get_limits_by_key(key_id)}
+        assert limits[t_spelled].current_value == 0
+        assert limits[t_spelled].reset_at == datetime(2026, 10, 19, 10, 30, 18, 123456)
+        assert limits[changed].current_value == 42
+        assert limits[changed].reset_at == datetime(2026, 9, 19, 10, 30, 18, 123400)
 
 
 @pytest.mark.asyncio

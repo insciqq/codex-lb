@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
@@ -13,26 +13,37 @@ from app.modules.api_keys.repository import ApiKeyAccountCost, ApiKeysRepository
 pytestmark = pytest.mark.unit
 
 
+def _bind(dialect_name: str) -> Mock:
+    # ``AsyncSession.get_bind`` is synchronous.
+    return Mock(return_value=SimpleNamespace(dialect=SimpleNamespace(name=dialect_name)))
+
+
+def _candidate(limit_id: int, reset_at: datetime, window: LimitWindow) -> SimpleNamespace:
+    return SimpleNamespace(id=limit_id, reset_at=reset_at, limit_window=window, reset_at_key=reset_at)
+
+
 @pytest.mark.asyncio
 async def test_reset_expired_limits_counts_successful_updates_without_rowcount() -> None:
     session = AsyncMock()
+    session.get_bind = _bind("postgresql")
     repo = ApiKeysRepository(session)
     now = datetime(2026, 4, 23, 12, 0, 0)
     expired_limits = [
-        SimpleNamespace(id=101, reset_at=now - timedelta(days=2), limit_window=LimitWindow.DAILY),
-        SimpleNamespace(id=102, reset_at=now - timedelta(days=14), limit_window=LimitWindow.WEEKLY),
+        _candidate(102, now - timedelta(days=14), LimitWindow.WEEKLY),
+        _candidate(101, now - timedelta(days=2), LimitWindow.DAILY),
     ]
-
-    later_limit = SimpleNamespace(id=103, reset_at=now - timedelta(days=60), limit_window=LimitWindow.MONTHLY)
+    later_limit = _candidate(103, now - timedelta(days=1), LimitWindow.MONTHLY)
     executed_sql: list[str] = []
 
     async def _execute(statement):
-        executed_sql.append(str(statement.compile(compile_kwargs={"literal_binds": True})))
+        executed_sql.append(
+            str(statement.compile(dialect=postgresql_dialect(), compile_kwargs={"literal_binds": True}))
+        )
         call_index = len(executed_sql)
         if call_index == 1:
             return SimpleNamespace(all=lambda: expired_limits)
         if call_index == 2:
-            return SimpleNamespace(rowcount=-1, scalar_one_or_none=lambda: 101)
+            return SimpleNamespace(rowcount=-1, scalar_one_or_none=lambda: 102)
         if call_index == 3:
             return SimpleNamespace(rowcount=-1, scalar_one_or_none=lambda: None)
         if call_index == 4:
@@ -51,21 +62,25 @@ async def test_reset_expired_limits_counts_successful_updates_without_rowcount()
     assert len(executed_sql) == 6
     assert "RETURNING api_key_limits.id" in executed_sql[1]
     assert "RETURNING api_key_limits.id" in executed_sql[2]
-    assert "ORDER BY api_key_limits.id ASC" in executed_sql[0]
-    assert "api_key_limits.id > 102" in executed_sql[3]
-    assert "api_key_limits.id > 103" in executed_sql[5]
+    # Pages in deadline-index order and advances past the guarded miss (101).
+    assert "ORDER BY api_key_limits.reset_at ASC, api_key_limits.id ASC" in executed_sql[0]
+    assert "(api_key_limits.reset_at, api_key_limits.id) > ('2026-04-21 12:00:00', 101)" in executed_sql[3]
+    assert "(api_key_limits.reset_at, api_key_limits.id) > ('2026-04-22 12:00:00', 103)" in executed_sql[5]
     assert session.commit.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_reset_expired_limits_without_expired_rows_does_not_commit() -> None:
+@pytest.mark.parametrize(("dialect_name", "selects"), [("postgresql", 1), ("sqlite", 2)])
+async def test_reset_expired_limits_without_expired_rows_does_not_commit(dialect_name: str, selects: int) -> None:
     session = AsyncMock()
+    session.get_bind = _bind(dialect_name)
     session.execute.return_value = SimpleNamespace(all=lambda: [])
 
     reset_count = await ApiKeysRepository(session).reset_expired_limits(now=datetime(2026, 4, 23, 12, 0, 0))
 
     assert reset_count == 0
-    session.execute.assert_awaited_once()
+    # SQLite also checks today's ``T``-spelled range.
+    assert session.execute.await_count == selects
     session.commit.assert_not_awaited()
 
 
