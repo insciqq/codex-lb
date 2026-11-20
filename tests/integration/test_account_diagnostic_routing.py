@@ -319,3 +319,37 @@ async def test_quota_warmup_requires_completed_terminal(db_setup, transports, mo
         decision = await session.get(QuotaPlannerDecision, result.decision_id)
         assert row is not None and row.status == "error"
         assert decision is not None and decision.status == "failed"
+
+
+@pytest.mark.parametrize("broken", ["pool", "endpoint"])
+async def test_force_probe_stale_token_with_unavailable_binding_returns_proxy_error(async_client, monkeypatch, broken):
+    """The real AuthManager refreshes a stale token first and wraps the route
+    failure in RefreshError; the probe must still report the proxy outage."""
+    from datetime import timedelta
+
+    await _seed(broken=broken)
+    async with SessionLocal() as session:
+        account = await session.get(Account, "bound-seat")
+        assert account is not None
+        account.last_refresh = utcnow() - timedelta(days=90)
+        await session.commit()
+    dispatched = []
+
+    async def refresh(*args, **kwargs):
+        dispatched.append("refresh")
+        raise AssertionError("token refresh must not be dispatched")
+
+    @asynccontextmanager
+    async def lease():
+        dispatched.append("direct")
+        raise AssertionError("probe must not dispatch directly")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("app.modules.accounts.auth_manager.refresh_access_token", refresh)
+    monkeypatch.setattr(accounts_service, "lease_http_session", lease)
+
+    response = await async_client.post("/api/accounts/bound-seat/probe")
+
+    assert response.status_code == 502, response.text
+    assert response.json()["error"]["code"] == "upstream_proxy_unavailable"
+    assert dispatched == []

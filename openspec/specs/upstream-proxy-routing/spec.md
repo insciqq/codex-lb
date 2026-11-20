@@ -287,6 +287,13 @@ Force Probe and quota-planner warmup MUST resolve an upstream route using the se
 - **AND** Force Probe MUST return the dashboard upstream-proxy-unavailable error
 - **AND** quota warmup MUST follow its existing failed-execution and reservation-release path
 
+#### Scenario: Stale credentials do not change the probe's proxy error
+- **GIVEN** the selected account has an active binding to an unavailable pool
+- **AND** its access token is stale, so Force Probe refreshes it before probing
+- **WHEN** the refresh fails closed because the bound route is unavailable
+- **THEN** Force Probe MUST return the same dashboard upstream-proxy-unavailable error
+- **AND** neither the token refresh nor the probe request MUST be dispatched
+
 #### Scenario: Bound transport failure preserves diagnostic status
 - **GIVEN** a bound Force Probe cannot connect through its resolved proxy
 - **WHEN** the routed client reports a transport error

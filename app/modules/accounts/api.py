@@ -305,6 +305,14 @@ async def probe_account(
     except AccountNotProbableError as exc:
         raise DashboardConflictError(str(exc), code="account_not_probable") from exc
     except RefreshError as exc:
+        if exc.code == "upstream_proxy_unavailable":
+            # A stale token refreshes before the probe resolves its own route;
+            # an unavailable bound pool must surface the same 502 either way.
+            reason = exc.upstream_proxy_fail_closed_reason or exc.message
+            raise DashboardUpstreamError(
+                f"Unable to resolve upstream proxy route for account probe: {reason}",
+                code="upstream_proxy_unavailable",
+            ) from exc
         raise DashboardConflictError(
             f"Probe could not refresh account credentials: {exc.message}",
             code="account_probe_refresh_failed",
