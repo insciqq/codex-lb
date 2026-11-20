@@ -153,3 +153,17 @@ def test_release_guards_revalidate_pr_metadata_edits_in_their_own_workflow() -> 
     assert "python -m scripts.guard_beta_release" in beta_job
     assert "name: Stable release guard" in stable_job
     assert "python -m scripts.guard_stable_release" in stable_job
+
+
+def test_fork_registry_check_runs_offline_on_full_history_and_is_required() -> None:
+    workflow = _ci_workflow_text()
+    registry_job = _job_block(workflow, "fork-registry")
+    required_job = _job_block(workflow, "ci-required")
+
+    assert "\n    needs:" not in registry_job
+    assert "\n    if:" not in registry_job
+    assert "fetch-depth: 0" in registry_job
+    assert "run: python3 scripts/fork_registry.py check\n" in registry_job
+    assert "--strict" not in registry_job
+    assert "GITHUB_TOKEN" not in registry_job
+    assert "- fork-registry" in required_job

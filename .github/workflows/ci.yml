@@ -97,6 +97,22 @@ jobs:
       - name: Strictly validate changed OpenSpec folders
         run: python3 .github/scripts/validate_changed_openspec.py
 
+  # Fork registry: invalid or non-canonical decisions data fails; a stale
+  # fork/REGISTRY.md only warns. Trailers need the full history.
+  fork-registry:
+    name: Fork decisions registry
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the decisions registry
+        run: python3 scripts/fork_registry.py check
+
   frontend-lint:
     name: Frontend lint (eslint)
     runs-on: ubuntu-24.04
@@ -886,6 +902,7 @@ jobs:
       - changes
       - contributors
       - openspec
+      - fork-registry
       - frontend-lint
       - frontend-typecheck
       - frontend-test
