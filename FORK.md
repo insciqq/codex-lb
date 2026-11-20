@@ -90,3 +90,5 @@ Upstream PRs reviewed and rejected, one line each with the reason.
 * 2506: shutdown grace for DB-owning schedulers; a stop can return before the leader
   election registers a detached body, so the lease is released while the old leader's
   work still runs, and fresh post-cancel waits can exhaust the cleanup reserve.
+* 2634: paused/deactivated accounts' open WebSockets reject every turn, incl.
+  full-history retries; no failover or recycle; no production evidence.
