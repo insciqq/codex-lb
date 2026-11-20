@@ -883,13 +883,19 @@ async def lifespan(app: FastAPI):
             failure_message="Failed to drain proxy persistence tasks during shutdown",
         )
         database_tasks_drained = database_tasks_drained and final_proxy_persistence_drained
-        # A response.create debug dump is written in a worker thread; let an
-        # admitted one finish so its payload and meta pair is not cut in half.
-        remaining_drain_seconds = shutdown_state.remaining_drain_timeout_seconds() or 0.0
-        if not await drain_response_create_dumps(remaining_drain_seconds):
-            logger.warning(
-                "A response.create debug dump was still being written at shutdown; its files may be incomplete"
+        # Debug dumps of rejected response.create payloads are written one at a
+        # time in a worker thread. Give queued ones what is left of the drain
+        # deadline or, like the recovery-settlement pre-drain, of the
+        # post-drain reserve; a write already running completes anyway because
+        # loop teardown joins its thread.
+        unwritten_dumps = await drain_response_create_dumps(
+            max(
+                shutdown_state.remaining_drain_timeout_seconds() or 0.0,
+                shutdown_state.remaining_post_drain_cleanup_timeout_seconds() or 0.0,
             )
+        )
+        if unwritten_dumps:
+            logger.warning("%s queued response.create debug dumps were not written before shutdown", unwritten_dumps)
 
         # Cancel heartbeat and age the shared ring row near expiry.
         if heartbeat_task is not None:

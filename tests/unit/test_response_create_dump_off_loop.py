@@ -178,13 +178,39 @@ async def test_large_payload_dump_skips_the_whole_payload_summary(dump_dir, monk
     assert meta["request"]["request_text_bytes"] == len(text)
 
 
-async def test_drain_reports_a_dump_still_being_written(dump_dir, held_writer) -> None:
-    _reject("req_drain", _payload("h"))
+async def test_drain_counts_queued_dumps_and_logs_each_one_cancelled(dump_dir, held_writer, caplog) -> None:
+    caplog.set_level(logging.WARNING, logger=response_create.logger.name)
+    _reject("req_writing", _payload("h"))
+    _reject("req_queued", _payload("j"))
+    writing, queued = list(response_create._response_create_dump_tasks)
+    await asyncio.sleep(0.05)  # let the first dump start its write
 
-    assert await response_create.drain_response_create_dumps(0.05) is False
+    # The running write is not counted: loop teardown joins its thread.
+    assert await response_create.drain_response_create_dumps(0.05) == 1
+
+    queued.cancel()
+    await asyncio.gather(queued, return_exceptions=True)
+    cancelled = [r.getMessage() for r in caplog.records if "cancelled before it was written" in r.getMessage()]
+    assert len(cancelled) == 1 and "req_queued" in cancelled[0]
+
     held_writer.release.set()
-    assert await response_create.drain_response_create_dumps(_WRITER_HOLD_SECONDS) is True
-    assert await response_create.drain_response_create_dumps(0) is True
+    await asyncio.wait_for(writing, timeout=_WRITER_HOLD_SECONDS)
+    assert await response_create.drain_response_create_dumps(0) == 0
+    assert len(list(dump_dir.glob("*.meta.json"))) == 1
+
+
+async def test_writer_failure_outside_its_own_handler_is_logged_with_the_request(dump_dir, monkeypatch, caplog) -> None:
+    caplog.set_level(logging.ERROR, logger=response_create.logger.name)
+
+    def failing_scan(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("scan failed")
+
+    monkeypatch.setattr(response_create, "_existing_response_create_dump", failing_scan)
+    _reject("req_scan_failure", _payload("k"))
+    await asyncio.gather(*response_create._response_create_dump_tasks, return_exceptions=True)
+
+    failures = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Failed to write")]
+    assert failures == ["Failed to write guarded response.create dump request_id=req_scan_failure"]
 
 
 async def test_pending_dumps_are_bounded_by_retained_bytes(monkeypatch, caplog) -> None:
@@ -225,7 +251,7 @@ async def test_pending_dumps_are_bounded_by_retained_bytes(monkeypatch, caplog) 
         assert len(dropped) == 1 and "retained_bytes=" in dropped[0]
     finally:
         await asyncio.gather(*pending)
-    assert not response_create._response_create_dump_retained_bytes
+    assert not response_create._response_create_pending_dumps
 
 
 async def test_payload_larger_than_the_byte_budget_is_not_retained(dump_dir, monkeypatch, caplog) -> None:

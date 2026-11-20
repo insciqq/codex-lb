@@ -18,9 +18,12 @@ stalled for as long as each dump took.
   budget, is dropped with a warning naming the request and its size; the drop
   path does no hashing or encoding on the loop.
 - Skip the meta field summary above 1 MiB: it parses the whole payload, which
-  holds the GIL and so stalls the loop even from a worker thread.
-- Graceful shutdown waits for pending dumps within its remaining drain deadline
-  and warns if the deadline expires first.
+  holds the GIL and so stalls the loop even from a worker thread. Dumps of
+  payloads over the upstream limit therefore never carry it; derive it offline
+  from the `.gz` file.
+- Graceful shutdown waits for pending dumps within the remaining drain deadline
+  or post-drain reserve. A started write completes; each queued dump that is
+  not written is logged with its request id, plus a warning with their count.
 - Fingerprint dedup, retention, and the dump location are unchanged. No setting
   enables or disables dumps.
 

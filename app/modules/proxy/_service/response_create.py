@@ -80,8 +80,18 @@ _RESPONSE_CREATE_DUMP_MAX_PENDING_BYTES = 64 << 20
 # thread. Above this size the summary is skipped; the payload file has it all.
 _RESPONSE_CREATE_DUMP_SUMMARY_MAX_BYTES = 1 << 20
 _response_create_dump_tasks: list[asyncio.Task[bool]] = []
-# Memory each pending dump pins, released when its task finishes in any way.
-_response_create_dump_retained_bytes: dict[asyncio.Task[bool], int] = {}
+
+
+@dataclass(slots=True)
+class _PendingResponseCreateDump:
+    request_id: str
+    log_prefix: str
+    # Memory the dump pins, released when its task finishes in any way.
+    retained_bytes: int
+    started: bool = False
+
+
+_response_create_pending_dumps: dict[asyncio.Task[bool], _PendingResponseCreateDump] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -775,7 +785,7 @@ def _submit_response_create_dump(
         _forget_response_create_dump(stale)
     # O(1): the size of the str object this dump would keep alive.
     retained_bytes = sys.getsizeof(request_state.request_text or "")
-    pending_bytes = sum(_response_create_dump_retained_bytes.values())
+    pending_bytes = sum(pending.retained_bytes for pending in _response_create_pending_dumps.values())
     if (
         len(_response_create_dump_tasks) >= _RESPONSE_CREATE_DUMP_MAX_PENDING
         or pending_bytes + retained_bytes > _RESPONSE_CREATE_DUMP_MAX_PENDING_BYTES
@@ -808,7 +818,11 @@ def _submit_response_create_dump(
         )
     )
     _response_create_dump_tasks.append(task)
-    _response_create_dump_retained_bytes[task] = retained_bytes
+    _response_create_pending_dumps[task] = _PendingResponseCreateDump(
+        request_id=request_state.request_id,
+        log_prefix=log_prefix,
+        retained_bytes=retained_bytes,
+    )
     task.add_done_callback(_finish_response_create_dump)
 
 
@@ -821,37 +835,61 @@ async def _write_response_create_dump_after(
     if previous is not None:
         # Whatever the earlier dump's outcome, this one starts after it.
         await asyncio.wait((previous,))
+    current = asyncio.current_task()
+    pending = _response_create_pending_dumps.get(current) if current is not None else None
+    if pending is not None:
+        pending.started = True
     return bool(await asyncio.to_thread(write_response_create_dump, source, **kwargs))
 
 
-async def drain_response_create_dumps(timeout_seconds: float, *, scheduler: Scheduler = REAL_SCHEDULER) -> bool:
-    """Wait for pending background dumps to finish; ``False`` if any is still pending.
+async def drain_response_create_dumps(timeout_seconds: float, *, scheduler: Scheduler = REAL_SCHEDULER) -> int:
+    """Wait for pending background dumps; return how many never started writing.
 
-    Shutdown calls this so the process does not exit between a payload and its
-    ``.meta.json``. A write runs in a worker thread and cannot be cancelled, so
-    on timeout the caller can only report it.
+    Shutdown calls this so the process does not exit with dumps still queued.
+    A dump already being written completes even past the deadline: its worker
+    thread cannot be cancelled and loop teardown joins it. A dump still queued
+    when the deadline passes is cancelled with the loop and logged then.
     """
     pending = set(_response_create_dump_tasks)
     if not pending:
-        return True
+        return 0
     if timeout_seconds > 0:
         await scheduler.wait(pending, timeout=timeout_seconds)
-    return all(task.done() for task in pending)
+    unstarted = 0
+    for task in pending:
+        record = _response_create_pending_dumps.get(task)
+        if not task.done() and record is not None and not record.started:
+            unstarted += 1
+    return unstarted
 
 
-def _forget_response_create_dump(task: asyncio.Task[bool]) -> None:
+def _forget_response_create_dump(task: asyncio.Task[bool]) -> _PendingResponseCreateDump | None:
     if task in _response_create_dump_tasks:
         _response_create_dump_tasks.remove(task)
-    _response_create_dump_retained_bytes.pop(task, None)
+    return _response_create_pending_dumps.pop(task, None)
 
 
 def _finish_response_create_dump(task: asyncio.Task[bool]) -> None:
-    _forget_response_create_dump(task)
+    record = _forget_response_create_dump(task)
+    request_id = record.request_id if record is not None else None
+    log_prefix = record.log_prefix if record is not None else "queued"
     if task.cancelled():
+        if record is None or not record.started:
+            logger.warning(
+                "Dropped %s response.create dump request_id=%s: cancelled before it was written",
+                log_prefix,
+                request_id,
+            )
+        # A started write keeps running in its worker thread and completes.
         return
     exc = task.exception()
     if exc is not None:
-        logger.error("Failed to write response.create dump", exc_info=exc)
+        logger.error(
+            "Failed to write %s response.create dump request_id=%s",
+            log_prefix,
+            request_id,
+            exc_info=exc,
+        )
 
 
 def _write_response_create_dump(
