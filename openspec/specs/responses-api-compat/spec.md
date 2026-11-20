@@ -1283,7 +1283,7 @@ When an upstream Responses WebSocket rejects an anchored request with `type = "i
 - **THEN** the service MUST NOT classify that error as a previous-response continuity miss
 
 ### Requirement: Public Responses errors mask previous-response misses
-Public Responses endpoints MUST NOT return an OpenAI-shaped `previous_response_not_found` error to clients. If a lower layer still raises or collects that error, the API layer MUST rewrite it to a retryable `stream_incomplete` continuity failure and remove the missing response id from the public payload.
+Public Responses endpoints MUST NOT return an OpenAI-shaped `previous_response_not_found` error to clients. If a lower layer still raises or collects that error, the API layer MUST rewrite it to a retryable `stream_incomplete` continuity failure and remove the missing response id from the public payload. The direct WebSocket exception for a client-supplied `previous_response_id` is defined by "Direct WebSocket previous-response misses never leak raw upstream errors"; that case returns only the sanitized canonical code, never the raw envelope or the missing id.
 
 #### Scenario: API layer receives an upstream previous-response miss
 - **WHEN** a public `/responses`, `/v1/responses`, `/responses/compact`, or `/v1/responses/compact` handler receives an error with `code=previous_response_not_found`
@@ -2335,7 +2335,7 @@ Streaming `/v1/responses` responses MUST include anti-buffering/cache headers su
 - **AND** the first OpenAI-contract event remains `response.created` when upstream accepts the request
 
 ### Requirement: Codex WebSocket top-level previous-response errors are masked
-When serving the Codex-native `/backend-api/codex/responses` WebSocket route, the proxy MUST treat upstream `type: "error"` frames with top-level error fields as upstream error envelopes if the frame does not contain a nested `error` object. If those fields describe a `previous_response_not_found` continuity miss, the proxy MUST use the existing continuity fail-closed behavior and MUST NOT forward the raw upstream error envelope or the missing response id to the downstream Codex client. The proxy MUST surface the sanitized canonical `previous_response_not_found` code to the Codex-native client so an unmodified client recovers, while public `/v1/responses` clients receive `stream_incomplete`.
+When serving the Codex-native `/backend-api/codex/responses` WebSocket route, the proxy MUST treat upstream `type: "error"` frames with top-level error fields as upstream error envelopes if the frame does not contain a nested `error` object. If those fields describe a `previous_response_not_found` continuity miss, the proxy MUST use the existing continuity fail-closed behavior and MUST NOT forward the raw upstream error envelope or the missing response id to the downstream Codex client. The proxy MUST surface the sanitized canonical `previous_response_not_found` code to the Codex-native client so an unmodified client recovers, while public `/v1/responses` clients receive `stream_incomplete` (except for a client-supplied `previous_response_id`, as defined by "Direct WebSocket previous-response misses never leak raw upstream errors").
 
 #### Scenario: ChatGPT backend emits top-level previous-response miss on Codex websocket
 - **WHEN** a `/backend-api/codex/responses` WebSocket follow-up has `previous_response_id`
@@ -2614,7 +2614,7 @@ rule after downstream-visible stream or websocket output has been emitted.
 
 When serving `/backend-api/codex/responses` or bridge-backed Responses WebSocket traffic, the service MUST classify upstream `type: "error"` frames using the same wrapped-error shape that the official Codex client accepts: a non-2xx `status` or `status_code` field indicates an upstream HTTP-style error, and the error detail MAY appear either in a nested `error` object or in top-level fields such as `code`, `message`, `param`, and `error_type`.
 
-Top-level error normalization MUST NOT treat the event discriminator `type: "error"` as the upstream error type. If the frame provides `error_type`, the service MUST use that value as the error type for classification/rewrites. Existing continuity protection remains authoritative: frames describing `previous_response_not_found` MUST be rewritten or recovered through the established continuity path, surfacing the sanitized canonical `previous_response_not_found` code on the Codex-native route and `stream_incomplete` on public `/v1/responses`, without exposing the raw upstream error envelope or the missing response id.
+Top-level error normalization MUST NOT treat the event discriminator `type: "error"` as the upstream error type. If the frame provides `error_type`, the service MUST use that value as the error type for classification/rewrites. Existing continuity protection remains authoritative: frames describing `previous_response_not_found` MUST be rewritten or recovered through the established continuity path, surfacing the sanitized canonical `previous_response_not_found` code on the Codex-native route and `stream_incomplete` on public `/v1/responses` (except for a client-supplied `previous_response_id`, as defined by "Direct WebSocket previous-response misses never leak raw upstream errors"), without exposing the raw upstream error envelope or the missing response id.
 
 #### Scenario: status_code alias is classified as upstream error status
 
@@ -2828,7 +2828,7 @@ The behavior for Codex-native WebSocket previous-response continuity MUST be spe
 - **AND** direct `/backend-api/codex/responses` WebSocket tests or Codex client WebSocket tests cover the changed behavior
 
 ### Requirement: Direct WebSocket previous-response misses never leak raw upstream errors
-When a direct Responses WebSocket request depends on `previous_response_id`, the service MUST NOT send the raw upstream `previous_response_not_found` error envelope or the missing upstream response id to the downstream client. On the Codex-native `/backend-api/codex/responses` route the service MUST surface the sanitized canonical `error.code = "previous_response_not_found"` (raw envelope and id removed) so an unmodified Codex client recovers; on public `/v1/responses` the service MUST rewrite the failure to a retryable `stream_incomplete` continuity error. This applies to both `/v1/responses` and `/backend-api/codex/responses` WebSocket clients.
+When a direct Responses WebSocket request depends on `previous_response_id`, the service MUST NOT send the raw upstream `previous_response_not_found` error envelope or the missing upstream response id to the downstream client. On the Codex-native `/backend-api/codex/responses` route the service MUST surface the sanitized canonical `error.code = "previous_response_not_found"` (raw envelope and id removed) so an unmodified Codex client recovers; on public `/v1/responses` the service MUST rewrite the failure to a retryable `stream_incomplete` continuity error, except when the request carries a client-supplied `previous_response_id`. Such a request is never replayed without its anchor, and only the client can recover by resending without it, so the public route MUST also surface the sanitized canonical `error.code = "previous_response_not_found"` for it instead of a retryable error the client would repeat with the same anchor. This applies to both `/v1/responses` and `/backend-api/codex/responses` WebSocket clients.
 
 #### Scenario: Codex Desktop continue receives upstream previous-response miss before response.created
 - **WHEN** a Codex-native `/backend-api/codex/responses` WebSocket `response.create` request includes `previous_response_id`
@@ -2844,6 +2844,12 @@ When a direct Responses WebSocket request depends on `previous_response_id`, the
 - **THEN** owner lookup uses request-log metadata or fails closed with a retryable error
 - **AND** it does not continue on an unpinned account
 - **AND** it does not expose the raw upstream error envelope or the missing previous response id
+
+#### Scenario: Public client anchor misses upstream
+- **WHEN** a public `/v1/responses` WebSocket `response.create` request carries a client-supplied `previous_response_id`
+- **AND** upstream reports `previous_response_not_found` before `response.created`
+- **THEN** the downstream client receives the sanitized canonical `previous_response_not_found` code
+- **AND** the payload carries neither the raw upstream envelope nor the missing previous response id
 
 ### Requirement: Failed precreated HTTP bridge replay retires stale sessions
 

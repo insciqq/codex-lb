@@ -23,6 +23,20 @@ their existing lifecycle behavior.
 
 A turn received during an idle close may still be awaiting preparation or admission. Registration shares the pending lock with the close decision and checks the disconnected state before dispatch; the registered state then uses normal scope cleanup.
 
+## Client-supplied anchors are never replayed without them
+
+A client that sends its own `previous_response_id` either sends the incremental
+input (Codex does) or a history the proxy cannot verify against the anchor's
+real output. Replaying such a request without the anchor could silently drop
+earlier context, so the proxy never does: a stale or unknown client anchor
+surfaces `previous_response_not_found`, and the client resends its complete
+input without the anchor, as it would against upstream. Public `/v1/responses`
+WebSocket clients get the same sanitized code here instead of the usual
+`stream_incomplete` mask, which would make them retry the same anchor. Anchors
+the proxy injected itself are different: the client's own unanchored body is
+complete by definition, so a stale injected anchor is still recovered by
+replaying that body.
+
 ## Rationale and Decisions
 
 - **Responses as canonical wire format:** Internally we treat Responses as the source of truth to avoid divergent streaming semantics.

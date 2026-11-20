@@ -3269,188 +3269,6 @@ def test_backend_responses_websocket_lite_restated_delta_is_not_replayed_after_p
     assert recovered_upstream.sent_text == []
 
 
-def test_backend_responses_websocket_body_lite_fresh_replay_keeps_marker_and_continuity(
-    app_instance,
-    monkeypatch,
-):
-    def _response_batch(response_id: str) -> list[_FakeUpstreamMessage]:
-        return [
-            _FakeUpstreamMessage(
-                "text",
-                text=json.dumps(
-                    {"type": "response.created", "response": {"id": response_id, "status": "in_progress"}},
-                    separators=(",", ":"),
-                ),
-            ),
-            _FakeUpstreamMessage(
-                "text",
-                text=json.dumps(
-                    {
-                        "type": "response.completed",
-                        "response": {
-                            "id": response_id,
-                            "status": "completed",
-                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
-                        },
-                    },
-                    separators=(",", ":"),
-                ),
-            ),
-        ]
-
-    first_upstream = _SequencedUpstreamWebSocket(
-        [],
-        deferred_message_batches=[
-            _response_batch("resp_ws_lite_a1"),
-            [
-                _FakeUpstreamMessage(
-                    "text",
-                    text=json.dumps(
-                        {
-                            "type": "error",
-                            "status": 400,
-                            "error": {
-                                "type": "invalid_request_error",
-                                "code": "previous_response_not_found",
-                                "message": "Previous response with id 'resp_ws_lite_a1' not found.",
-                                "param": "previous_response_id",
-                            },
-                        },
-                        separators=(",", ":"),
-                    ),
-                )
-            ],
-        ],
-    )
-    recovered_upstream = _SequencedUpstreamWebSocket(
-        [],
-        deferred_message_batches=[
-            _response_batch("resp_ws_lite_replay"),
-            _response_batch("resp_ws_lite_b2"),
-        ],
-    )
-    connect_count = 0
-
-    class _FakeSettingsCache:
-        async def get(self):
-            return _websocket_settings()
-
-    async def allow_firewall(_websocket):
-        return None
-
-    async def allow_proxy_api_key(_authorization: str | None, *, request: object | None = None):
-        return None
-
-    async def fake_connect_proxy_websocket(
-        self,
-        headers,
-        *,
-        sticky_key,
-        sticky_kind,
-        reallocate_sticky,
-        sticky_max_age_seconds,
-        prefer_earlier_reset,
-        prefer_earlier_reset_window,
-        routing_strategy,
-        model,
-        request_state,
-        api_key,
-        client_send_lock,
-        websocket,
-    ):
-        del self, headers, sticky_key, sticky_kind, reallocate_sticky, sticky_max_age_seconds
-        del prefer_earlier_reset, prefer_earlier_reset_window, routing_strategy, model
-        del request_state, api_key, client_send_lock, websocket
-        nonlocal connect_count
-        connect_count += 1
-        if connect_count == 1:
-            return SimpleNamespace(id="acct_ws_lite_body_replay"), first_upstream
-        return SimpleNamespace(id="acct_ws_lite_body_replay"), recovered_upstream
-
-    async def fake_write_request_log(self, **kwargs):
-        del self, kwargs
-
-    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
-    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
-    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
-    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
-    monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", fake_write_request_log)
-
-    marker = "ws_request_header_x_openai_internal_codex_responses_lite"
-    additional_tools = {
-        "type": "additional_tools",
-        "role": "developer",
-        "tools": [{"type": "custom", "name": "shell"}],
-    }
-    user_hi = {"role": "user", "content": [{"type": "input_text", "text": "hi"}]}
-    assistant_ok = {"role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}
-    user_continue = {"role": "user", "content": [{"type": "input_text", "text": "continue"}]}
-    body_lite_full_resend = [additional_tools, user_hi, assistant_ok, user_continue]
-    requests = [
-        {
-            "type": "response.create",
-            "model": "gpt-5.6-sol",
-            "instructions": "",
-            "input": [additional_tools, user_hi],
-            "stream": True,
-        },
-        # Body-Lite full resend: its fresh replay keeps the additional_tools
-        # prefix, so the replay retains the canonical marker and its
-        # acceptance re-establishes trusted Lite continuity.
-        {
-            "type": "response.create",
-            "model": "gpt-5.6-sol",
-            "instructions": "",
-            "previous_response_id": "resp_ws_lite_a1",
-            "input": body_lite_full_resend,
-            "client_metadata": {marker: "stale"},
-            "stream": True,
-        },
-        {
-            "type": "response.create",
-            "model": "gpt-5.6-sol",
-            "instructions": "",
-            "previous_response_id": "resp_ws_lite_replay",
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": "after replay"}]}],
-            "client_metadata": {marker: "true"},
-            "stream": True,
-        },
-    ]
-
-    all_events = []
-    with TestClient(app_instance) as client:
-        with client.websocket_connect(
-            "/backend-api/codex/responses",
-            headers={
-                "Authorization": "Bearer external-token",
-                "chatgpt-account-id": "external-account",
-                "session_id": "thread-ws-lite-body-replay",
-                "openai-beta": "responses_websockets=2026-02-06",
-            },
-        ) as websocket:
-            for request in requests:
-                websocket.send_text(json.dumps(request))
-                events = [json.loads(websocket.receive_text()) for _ in range(2)]
-                assert [event["type"] for event in events] == ["response.created", "response.completed"]
-                all_events.append(events)
-
-    assert all_events[1][0]["response"]["id"] == "resp_ws_lite_replay"
-    assert "previous_response_not_found" not in json.dumps(all_events)
-    assert connect_count == 2
-
-    recovered_payloads = [json.loads(text) for text in recovered_upstream.sent_text]
-    assert len(recovered_payloads) == 2
-    replay_payload = recovered_payloads[0]
-    assert "previous_response_id" not in replay_payload
-    assert replay_payload["input"] == body_lite_full_resend
-    assert cast(dict[str, object], replay_payload["client_metadata"])[marker] == "true"
-    assert replay_payload["reasoning"] == {"context": "all_turns"}
-    after_replay_payload = recovered_payloads[1]
-    assert after_replay_payload["previous_response_id"] == "resp_ws_lite_replay"
-    assert cast(dict[str, object], after_replay_payload["client_metadata"])[marker] == "true"
-    assert after_replay_payload["reasoning"] == {"context": "all_turns"}
-
-
 def test_backend_responses_websocket_lite_visible_replay_trusts_downstream_response_id(
     app_instance,
     monkeypatch,
@@ -5853,7 +5671,7 @@ def test_v1_responses_websocket_forwards_previous_response_id(app_instance, monk
     )
 
 
-def test_v1_responses_websocket_masks_short_previous_response_not_found_without_retry(
+def test_v1_responses_websocket_sanitizes_short_previous_response_not_found_without_retry(
     app_instance,
     monkeypatch,
 ):
@@ -6009,10 +5827,15 @@ def test_v1_responses_websocket_masks_short_previous_response_not_found_without_
             )
             failed_2 = json.loads(websocket.receive_text())
 
+    # The client's own anchor is never replayed without it, so the public
+    # route tells it to resend without the anchor instead of masking the miss
+    # as a retryable failure the client would repeat with the same anchor.
     assert failed_2["type"] == "response.failed"
-    assert failed_2["response"]["error"]["code"] == "stream_incomplete"
-    assert failed_2["response"]["error"]["message"] == "Upstream websocket closed before response.completed"
-    assert "previous_response_not_found" not in json.dumps(failed_2)
+    assert failed_2["response"]["error"]["code"] == "previous_response_not_found"
+    assert (
+        failed_2["response"]["error"]["message"]
+        == "Previous response was not found; retry without previous_response_id."
+    )
     assert "resp_ws_prev_anchor" not in json.dumps(failed_2)
     assert connect_count == 1
 
@@ -6165,7 +5988,7 @@ def test_v1_responses_websocket_marks_fresh_turn_as_retry_safe_at_prep_time(
 
 
 @pytest.mark.parametrize("endpoint", ["/v1/responses", "/backend-api/codex/responses"])
-def test_responses_websocket_replays_client_full_resend_previous_response_miss_without_anchor(
+def test_responses_websocket_client_full_resend_miss_surfaces_previous_response_not_found(
     endpoint,
     app_instance,
     monkeypatch,
@@ -6331,21 +6154,19 @@ def test_responses_websocket_replays_client_full_resend_previous_response_miss_w
                     }
                 )
             )
-            created_2 = json.loads(websocket.receive_text())
-            completed_2 = json.loads(websocket.receive_text())
+            failed_2 = json.loads(websocket.receive_text())
 
-    assert created_2["type"] == "response.created"
-    assert created_2["response"]["id"] == "resp_ws_prev_retry"
-    assert completed_2["type"] == "response.completed"
-    assert "previous_response_not_found" not in json.dumps(created_2)
-    assert connect_count == 2
+    # The client supplied the anchor, so the proxy never replays its input
+    # without it, even when that input restates the whole history. On both
+    # routes the client is told to resend without the anchor.
+    assert failed_2["type"] == "response.failed"
+    assert failed_2["response"]["error"]["code"] == "previous_response_not_found"
+    assert "resp_ws_prev_anchor" not in json.dumps(failed_2)
+    assert connect_count == 1
     first_payload = json.loads(first_upstream.sent_text[-1])
     assert first_payload["previous_response_id"] == "resp_ws_prev_anchor"
     assert first_payload["client_metadata"] == {"x-codex-installation-id": "account-installation"}
-    replay_payload = json.loads(recovered_upstream.sent_text[-1])
-    assert "previous_response_id" not in replay_payload
-    assert replay_payload["input"] == full_resend_input
-    assert replay_payload["client_metadata"] == {"x-codex-installation-id": "account-installation"}
+    assert recovered_upstream.sent_text == []
 
 
 def test_backend_responses_websocket_replays_tool_search_pair_to_replacement_account(
@@ -6546,7 +6367,7 @@ def test_backend_responses_websocket_replays_tool_search_pair_to_replacement_acc
     assert replay_payload["client_metadata"] == {"x-codex-installation-id": "replacement-installation"}
 
 
-def test_v1_responses_websocket_masks_invalid_request_previous_response_not_found_without_retry(
+def test_v1_responses_websocket_sanitizes_invalid_request_previous_response_not_found_without_retry(
     app_instance,
     monkeypatch,
 ):
@@ -6700,10 +6521,15 @@ def test_v1_responses_websocket_masks_invalid_request_previous_response_not_foun
             )
             failed_2 = json.loads(websocket.receive_text())
 
+    # The client's own anchor is never replayed without it, so the public
+    # route tells it to resend without the anchor instead of masking the miss
+    # as a retryable failure the client would repeat with the same anchor.
     assert failed_2["type"] == "response.failed"
-    assert failed_2["response"]["error"]["code"] == "stream_incomplete"
-    assert failed_2["response"]["error"]["message"] == "Upstream websocket closed before response.completed"
-    assert "previous_response_not_found" not in json.dumps(failed_2)
+    assert failed_2["response"]["error"]["code"] == "previous_response_not_found"
+    assert (
+        failed_2["response"]["error"]["message"]
+        == "Previous response was not found; retry without previous_response_id."
+    )
     assert "resp_ws_prev_anchor" not in json.dumps(failed_2)
     assert connect_count == 1
 
@@ -13997,9 +13823,9 @@ class _TwoAccountWebSocketFailover:
             failover.connect_accounts.append(selected_account_id)
             return SimpleNamespace(id=selected_account_id), failover.upstreams_by_account[selected_account_id].popleft()
 
-        async def spy_handle_stream_error(self, account, error, code, http_status=None):
+        async def spy_handle_stream_error(self, account, error, code, http_status=None, **kwargs):
             failover.stream_errors.append((account.id, code))
-            return await real_handle_stream_error(self, account, error, code, http_status)
+            return await real_handle_stream_error(self, account, error, code, http_status, **kwargs)
 
         async def fake_write_request_log(self, **kwargs):
             del self
@@ -14606,18 +14432,14 @@ def test_backend_responses_websocket_retries_anchored_accepted_capacity_error_wi
     assert (failover.FIRST_ACCOUNT_ID, "server_is_overloaded") in failover.stream_errors
 
 
-def test_backend_responses_websocket_replays_a_client_anchored_accepted_capacity_error_on_its_owner(
+def test_backend_responses_websocket_surfaces_a_client_anchored_accepted_capacity_error(
     app_instance,
     monkeypatch,
 ):
-    """#2127 round 2 P2: the client anchors its follow-up on the first turn's
-    id itself and repeats the history (a proof-gated, retry-safe full resend).
-    The owner-switch prep only strips proxy-injected anchors, so this accepted
-    turn cannot leave the anchor's owner. When upstream accepts it and fails it
-    output-free with a capacity terminal, the proxy must re-send the anchored
-    body once to that owner -- not fail the turn closed as
-    ``previous_response_owner_unavailable`` (what the pre-created anchored
-    branch did) and not move it to the other account."""
+    """The client anchors its follow-up on the first turn's id itself and repeats
+    the history. The proxy never replays a client's anchored turn: the accepted
+    turn's output-free capacity terminal reaches the client unchanged, nothing
+    is re-sent and no other account is used."""
     first_upstream = _SequencedUpstreamWebSocket(
         [],
         deferred_message_batches=[
@@ -14640,7 +14462,7 @@ def test_backend_responses_websocket_replays_a_client_anchored_accepted_capacity
     owner_recovered_upstream = _recovered_upstream("resp_ws_client_anchored_owner_recovered")
     other_account_upstream = _recovered_upstream("resp_ws_client_anchored_other_account")
     failover = _TwoAccountWebSocketFailover(first_upstream, other_account_upstream)
-    # The owner serves the replay on a fresh socket; the other account must stay idle.
+    # Would serve a replay; neither account may receive one.
     failover.upstreams_by_account[failover.FIRST_ACCOUNT_ID].append(owner_recovered_upstream)
     failover.install(monkeypatch)
 
@@ -14656,24 +14478,14 @@ def test_backend_responses_websocket_replays_a_client_anchored_accepted_capacity
         headers={"Authorization": "Bearer external-token", "session_id": "sid-ws-client-anchored-accepted"},
     )
 
-    created_id = _assert_ws_single_response_lifecycle_completed(events, disconnect)
-    assert created_id == "resp_ws_client_anchored_accepted_capacity_failed"
+    assert disconnect is None
+    assert events[-1]["type"] == "error"
     assert [event["type"] for event in failover.turn_events[0]] == ["response.created", "response.completed"]
-    assert not failover.refused_connects, failover.refused_connects
-    assert failover.connect_accounts == [failover.FIRST_ACCOUNT_ID, failover.FIRST_ACCOUNT_ID], (
-        failover.connect_accounts
-    )
-    assert failover.excluded_at_connect[-1] == set(), failover.excluded_at_connect
-    assert failover.required_at_connect[-1] == failover.FIRST_ACCOUNT_ID, failover.required_at_connect
+    assert failover.connect_accounts == [failover.FIRST_ACCOUNT_ID], failover.connect_accounts
     assert len(first_upstream.sent_text) == 2
-    anchored_payload = json.loads(first_upstream.sent_text[1])
-    assert anchored_payload["previous_response_id"] == "resp_ws_client_anchor_turn_1"
-    assert len(owner_recovered_upstream.sent_text) == 1
-    replayed_payload = json.loads(owner_recovered_upstream.sent_text[0])
-    assert replayed_payload["previous_response_id"] == "resp_ws_client_anchor_turn_1"
-    assert replayed_payload["input"] == anchored_payload["input"]
+    assert json.loads(first_upstream.sent_text[1])["previous_response_id"] is not None
+    assert owner_recovered_upstream.sent_text == []
     assert other_account_upstream.sent_text == []
-    assert (failover.FIRST_ACCOUNT_ID, "server_is_overloaded") in failover.stream_errors
 
 
 def _turn_state_owner_failover(
@@ -14793,18 +14605,14 @@ def test_backend_responses_websocket_re_sends_a_turn_state_accepted_abrupt_close
     )
 
 
-def test_backend_responses_websocket_reconnects_a_client_anchored_accepted_abrupt_close_to_its_owner(
+def test_backend_responses_websocket_fails_a_client_anchored_accepted_abrupt_close(
     app_instance,
     monkeypatch,
 ):
-    """#2127 round 3 P2 (transport-close path): the client anchors its
-    follow-up on the first turn's id itself and repeats the history. When the
-    owner accepts the turn and drops the socket before any output, the replay
-    swaps the retained full resend in but the anchor was the client's, so the
-    owner pin stays: the proxy reconnects to the owner without excluding it
-    (spec: a client-supplied anchor cannot release the pin; the capacity path
-    already keeps the turn on its owner). The pin reconciliation had released
-    it and moved the client's continuation to the other account."""
+    """The client anchors its follow-up on the first turn's id itself and repeats
+    the history. The proxy never replays a client's anchored turn: when the
+    owner accepts it and drops the socket before any output, the turn fails
+    and no reconnect re-sends it."""
     first_upstream = _SequencedUpstreamWebSocket(
         [],
         deferred_message_batches=[
@@ -14833,25 +14641,13 @@ def test_backend_responses_websocket_reconnects_a_client_anchored_accepted_abrup
         headers={"Authorization": "Bearer external-token", "session_id": "sid-ws-client-anchored-close"},
     )
 
-    created_id = _assert_ws_single_response_lifecycle_completed(events, disconnect)
-    assert created_id == "resp_ws_client_anchored_accepted_closed"
+    assert disconnect is None
+    assert events[-1]["type"] == "response.failed"
     assert [event["type"] for event in failover.turn_events[0]] == ["response.created", "response.completed"]
-    assert not failover.refused_connects, failover.refused_connects
-    assert failover.connect_accounts == [failover.FIRST_ACCOUNT_ID, failover.FIRST_ACCOUNT_ID], (
-        failover.connect_accounts
-    )
-    assert failover.excluded_at_connect[-1] == set(), failover.excluded_at_connect
-    assert failover.required_at_connect[-1] == failover.FIRST_ACCOUNT_ID, failover.required_at_connect
+    assert failover.connect_accounts == [failover.FIRST_ACCOUNT_ID], failover.connect_accounts
     assert len(first_upstream.sent_text) == 2
-    anchored_payload = json.loads(first_upstream.sent_text[1])
-    assert anchored_payload["previous_response_id"] == "resp_ws_client_anchor_close_turn_1"
-    # The owner receives the client's full resend with the anchor stripped
-    # (the transport close leaves the anchor's fate unknown, so the
-    # self-contained history is what goes upstream, as on ``main``).
-    assert len(owner_recovered_upstream.sent_text) == 1
-    replayed_payload = json.loads(owner_recovered_upstream.sent_text[0])
-    assert "previous_response_id" not in replayed_payload
-    assert replayed_payload["input"] == [failover.HISTORICAL_INPUT, failover.FOLLOW_UP_INPUT]
+    assert json.loads(first_upstream.sent_text[1])["previous_response_id"] is not None
+    assert owner_recovered_upstream.sent_text == []
     assert other_account_upstream.sent_text == []
 
 

@@ -439,7 +439,6 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_accepted_replay_may_exclude_account,
     _websocket_auth_failure_requires_reauth,
     _websocket_capability_metadata_values,
-    _websocket_client_previous_response_full_resend_is_retry_safe,
     _websocket_connect_deadline,
     _websocket_continuity_anchor_for_payload,
     _websocket_continuity_error_fields,
@@ -3267,20 +3266,13 @@ class _WebSocketMixin:
             responses_payload = responses_payload.model_copy(update={"client_metadata": client_metadata})
         previous_response_trimmed_input_count: int | None = None
         previous_response_trimmed_input_fingerprint: str | None = None
-        client_full_resend_payload: ResponsesRequest | None = None
-        client_full_resend_input_items: list[JsonValue] | None = None
-        client_full_resend_retry_safe = False
-        client_previous_response_id = responses_payload.previous_response_id
+        # A client-supplied ``previous_response_id`` is never replayed without
+        # its anchor: the proxy cannot tell the client's delta from a full
+        # history, so a stale anchor surfaces ``previous_response_not_found``
+        # and the client resends its complete input, as against upstream.
+        client_supplied_previous_response_id = responses_payload.previous_response_id is not None
         if responses_payload.previous_response_id is not None and isinstance(responses_payload.input, list):
             previous_response_input_items = cast(list[JsonValue], responses_payload.input)
-            client_full_resend_input_items = _sanitize_websocket_previous_response_input_items(
-                previous_response_input_items
-            )
-            client_full_resend_retry_safe = _websocket_client_previous_response_full_resend_is_retry_safe(
-                previous_response_id=responses_payload.previous_response_id,
-                input_value=responses_payload.input,
-                continuity_state=continuity_state,
-            )
             trimmed_input_items = _trim_websocket_previous_response_input_items(previous_response_input_items)
             if trimmed_input_items != previous_response_input_items:
                 previous_response_trimmed_input_count = len(previous_response_input_items)
@@ -3288,26 +3280,6 @@ class _WebSocketMixin:
                     previous_response_input_items
                 )
                 responses_payload = responses_payload.model_copy(update={"input": trimmed_input_items})
-        full_resend_client_metadata = client_metadata
-        if client_full_resend_retry_safe and client_full_resend_input_items is not None:
-            if trusted_incremental_responses_lite and client_metadata is not None:
-                # The transparent fresh replay clears ``previous_response_id``
-                # and this input carries no ``additional_tools`` prefix, so the
-                # replay loses the linkage that justified the trusted marker.
-                # Strip it so the replay does not advertise Responses Lite.
-                stripped_metadata = {
-                    key: value
-                    for key, value in client_metadata.items()
-                    if key.lower() != CODEX_RESPONSES_LITE_WEBSOCKET_METADATA_KEY
-                }
-                full_resend_client_metadata = stripped_metadata or None
-            client_full_resend_payload = responses_payload.model_copy(
-                update={
-                    "previous_response_id": None,
-                    "input": client_full_resend_input_items,
-                    "client_metadata": full_resend_client_metadata,
-                }
-            )
         validate_model_access(refreshed_api_key, responses_payload.model)
         proxy._raise_for_unsupported_input_image_references(responses_payload)
         rewritten_file_account_id = await proxy._resolve_file_account_for_responses(responses_payload, headers)
@@ -3415,21 +3387,17 @@ class _WebSocketMixin:
         request_state.raw_source_model = raw_source_model
         request_state.source_route_excluded = source_route_excluded
         request_state.responses_lite_model = next_responses_lite_model
-        request_state.expose_stale_previous_response_classifier = codex_session_affinity
+        # Only the client can recover from a miss of its own anchor, by
+        # resending without it, and it learns that from
+        # ``previous_response_not_found``. The public route otherwise masks the
+        # classifier as a retryable ``stream_incomplete``, which the client
+        # would retry with the same anchor.
+        request_state.expose_stale_previous_response_classifier = (
+            codex_session_affinity or client_supplied_previous_response_id
+        )
         request_state.require_security_work_authorized = capability_route.require_security_work_authorized
         request_state.durable_capability_lineage_required = capability_route.require_security_work_authorized
         original_full_resend_input: JsonValue | None = None
-        if session_anchor is not None:
-            # The injected anchor's context is only as complete as the input it
-            # was recorded from; a completion recorded from a client-anchored
-            # delta must not become provable through injection.
-            request_state.input_covers_anchor_context = bool(
-                continuity_state is not None and continuity_state.last_completed_input_covers_context
-            )
-        else:
-            request_state.input_covers_anchor_context = (
-                client_previous_response_id is None or client_full_resend_retry_safe
-            )
         if session_anchor is not None:
             request_state.proxy_injected_previous_response_id = True
             request_state.input_item_count = original_input_item_count or request_state.input_item_count
@@ -3486,31 +3454,6 @@ class _WebSocketMixin:
                     previous_response_trimmed_input_count,
                     trimmed_to,
                     responses_payload.previous_response_id,
-                )
-        if client_full_resend_payload is not None and not request_state.proxy_injected_previous_response_id:
-            request_state.fresh_upstream_request_text = _facade()._response_create_text_with_size_guard(
-                client_full_resend_payload,
-                include_type_field=True,
-                client_metadata=full_resend_client_metadata,
-                request_state=request_state,
-                transport=_REQUEST_TRANSPORT_WEBSOCKET,
-            )
-            request_state.fresh_upstream_request_is_retry_safe = request_state.fresh_upstream_request_text is not None
-            # A marker-only trusted incremental frame yields a fresh body with
-            # the reserved marker stripped, so the replay must not be treated
-            # as a Lite request when it is accepted upstream.
-            request_state.fresh_upstream_request_responses_lite_model = (
-                responses_payload.model if body_uses_responses_lite else None
-            )
-            if request_state.fresh_upstream_request_is_retry_safe:
-                _facade().logger.info(
-                    (
-                        "websocket_client_previous_response_full_resend_retry_prepared request_id=%s "
-                        "previous_response_id=%s input_items=%s"
-                    ),
-                    request_state.request_id,
-                    responses_payload.previous_response_id,
-                    request_state.input_item_count,
                 )
         affinity_policy = _sticky_key_for_responses_request(
             # Only the proven restart uses the pre-injection body. Ordinary
