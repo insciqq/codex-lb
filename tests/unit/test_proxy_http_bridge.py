@@ -47178,10 +47178,11 @@ async def test_process_http_bridge_upstream_text_fast_path_only_frames_text_that
         for block, text in zip(downstream_blocks, upstream_texts, strict=True)
     ] == [True, True, True, True, True, False]
     assert _relay_parity_parallel_patch_inputs(downstream_blocks[-1]) == ["C"]
-    assert "response.output_text.delta" in fast_path_event_types
-    assert "response.reasoning_summary_text.delta" in fast_path_event_types
     # Each upstream frame is framed once from its unmodified text before
-    # processing; the relay path must never take the fast path for these items.
+    # processing. Unmodified deltas take the relay fast path a second time; the
+    # relay path must never take it for the rewritten output items.
+    assert fast_path_event_types.count("response.output_text.delta") == 2
+    assert fast_path_event_types.count("response.reasoning_summary_text.delta") == 2
     assert fast_path_event_types.count("response.output_item.done") == 2
 
 
