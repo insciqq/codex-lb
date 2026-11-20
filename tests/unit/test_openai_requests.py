@@ -3661,3 +3661,31 @@ def test_extract_input_image_file_references_collects_tool_output_paths():
         (0, None, "file_tool"),
         (0, None, "file_nested"),
     ]
+
+
+@pytest.mark.parametrize("json_mode", [True, False])
+def test_v1_messages_keep_json_instruction_in_input_only_in_json_mode(json_mode: bool) -> None:
+    payload: dict[str, JsonValue] = {
+        "model": "gpt-5.2",
+        "instructions": "Base.",
+        "messages": [
+            {"role": "system", "content": "Be brief."},
+            {"role": "system", "content": "Reply with a JSON object."},
+            {"role": "user", "content": "Say hello."},
+        ],
+    }
+    if json_mode:
+        payload["text"] = {"format": {"type": "json_object"}}
+
+    forwarded = V1ResponsesRequest.model_validate(payload).to_responses_request().to_payload()
+
+    user_item = {"role": "user", "content": [{"type": "input_text", "text": "Say hello."}]}
+    if json_mode:
+        assert forwarded["instructions"] == "Base.\nBe brief."
+        assert forwarded["input"] == [
+            {"role": "developer", "content": [{"type": "input_text", "text": "Reply with a JSON object."}]},
+            user_item,
+        ]
+    else:
+        assert forwarded["instructions"] == "Base.\nBe brief.\nReply with a JSON object."
+        assert forwarded["input"] == [user_item]

@@ -706,8 +706,31 @@ async def test_v1_chat_completions_json_object_keeps_json_instruction_in_input(a
 
 
 @pytest.mark.asyncio
-async def test_v1_responses_json_object_keeps_json_instruction_in_input(async_client, monkeypatch):
-    await _import_account(async_client, "acc_responses_json_object", "responses-json-object@example.com")
+@pytest.mark.parametrize(
+    ("input_field", "expected_input"),
+    [
+        (
+            "input",
+            [
+                {"role": "developer", "content": "Reply with a JSON object."},
+                {"role": "user", "content": "Say hello."},
+            ],
+        ),
+        (
+            "messages",
+            [
+                {"role": "developer", "content": [{"type": "input_text", "text": "Reply with a JSON object."}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "Say hello."}]},
+            ],
+        ),
+    ],
+)
+async def test_v1_responses_json_object_keeps_json_instruction_in_input(
+    async_client, monkeypatch, input_field, expected_input
+):
+    await _import_account(
+        async_client, f"acc_responses_json_object_{input_field}", f"responses-json-{input_field}@example.com"
+    )
 
     seen = {}
 
@@ -719,7 +742,7 @@ async def test_v1_responses_json_object_keeps_json_instruction_in_input(async_cl
 
     payload = {
         "model": "gpt-5.2",
-        "input": [
+        input_field: [
             {"role": "system", "content": "Reply with a JSON object."},
             {"role": "user", "content": "Say hello."},
         ],
@@ -730,10 +753,7 @@ async def test_v1_responses_json_object_keeps_json_instruction_in_input(async_cl
     assert resp.status_code == 200
     forwarded = seen["payload"].to_payload()
     assert forwarded["instructions"] == ""
-    assert forwarded["input"] == [
-        {"role": "developer", "content": "Reply with a JSON object."},
-        {"role": "user", "content": "Say hello."},
-    ]
+    assert forwarded["input"] == expected_input
 
 
 @pytest.mark.asyncio
