@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "patched"]
   # No `edited`: a PR title/body edit (agents finalizing descriptions, review
   # bots rewriting summaries) must not cancel the in-flight matrix and re-queue
   # ~30 jobs for an unchanged head. The only jobs that read PR metadata are the
@@ -65,6 +65,8 @@ jobs:
   contributors:
     name: Contributors attribution
     runs-on: ubuntu-24.04
+    # Upstream README attribution gate; fork commits keep their original authors.
+    if: github.repository == 'Soju06/codex-lb'
 
     steps:
       - name: Checkout repository
