@@ -477,7 +477,11 @@ def _prepare_websocket_request_state_for_visible_output_replay(
         _install_fresh_replay_body(
             request_state,
             fresh_request_text,
-            account_neutral=_websocket_request_text_is_account_neutral_fresh_replay(fresh_request_text),
+            account_neutral=_websocket_request_text_is_account_neutral_fresh_replay(
+                _anchor_free_replay_wire_text(fresh_request_text)
+                if request_state.previous_response_id is not None
+                else fresh_request_text
+            ),
             release_owner_pin=(
                 request_state.previous_response_id is None or request_state.proxy_injected_previous_response_id
             ),
@@ -546,7 +550,10 @@ def _install_verified_fresh_replay(
     if require_proxy_injected_previous_response_id and not request_state.proxy_injected_previous_response_id:
         return None
     fresh_request_text = request_state.fresh_upstream_request_text
-    account_neutral = _websocket_request_text_is_account_neutral_fresh_replay(fresh_request_text)
+    # Neutrality is judged on what goes out: the anchor-free wire text.
+    account_neutral = _websocket_request_text_is_account_neutral_fresh_replay(
+        _anchor_free_replay_wire_text(fresh_request_text)
+    )
     if require_account_neutral and not account_neutral:
         return None
     if not account_neutral and (request_state.replay_required_account_id or request_state.preferred_account_id) is None:
@@ -585,6 +592,7 @@ def _install_fresh_replay_body(
     but it stays with the owner the anchored body was bound to.
     """
     replay_required_account_id = request_state.replay_required_account_id or request_state.preferred_account_id
+    replaces_anchored_body = request_state.previous_response_id is not None
     turn_state_owner_account_id = (
         request_state.preferred_account_id
         if request_state.affinity_policy.codex_session_source == "turn_state"
@@ -598,8 +606,12 @@ def _install_fresh_replay_body(
     request_state.proxy_injected_previous_response_id = False
     request_state.fresh_upstream_request_is_retry_safe = False
     request_state.responses_lite_model = request_state.fresh_upstream_request_responses_lite_model
+    # Continuity records the client's own items; only the wire text of a body
+    # that replaces an anchored one drops the tool-search ids.
     _refresh_websocket_request_input_fingerprint_from_text(request_state)
-    return fresh_request_text
+    if replaces_anchored_body:
+        request_state.request_text = _anchor_free_replay_wire_text(fresh_request_text)
+    return request_state.request_text
 
 
 def _websocket_accepted_replay_can_switch_account(request_state: "_WebSocketRequestState") -> bool:
@@ -1132,7 +1144,7 @@ def _websocket_auth_request_can_switch_account(request_state: _WebSocketRequestS
     ):
         return False
     return _websocket_request_text_is_account_neutral_fresh_replay(
-        request_state.fresh_upstream_request_text
+        _anchor_free_replay_wire_text(request_state.fresh_upstream_request_text)
     ) and not _websocket_fresh_request_blocks_account_switch(request_state)
 
 
@@ -2290,7 +2302,6 @@ def _serialize_websocket_error_event(payload: dict[str, JsonValue]) -> str:
 
 
 def _trim_websocket_previous_response_input_items(input_items: list[JsonValue]) -> list[JsonValue]:
-    replay_safe_input_items = _sanitize_websocket_previous_response_input_items(input_items)
     first_output_index = next(
         (
             index
@@ -2300,18 +2311,36 @@ def _trim_websocket_previous_response_input_items(input_items: list[JsonValue]) 
         ),
         None,
     )
-    if first_output_index is None:
-        return replay_safe_input_items
-    if first_output_index == 0:
-        return replay_safe_input_items
+    if first_output_index is None or first_output_index == 0:
+        return input_items
     prefix = input_items[:first_output_index]
     if not all(_is_websocket_previous_response_output_item(item) for item in prefix):
-        return replay_safe_input_items
-    return replay_safe_input_items[first_output_index:]
+        return input_items
+    return input_items[first_output_index:]
 
 
-def _sanitize_websocket_previous_response_input_items(input_items: list[JsonValue]) -> list[JsonValue]:
-    return [_strip_websocket_replayed_tool_search_id(item) for item in input_items]
+def _anchor_free_replay_wire_text(request_text: str) -> str:
+    """Return the wire text of an anchor-free replay without tool-search item ids.
+
+    A replay that drops an anchor sends the client's earlier items as plain
+    input, where the response-owned ids of tool-search items have no meaning.
+    Only the outgoing text changes: the retained body, its fingerprints and
+    the recovery-journal key keep the client's own items.
+    """
+    try:
+        payload = json.loads(request_text)
+    except json.JSONDecodeError:
+        return request_text
+    if not isinstance(payload, dict):
+        return request_text
+    input_items = payload.get("input")
+    if not isinstance(input_items, list):
+        return request_text
+    replay_items = [_strip_websocket_replayed_tool_search_id(item) for item in input_items]
+    if replay_items == input_items:
+        return request_text
+    payload["input"] = replay_items
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
 def _is_websocket_previous_response_output_item(item: JsonValue) -> bool:

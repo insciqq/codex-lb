@@ -436,6 +436,10 @@ def _websocket_request_text_is_account_neutral_fresh_replay(*args: Any, **kwargs
     return _service_global("_websocket_request_text_is_account_neutral_fresh_replay")(*args, **kwargs)
 
 
+def _anchor_free_replay_wire_text(*args: Any, **kwargs: Any) -> Any:
+    return _service_global("_anchor_free_replay_wire_text")(*args, **kwargs)
+
+
 def _matching_websocket_request_states_for_previous_response_error(*args: Any, **kwargs: Any) -> Any:
     return _service_global("_matching_websocket_request_states_for_previous_response_error")(*args, **kwargs)
 

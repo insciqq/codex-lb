@@ -104,6 +104,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_payload_looks_like_full_resend,
     _http_bridge_precreated_retry_failure_error,
     _http_bridge_prewarm_enabled,
+    _http_bridge_recovery_attempt_fingerprint,
     _http_bridge_request_budget_seconds,
     _http_bridge_request_counts_against_queue,
     _http_bridge_request_state_holds_safe_replay,
@@ -125,6 +126,7 @@ from app.modules.proxy._service.http_bridge.retry_circuit import (
     _http_bridge_retry_circuit_suppression_message,
 )
 from app.modules.proxy._service.http_bridge.service_stubs import (
+    _anchor_free_replay_wire_text,
     _call_with_supported_optional_kwargs,
     _classify_upstream_close,
     _count_external_image_urls,
@@ -232,7 +234,6 @@ from app.modules.proxy.durable_bridge_repository import (
     DurableBridgeAliasRegistration,
     DurableBridgeAliasRegistrationReceipt,
     durable_bridge_api_key_scope,
-    durable_bridge_hash,
     durable_bridge_operation_fingerprint,
     durable_bridge_operation_id,
 )
@@ -1194,7 +1195,7 @@ class _HTTPBridgeRequestSubmitMixin:
             and session.durable_session_id is not None
             and session.durable_owner_epoch is not None
         ):
-            attempt_fingerprint = durable_bridge_hash(request_state.fresh_upstream_request_text)
+            attempt_fingerprint = _http_bridge_recovery_attempt_fingerprint(request_state.fresh_upstream_request_text)
             try:
                 attempt = await self._durable_bridge.record_recovery_attempt(
                     session_id=session.durable_session_id,
@@ -3649,7 +3650,7 @@ class _HTTPBridgeRequestSubmitMixin:
             # depend on the anchor.
             if not request_state.fresh_upstream_request_text or not request_state.fresh_upstream_request_is_retry_safe:
                 return False
-            retry_text_data = request_state.fresh_upstream_request_text
+            retry_text_data = _anchor_free_replay_wire_text(request_state.fresh_upstream_request_text)
             using_fresh_replay = True
         if request_state.replay_count >= 1:
             return False
@@ -3953,11 +3954,16 @@ class _HTTPBridgeRequestSubmitMixin:
                 # Account-scoped uploaded files cannot be replayed on a
                 # different owner. Keep the preferred account mandatory for
                 # both silent recovery and clean-close recovery.
-                candidate_text = (
-                    request_state.fresh_upstream_request_text
-                    if request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
-                    else request_state.request_text
+                uses_fresh_body = bool(
+                    request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
                 )
+                candidate_text = (
+                    request_state.fresh_upstream_request_text if uses_fresh_body else request_state.request_text
+                )
+                if uses_fresh_body and candidate_text is not None and request_state.previous_response_id is not None:
+                    # A body that replaces an anchored one goes out without
+                    # tool-search ids; judge and compare what is sent.
+                    candidate_text = _anchor_free_replay_wire_text(candidate_text)
                 # The send boundary decorates durable operations with
                 # codex_lb_operation_id after selection. Keep that operation
                 # identity on its owner unless a dedicated rebind path has

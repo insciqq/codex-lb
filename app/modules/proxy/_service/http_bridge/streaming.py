@@ -98,6 +98,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_payload_looks_like_full_resend,
     _http_bridge_payload_without_previous_response_id,
     _http_bridge_previous_response_error_envelope,
+    _http_bridge_recovery_attempt_fingerprint,
     _http_bridge_request_budget_seconds,
     _http_bridge_request_needs_unanchored_handoff,
     _http_bridge_request_stage,
@@ -136,6 +137,7 @@ from app.modules.proxy._service.http_bridge.retry_circuit import (
     _http_bridge_retry_circuit_suppression_message,
 )
 from app.modules.proxy._service.http_bridge.service_stubs import (
+    _anchor_free_replay_wire_text,
     _build_rewritten_stream_response_failed_event,
     _codex_keepalive_frame,
     _fingerprint_input_items,
@@ -262,7 +264,6 @@ from app.modules.proxy.continuity import (
     without_http_bridge_session_affinity_headers,
 )
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeLookup
-from app.modules.proxy.durable_bridge_repository import durable_bridge_hash
 from app.modules.proxy.durable_bridge_runtime import http_bridge_owner_process_epoch
 from app.modules.proxy.helpers import (
     _normalize_error_code,
@@ -1663,10 +1664,9 @@ class _HTTPBridgeStreamingMixin:
                             _http_bridge_payload_without_previous_response_id(payload)
                         )
                         del _fresh_state
-                        durable_recovery_attempt_fingerprint = durable_bridge_hash(fresh_replay_text)
                         existing_attempt = await self._durable_bridge.lookup_recovery_attempt(
                             session_id=durable_lookup.session_id,
-                            request_fingerprint=durable_recovery_attempt_fingerprint,
+                            request_fingerprint=_http_bridge_recovery_attempt_fingerprint(fresh_replay_text),
                         )
                         if existing_attempt is not None and (
                             durable_lookup.state != HttpBridgeSessionState.ACTIVE
@@ -1923,22 +1923,16 @@ class _HTTPBridgeStreamingMixin:
         if previous_response_trimmed_input_count is not None:
             request_state.input_item_count = previous_response_trimmed_input_count
             request_state.input_full_fingerprint = previous_response_trimmed_input_fingerprint
-            trimmed_to = (
+            logger.info(
+                "http_bridge_previous_response_input_trimmed request_id=%s original_items=%s trimmed_to=%s "
+                "previous_response_id=%s",
+                request_state.request_id,
+                previous_response_trimmed_input_count,
                 len(cast(list[JsonValue], effective_payload.input))
                 if isinstance(effective_payload.input, list)
-                else None
+                else None,
+                effective_payload.previous_response_id,
             )
-            if trimmed_to != previous_response_trimmed_input_count:
-                # Stripping replayed tool-search ids keeps the item count; only a
-                # real prefix trim is worth an operator-visible log line.
-                logger.info(
-                    "http_bridge_previous_response_input_trimmed request_id=%s original_items=%s trimmed_to=%s "
-                    "previous_response_id=%s",
-                    request_state.request_id,
-                    previous_response_trimmed_input_count,
-                    trimmed_to,
-                    effective_payload.previous_response_id,
-                )
         request_state.transport = _REQUEST_TRANSPORT_HTTP
         request_state.request_stage = _http_bridge_request_stage(
             headers=headers,
@@ -2315,6 +2309,7 @@ class _HTTPBridgeStreamingMixin:
             # the pre-trim copy the other anchor-free retries already use.
             effective_payload = _http_bridge_payload_without_previous_response_id(untrimmed_effective_payload)
             request_state, text_data = prepare_bridge_request(effective_payload)
+            text_data = _anchor_free_replay_wire_text(text_data)
             request_state.enforce_openai_sdk_contract = enforce_openai_sdk_contract
             request_state.affinity_policy = affinity
             request_state.transport = _REQUEST_TRANSPORT_HTTP
@@ -4138,6 +4133,9 @@ class _HTTPBridgeStreamingMixin:
                     retry_payload,
                     reservation=retry_api_key_reservation,
                 )
+                if retry_previous_response_id is None:
+                    # Every anchor-dropping recovery sends an anchor-free body.
+                    retry_text_data = _anchor_free_replay_wire_text(retry_text_data)
                 local_previous_response_recovery = recovery_path in {
                     "local_previous_response_error",
                     "local_previous_response_fresh_replay",

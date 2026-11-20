@@ -661,6 +661,7 @@ from app.modules.proxy._service.websocket import (
     _WebSocketMixin,
 )
 from app.modules.proxy._service.websocket.helpers import (
+    _anchor_free_replay_wire_text,  # noqa: F401
     _app_error_to_websocket_event,  # noqa: F401
     _assign_websocket_response_id,  # noqa: F401
     _clear_websocket_stale_previous_response_cache,  # noqa: F401

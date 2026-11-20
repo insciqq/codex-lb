@@ -195,6 +195,7 @@ from app.modules.proxy.durable_bridge_coordinator import (
 from app.modules.proxy.durable_bridge_repository import (
     DurableBridgeAliasRegistration,
     DurableBridgeAliasRegistrationReceipt,
+    durable_bridge_hash,
 )
 from app.modules.proxy.durable_bridge_runtime import http_bridge_owner_process_epoch
 from app.modules.proxy.helpers import (
@@ -1122,7 +1123,6 @@ def _http_bridge_precreated_retry_failure_error(
 
 
 def _trim_http_bridge_previous_response_input_items(input_items: list[JsonValue]) -> list[JsonValue]:
-    replay_safe_input_items = [_strip_http_bridge_replayed_tool_search_id(item) for item in input_items]
     first_output_index = next(
         (
             index
@@ -1132,14 +1132,12 @@ def _trim_http_bridge_previous_response_input_items(input_items: list[JsonValue]
         ),
         None,
     )
-    if first_output_index is None:
-        return replay_safe_input_items
-    if first_output_index == 0:
-        return replay_safe_input_items
+    if first_output_index is None or first_output_index == 0:
+        return input_items
     prefix = input_items[:first_output_index]
     if not all(_is_http_bridge_previous_response_output_item(item) for item in prefix):
-        return replay_safe_input_items
-    return replay_safe_input_items[first_output_index:]
+        return input_items
+    return input_items[first_output_index:]
 
 
 def _is_http_bridge_previous_response_output_item(item: JsonValue) -> bool:
@@ -1150,18 +1148,6 @@ def _is_http_bridge_previous_response_output_item(item: JsonValue) -> bool:
         return False
     role = item.get("role")
     return role == "assistant" and _has_http_bridge_response_output_marker(item)
-
-
-def _strip_http_bridge_replayed_tool_search_id(item: JsonValue) -> JsonValue:
-    if (
-        not isinstance(item, dict)
-        or _http_bridge_input_item_type(item) not in {"tool_search_call", "tool_search_output"}
-        or "id" not in item
-    ):
-        return item
-    stripped = dict(item)
-    stripped.pop("id", None)
-    return stripped
 
 
 def _has_http_bridge_response_output_marker(item: JsonValue) -> bool:
@@ -3410,6 +3396,16 @@ def _record_http_bridge_stuck_retire(
     ).inc()
 
 
+def _http_bridge_recovery_attempt_fingerprint(fresh_request_text: str) -> str:
+    """Return the recovery-journal key of a request's retained anchor-free body.
+
+    Dispatch records an attempt under this key and the stale-owner preflight
+    looks it up under it, both over the retained body built from the client's
+    own items, so the two always agree.
+    """
+    return durable_bridge_hash(fresh_request_text)
+
+
 def _http_bridge_payload_without_previous_response_id(payload: ResponsesRequest) -> ResponsesRequest:
     if payload.previous_response_id is None:
         return payload
@@ -3949,6 +3945,7 @@ for _helper_name in (
     "_record_http_bridge_prewarm_outcome",
     "_record_http_bridge_stuck_retire",
     "_http_bridge_payload_without_previous_response_id",
+    "_http_bridge_recovery_attempt_fingerprint",
     "_http_bridge_previous_response_error_envelope",
     "_http_bridge_continuity_lost_error_envelope",
     "_http_bridge_owner_lookup_unavailable_error_envelope",

@@ -6210,15 +6210,9 @@ async def test_v1_responses_http_bridge_trims_replayed_tool_search_previous_resp
     assert len(fake_upstream.sent_text) == 2
     second_upstream_payload = json.loads(fake_upstream.sent_text[1])
     assert second_upstream_payload["previous_response_id"] == "resp_bridge_1"
-    assert second_upstream_payload["input"] == [
-        {
-            "type": "tool_search_output",
-            "call_id": "call_search_1",
-            "tools": [],
-            "status": "completed",
-        },
-        next_user_message,
-    ]
+    # The anchored body keeps the client's items; tool-search ids are stripped
+    # from the wire text of anchor-free replays only.
+    assert second_upstream_payload["input"] == [replayed_tool_search_output, next_user_message]
     assert replayed_tool_search_call["id"] == "tsc_replay"
 
 
@@ -15233,6 +15227,24 @@ async def test_backend_responses_http_bridge_replays_verified_full_resend_after_
                     "call_id": "call_owner_bound",
                     "output": "completed",
                 },
+                # Response-owned tool-search ids must not reach the anchor-free
+                # replay on the wire, while continuity keeps the client's items.
+                {
+                    "type": "tool_search_call",
+                    "id": "tsc_old",
+                    "call_id": "call_tool_search",
+                    "execution": "client",
+                    "status": "completed",
+                    "arguments": {"query": "calendar"},
+                },
+                {
+                    "type": "tool_search_output",
+                    "id": "tso_old",
+                    "call_id": "call_tool_search",
+                    "execution": "client",
+                    "status": "completed",
+                    "tools": [],
+                },
             ]
         ),
         *(
@@ -15288,6 +15300,11 @@ async def test_backend_responses_http_bridge_replays_verified_full_resend_after_
         "stream": True,
     }
     expected_replay_input = proxy_module.ResponsesRequest.model_validate(second_payload).to_payload()["input"]
+    recovery_lookups = AsyncMock(wraps=service._durable_bridge.lookup_recovery_attempt)
+    recovery_records = AsyncMock(wraps=service._durable_bridge.record_recovery_attempt)
+    if not inactive_unknown_journal:
+        monkeypatch.setattr(service._durable_bridge, "lookup_recovery_attempt", recovery_lookups)
+        monkeypatch.setattr(service._durable_bridge, "record_recovery_attempt", recovery_records)
     if inactive_unknown_journal:
         failed_response = await async_client.post(
             "/backend-api/codex/responses",
@@ -15421,7 +15438,19 @@ async def test_backend_responses_http_bridge_replays_verified_full_resend_after_
         )
         assert owner_account.id not in cast(set[str], replay_selection.get("exclude_account_ids") or set())
         assert "previous_response_id" not in replay_payload
-        assert replay_payload["input"] == expected_replay_input
+        assert replay_payload["input"] == [
+            {key: value for key, value in item.items() if key != "id"}
+            if str(item.get("type", "")).startswith("tool_search")
+            else item
+            for item in cast(list[dict[str, Any]], expected_replay_input)
+        ]
+        if replay_case == "owner-bound-tool-history":
+            # The stale-owner preflight looks the attempt up under the key its
+            # dispatch recorded: the hash of the retained client body.
+            assert (
+                recovery_lookups.await_args_list[0].kwargs["request_fingerprint"]
+                == recovery_records.await_args_list[0].kwargs["request_fingerprint"]
+            )
         retained_circuit = cast(Any, service)._http_bridge_retry_circuits[session.key]
         if circuit_advances_during_admission:
             assert retained_circuit.consecutive_failures >= 3

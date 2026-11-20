@@ -27084,14 +27084,22 @@ async def test_prepare_websocket_response_create_request_sanitizes_injected_anch
     assert prepared.request_state.proxy_injected_previous_response_id is True
     assert prepared.request_state.fresh_upstream_request_is_retry_safe is True
     assert prepared.request_state.fresh_upstream_request_text is not None
+    # The retained body is the client's own input; continuity and the
+    # recovery journal see the items with their ids.
     fresh_payload = json.loads(prepared.request_state.fresh_upstream_request_text)
     assert "previous_response_id" not in fresh_payload
-    assert fresh_payload["input"] == [*replay_safe_historical_input, new_input]
-    assert (
-        proxy_service._prepare_websocket_request_state_for_account_switch(prepared.request_state)
-        == prepared.request_state.request_text
-    )
+    assert fresh_payload["input"] == [*historical_input, new_input]
+    # Installing it as the anchor-free replay strips the ids on the wire only;
+    # the recorded fingerprint stays that of the client's items, so the
+    # client's next unchanged resend still matches.
+    wire_text = proxy_service._prepare_websocket_request_state_for_account_switch(prepared.request_state)
+    assert wire_text == prepared.request_state.request_text
+    assert wire_text is not None
+    assert json.loads(wire_text)["input"] == [*replay_safe_historical_input, new_input]
     assert prepared.request_state.previous_response_id is None
+    assert prepared.request_state.input_full_fingerprint == proxy_service._fingerprint_input_items(
+        [*historical_input, new_input]
+    )
 
 
 @pytest.mark.asyncio
@@ -27270,23 +27278,6 @@ async def test_prepare_websocket_response_create_request_keeps_no_anchor_free_bo
         {"role": "assistant", "content": [{"type": "output_text", "text": "old answer"}]},
         {"role": "user", "content": [{"type": "input_text", "text": "next question"}]},
     ]
-    replay_safe_full_resend_input: list[JsonValue] = [
-        {"role": "user", "content": [{"type": "input_text", "text": "old question"}]},
-        {
-            "type": "tool_search_call",
-            "call_id": "call_search",
-            "arguments": {"query": "codex-lb"},
-            "status": "completed",
-        },
-        {
-            "type": "tool_search_output",
-            "call_id": "call_search",
-            "tools": [],
-            "status": "completed",
-        },
-        {"role": "assistant", "content": [{"type": "output_text", "text": "old answer"}]},
-        {"role": "user", "content": [{"type": "input_text", "text": "next question"}]},
-    ]
     continuity_state = proxy_service._WebSocketContinuityState(
         last_completed_input_count=1,
         last_completed_response_id="resp_client_anchor",
@@ -27315,7 +27306,8 @@ async def test_prepare_websocket_response_create_request_keeps_no_anchor_free_bo
 
     upstream_payload = json.loads(prepared.text_data)
     assert upstream_payload["previous_response_id"] == "resp_client_anchor"
-    assert upstream_payload["input"] == replay_safe_full_resend_input
+    # The anchored body keeps the client's items, tool-search ids included.
+    assert upstream_payload["input"] == full_resend_input
     assert prepared.request_state.previous_response_id == "resp_client_anchor"
     assert prepared.request_state.fresh_upstream_request_is_retry_safe is False
     assert prepared.request_state.fresh_upstream_request_text is None
@@ -48460,17 +48452,12 @@ def test_trim_http_bridge_previous_response_input_items_handles_tool_search_repl
 
     trimmed = proxy_service._trim_http_bridge_previous_response_input_items(input_items)
 
-    assert trimmed == [
-        {
-            "type": "tool_search_output",
-            "call_id": "call_search_1",
-            "tools": [],
-        },
-        input_items[2],
-    ]
+    # The anchored body only drops the anchor's own output; tool-search ids
+    # are stripped from the wire text of anchor-free replays alone.
+    assert trimmed == input_items[1:]
 
 
-def test_trim_http_bridge_previous_response_input_items_strips_output_first_tool_search_id():
+def test_trim_http_bridge_previous_response_input_items_keeps_output_first_tool_search_item():
     input_items: list[JsonValue] = [
         {
             "type": "tool_search_output",
@@ -48483,15 +48470,26 @@ def test_trim_http_bridge_previous_response_input_items_strips_output_first_tool
 
     trimmed = proxy_service._trim_http_bridge_previous_response_input_items(input_items)
 
-    assert len(trimmed) == len(input_items)
-    assert trimmed == [
-        {
-            "type": "tool_search_output",
-            "call_id": "call_search_1",
-            "tools": [],
-        },
-        input_items[1],
-    ]
+    assert trimmed == input_items
+
+
+def test_anchor_free_replay_wire_text_strips_only_tool_search_ids() -> None:
+    body = {
+        "type": "response.create",
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "q"}], "id": "msg_kept"},
+            {"type": "function_call", "id": "fc_kept", "call_id": "c1", "name": "f", "arguments": "{}"},
+            {"type": "tool_search_call", "id": "tsc_owned", "call_id": "c2", "arguments": {"query": "x"}},
+            {"type": "tool_search_output", "id": "tso_owned", "call_id": "c2", "tools": []},
+        ],
+    }
+    text = json.dumps(body)
+    wire = json.loads(proxy_service._anchor_free_replay_wire_text(text))
+    assert [item.get("id") for item in wire["input"]] == ["msg_kept", "fc_kept", None, None]
+    # Nothing to strip leaves the text byte-identical.
+    plain = json.dumps({"type": "response.create", "input": [body["input"][0]]})
+    assert proxy_service._anchor_free_replay_wire_text(plain) == plain
+    assert proxy_service._anchor_free_replay_wire_text("not json") == "not json"
 
 
 def test_trim_websocket_previous_response_input_items_handles_tool_search_replay():
@@ -48513,17 +48511,12 @@ def test_trim_websocket_previous_response_input_items_handles_tool_search_replay
 
     trimmed = proxy_service._trim_websocket_previous_response_input_items(input_items)
 
-    assert trimmed == [
-        {
-            "type": "tool_search_output",
-            "call_id": "call_search_1",
-            "tools": [],
-        },
-        input_items[2],
-    ]
+    # The anchored body only drops the anchor's own output; tool-search ids
+    # are stripped from the wire text of anchor-free replays alone.
+    assert trimmed == input_items[1:]
 
 
-def test_trim_websocket_previous_response_input_items_strips_output_first_tool_search_id():
+def test_trim_websocket_previous_response_input_items_keeps_output_first_tool_search_item():
     input_items: list[JsonValue] = [
         {
             "type": "tool_search_output",
@@ -48536,15 +48529,7 @@ def test_trim_websocket_previous_response_input_items_strips_output_first_tool_s
 
     trimmed = proxy_service._trim_websocket_previous_response_input_items(input_items)
 
-    assert len(trimmed) == len(input_items)
-    assert trimmed == [
-        {
-            "type": "tool_search_output",
-            "call_id": "call_search_1",
-            "tools": [],
-        },
-        input_items[1],
-    ]
+    assert trimmed == input_items
 
 
 def test_prepare_response_bridge_request_state_keeps_unconfirmed_missing_tool_output_history():

@@ -18,6 +18,15 @@ nested namespaces, MUST fail closed. The HTTP bridge and WebSocket retry paths
 MAY trim a replayed tool-search call after this predicate succeeds, but MUST
 preserve its matching output and following user input.
 
+When the service sends a body that replays a client's input without the
+anchor it had, on the WebSocket and the HTTP bridge alike and including a
+same-owner retry after a stale anchor, the outgoing text MUST NOT carry the
+response-owned `id` of `tool_search_call` and `tool_search_output` items.
+Only the outgoing text changes: an anchored body keeps the client's items apart
+from the prefix trim, and continuity fingerprints and the recovery-journal key
+MUST be computed from the client's own items, so a replayed request and the
+client's next resend describe the same continuity.
+
 #### Scenario: Client-owned tool-search pair can move accounts
 
 - **GIVEN** replay input containing a completed `tool_search_call` with
@@ -28,6 +37,15 @@ preserve its matching output and following user input.
 - **AND** both items either omit `execution` or declare `execution: "client"`
 - **WHEN** the proxy evaluates the replay for account-neutral retry
 - **THEN** the tool-search pair is accepted as portable replay state
+
+#### Scenario: Same-owner stale-anchor retry strips tool-search ids on the wire
+
+- **GIVEN** a verified full resend containing a tool-search pair with
+  response-owned ids
+- **WHEN** the HTTP bridge or WebSocket replays it without its anchor
+- **THEN** the replayed tool-search items on the wire carry no `id`
+- **AND** the recorded input fingerprint and recovery-journal key are those
+  of the client's input
 
 #### Scenario: Server-owned tool-search output fails closed
 

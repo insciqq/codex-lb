@@ -430,7 +430,6 @@ from app.modules.proxy._service.websocket.helpers import (
     _sanitize_public_websocket_event_payload,
     _sanitize_websocket_connect_failure,
     _sanitize_websocket_previous_response_error,
-    _sanitize_websocket_previous_response_input_items,
     _sanitize_websocket_terminal_error_fields,
     _serialize_websocket_error_event,
     _trim_websocket_previous_response_input_items,
@@ -3426,9 +3425,7 @@ class _WebSocketMixin:
             original_input_items = cast(list[JsonValue], responses_payload.input)
             original_input_item_count = len(original_input_items)
             original_input_fingerprint = _facade()._fingerprint_input_items(original_input_items)
-            original_full_resend_payload = responses_payload.model_copy(
-                update={"input": _sanitize_websocket_previous_response_input_items(original_input_items)}
-            )
+            original_full_resend_payload = responses_payload
             responses_payload = responses_payload.model_copy(
                 update={
                     "previous_response_id": session_anchor.previous_response_id,
@@ -3559,22 +3556,16 @@ class _WebSocketMixin:
         if previous_response_trimmed_input_count is not None:
             request_state.input_item_count = previous_response_trimmed_input_count
             request_state.input_full_fingerprint = previous_response_trimmed_input_fingerprint
-            trimmed_to = (
+            _facade().logger.info(
+                "websocket_previous_response_input_trimmed request_id=%s original_items=%s trimmed_to=%s "
+                "previous_response_id=%s",
+                request_state.request_id,
+                previous_response_trimmed_input_count,
                 len(cast(list[JsonValue], responses_payload.input))
                 if isinstance(responses_payload.input, list)
-                else None
+                else None,
+                responses_payload.previous_response_id,
             )
-            if trimmed_to != previous_response_trimmed_input_count:
-                # Stripping replayed tool-search ids keeps the item count; only a
-                # real prefix trim is worth an operator-visible log line.
-                _facade().logger.info(
-                    "websocket_previous_response_input_trimmed request_id=%s original_items=%s trimmed_to=%s "
-                    "previous_response_id=%s",
-                    request_state.request_id,
-                    previous_response_trimmed_input_count,
-                    trimmed_to,
-                    responses_payload.previous_response_id,
-                )
         affinity_policy = _sticky_key_for_responses_request(
             # Only the proven restart uses the pre-injection body. Ordinary
             # full resends must be classified after anchor injection so they
