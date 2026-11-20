@@ -27444,6 +27444,22 @@ async def test_prepare_websocket_response_create_request_does_not_fresh_retry_to
     assert prepared.request_state.fresh_upstream_request_text is None
 
 
+def test_websocket_self_contained_fresh_replay_accepts_server_executed_tool_search() -> None:
+    # Server-executed tool search items carry no call_id; an anchor-free
+    # body holding them is still self-contained.
+    history: list[JsonValue] = [
+        {"role": "user", "content": [{"type": "input_text", "text": "find a tool"}]},
+        {"type": "tool_search_call", "call_id": None, "execution": "server", "arguments": {"query": "calendar"}},
+        {"type": "tool_search_output", "call_id": None, "execution": "server", "tools": []},
+        {"role": "assistant", "content": [{"type": "output_text", "text": "found"}]},
+        {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+    ]
+    assert websocket_helpers_module._websocket_input_items_are_self_contained_fresh_replay(history) is True
+    # A client tool output without its call is still a delta.
+    orphan: list[JsonValue] = [{"type": "tool_search_output", "call_id": "call_missing", "tools": []}]
+    assert websocket_helpers_module._websocket_input_items_are_self_contained_fresh_replay(orphan) is False
+
+
 @pytest.mark.asyncio
 async def test_prepare_websocket_response_create_request_does_not_fresh_retry_unknown_anchor_delta(monkeypatch):
     request_logs = _RequestLogsRecorder()

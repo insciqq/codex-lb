@@ -785,6 +785,10 @@ def _websocket_input_items_are_self_contained_fresh_replay(input_items: list[Jso
         call_item_type = _WEBSOCKET_TOOL_CALL_ITEM_TYPES_BY_OUTPUT_TYPE.get(item_type or "")
         if call_item_type is None:
             continue
+        if call_id is None and item_type == "tool_search_output":
+            # A server-executed tool search carries its result without a
+            # call_id; there is no client call it could be missing.
+            continue
         if call_id is None or call_id not in seen_call_ids_by_type[call_item_type]:
             return False
     return True
