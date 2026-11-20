@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -47,6 +48,10 @@ def _run(*args: str) -> str:
 
 def _split(value: str) -> list[str]:
     return [item.strip() for item in value.replace("\n", ",").split(",") if item.strip()]
+
+
+def _is_number(value: str) -> bool:
+    return re.fullmatch(r"[0-9]+", value) is not None
 
 
 def read_patches(base: str, head: str) -> list[Patch]:
@@ -88,17 +93,17 @@ def validate(patch: Patch) -> None:
         patch.signals.append("missing Upstream-PR trailer")
         return
     for value in patch.prs:
-        if value != "none" and not value.isdigit():
+        if value != "none" and not _is_number(value):
             patch.signals.append(f"invalid Upstream-PR value {value!r}")
     if patch.prs == ["none"] and not (patch.issues or patch.fork_only):
         patch.signals.append("Upstream-PR none needs Upstream-Issue or Fork-Only")
     for value in patch.issues:
-        if not value.isdigit():
+        if not _is_number(value):
             patch.signals.append(f"invalid Upstream-Issue value {value!r}")
 
 
 def inspect(patch: Patch, upstream: Upstream) -> None:
-    for number in (value for value in patch.prs if value.isdigit()):
+    for number in (value for value in patch.prs if _is_number(value)):
         pull = upstream.pull(number)
         head_sha = str(pull["head"]["sha"])
         if pull.get("merged_at"):
@@ -113,7 +118,7 @@ def inspect(patch: Patch, upstream: Upstream) -> None:
                 patch.signals.append(f"PR {number}: Upstream-PR-Head missing")
             elif not any(head_sha.startswith(recorded) for recorded in patch.pr_heads):
                 patch.signals.append(f"PR {number} head moved to {head_sha[:10]}: review")
-    for number in (value for value in patch.issues if value.isdigit()):
+    for number in (value for value in patch.issues if _is_number(value)):
         issue = upstream.issue(number)
         if issue["state"] == "closed":
             reason = issue.get("state_reason") or "closed"
