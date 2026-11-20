@@ -534,9 +534,14 @@ _FAIL_CLOSED_AUTHORIZATION_CASES = [
     ("Authorization: Bearer-x a, response=QA_SECRET", "Authorization: [REDACTED]"),
     ("Authorization: Bearer, response=QA_SECRET", "Authorization: [REDACTED]"),
     ('Authorization: Bearer "QA_SECRET", status=failed', "Authorization: [REDACTED]"),
-    # A value that arrives already reading [REDACTED] was not redacted by any pass.
-    ("Authorization: Bearer [REDACTED], response=QA_SECRET", "Authorization: [REDACTED]"),
-    ("Authorization: Basic [REDACTED], response=QA_SECRET", "Authorization: [REDACTED]"),
+    # A token is exempt only when a terminator follows it.
+    ("Authorization: Bearer abc%2BQA_SECRET, status=failed", "Authorization: [REDACTED]"),
+    ("Authorization: Bearer [REDACTED]QA_SECRET, response=QA_SECRET", "Authorization: [REDACTED]"),
+    # The key's closing quote is escaped when a header map is serialized into a string field.
+    (
+        '{\\"authorization\\": \\"Digest username=u, response=QA_SECRET\\"}',
+        '{\\"authorization\\": [REDACTED]',
+    ),
 ]
 _FAIL_CLOSED_LEAK_MARKERS = ("QA_SECRET", "response=", "Signature=", "6629fae4", "fe5f80f7")
 
@@ -559,6 +564,112 @@ def test_warning_record_fails_closed_for_non_basic_authorization(text_formatter,
     assert output.endswith(f"upstream rejected {expected}\n")
     for marker in _FAIL_CLOSED_LEAK_MARKERS:
         assert marker not in output
+
+
+@pytest.mark.parametrize(
+    ("already_redacted", "original"),
+    [
+        ("Authorization: Bearer [REDACTED], response=QA_SECRET", "Authorization: Bearer abc.def, response=QA_SECRET"),
+        (
+            "Authorization: Basic [REDACTED], response=QA_SECRET",
+            "Authorization: Basic dXNlcjpwYXNz, response=QA_SECRET",
+        ),
+        ("Authorization: [REDACTED], response=QA_SECRET", "Authorization: Basic dXNlcjpwYXNz, response=QA_SECRET"),
+    ],
+)
+def test_token_pass_output_is_redacted_like_the_original_token(already_redacted, original):
+    # The token passes' own output is left as the original token's redaction
+    # leaves it, so a second pass over rendered text changes nothing.
+    assert _redact_log_value(already_redacted) == _redact_log_value(original)
+    assert _redact_log_value(_redact_log_value(original)) == _redact_log_value(original)
+
+
+@pytest.mark.parametrize("value", ["Authorization: ", "Authorization: , status=failed", "authorization=&next=1"])
+def test_empty_authorization_value_is_left_alone(value):
+    assert _redact_log_value(value) == value.strip()
+
+
+def test_authorization_space_run_is_redacted_in_linear_time():
+    import time
+
+    # An exempt Bearer value after the space run made the fail-closed pattern
+    # retry its exemption at every shorter whitespace match.
+    value = "Authorization:" + " " * 100_000 + "Bearer abc.def"
+    started = time.perf_counter()
+    redacted = runtime_logging.redact_rendered_log_text(value)
+    elapsed = time.perf_counter() - started
+
+    assert redacted == "Authorization:" + " " * 100_000 + "Bearer [REDACTED]"
+    # Quadratic backtracking took tens of seconds here.
+    assert elapsed < 2.0
+
+
+def test_basic_authorization_keeps_comma_bound_in_one_formatter_pass(text_formatter):
+    output = _render(text_formatter, _record("upstream rejected Authorization: Basic dTpw, status=failed"))
+
+    assert output.endswith("upstream rejected Authorization: [REDACTED], status=failed\n")
+
+
+def test_partially_masked_python_repr_header_value_is_replaced_whole():
+    value = 'Digest username="user", uri="/path?token=sample", response="QA_SECRET"'
+
+    redacted = runtime_logging.redact_rendered_log_text(repr({"Proxy-Authorization": value, "Accept": "x"}))
+
+    assert redacted == "{'Proxy-Authorization': '[REDACTED]', 'Accept': 'x'}"
+
+
+@pytest.mark.parametrize("log_format", ["text", "json"])
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            "upstream rejected Authorization: Basic dXNlcjpwYXNz, status=failed",
+            "upstream rejected Authorization: [REDACTED], status=failed",
+        ),
+        ("upstream rejected Authorization: Bearer abc.def", "upstream rejected Authorization: Bearer [REDACTED]"),
+        (
+            "upstream rejected Authorization: Digest u, response=QA_SECRET",
+            "upstream rejected Authorization: [REDACTED]",
+        ),
+        # A ``token=`` cookie value must not let the next header's credential through.
+        (
+            repr({"Cookie": "token=example", "Proxy-Authorization": "ApiKey QA_SECRET"}),
+            "{'Cookie': 'token=[REDACTED], 'Proxy-Authorization': '[REDACTED]'}",
+        ),
+        # Fields after a nested header map survive the second pass.
+        (
+            json.dumps({"headers": {"Authorization": "Bearer sample"}, "code": "throttled", "retry_after": 10}),
+            '{"headers": {"Authorization": "[REDACTED]"}, "code": "throttled", "retry_after": 10}',
+        ),
+        (
+            json.dumps({"detail": json.dumps({"Authorization": "Digest username=u, response=QA_SECRET"})}),
+            '{"detail": "{\\"Authorization\\": [REDACTED]',
+        ),
+    ],
+)
+def test_error_response_log_is_redacted_once_and_stays_intact(monkeypatch, log_format, message, expected):
+    # log_error_response redacts the message, then the WARNING+ formatter
+    # redacts the rendered line again: the second pass must change nothing.
+    from starlette.requests import Request
+
+    formatter = _formatter_from_config(monkeypatch, log_format)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(formatter)
+    logger = logging.getLogger("tests.error_response_redaction")
+    logger.addHandler(handler)
+    logger.propagate = False
+    request = Request({"type": "http", "method": "POST", "path": "/v1/responses", "headers": [], "query_string": b""})
+    try:
+        runtime_logging.log_error_response(logger, request, 400, "bad_request", message, category="proxy")
+    finally:
+        logger.removeHandler(handler)
+
+    output = stream.getvalue()
+    rendered = json.loads(output)["message"] if log_format == "json" else output.rstrip("\n")
+    assert rendered.endswith(f"message={json.dumps(expected)}")
+    assert "QA_SECRET" not in output
+    assert "dXNlcjpwYXNz" not in output
 
 
 @pytest.mark.parametrize("log_format", ["text", "json"])

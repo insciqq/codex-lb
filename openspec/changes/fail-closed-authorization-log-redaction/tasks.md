@@ -8,7 +8,8 @@
 - [x] 2.1 Digest, AWS SigV4, and quoted-key Digest inputs are redacted without leaking later members
 - [x] 2.2 Text and JSON formatters keep the following line
 - [x] 2.3 Existing Basic, Bearer, and Proxy-Authorization behavior is unchanged
-- [x] 2.4 Idempotence covers the new inputs
+- [x] 2.4 Idempotence covers the new inputs, including the error-response logger followed by the formatter
+- [x] 2.5 Partially masked repr values, escaped JSON keys, nested header maps and long whitespace runs
 
 ## 3. Verification
 

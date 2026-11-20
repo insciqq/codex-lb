@@ -21,22 +21,39 @@ from app.core.utils.request_id import get_request_id
 _SENSITIVE_LOG_VALUE_PATTERNS = (
     re.compile(r"(?i)(password|passwd|pwd|token|secret|api[_-]?key)(\s*[=:]\s*)([^\s,&]+)"),
     re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=:-]+"),
-    re.compile(r"(?i)(authorization\s*[=:]\s*)(?!\s*bearer\b)([^,&]+)"),
+    re.compile(r"(?i)(authorization\s*+[=:]\s*+)(?!bearer\b)([^,&]+)"),
 )
 # Fail closed for authorization values whose scheme is not Bearer or Basic
 # (Digest, AWS SigV4, ...): their auth-param lists carry secrets after the
 # first ``,``/``&``, so redact to the end of the current line (#2028). Basic
 # keeps the comma bound via pattern 2. It runs before the Bearer/Basic passes
-# and skips a value only when a token those passes will redact follows the
-# scheme, or when the JSON pass already replaced the whole quoted value. A
-# malformed ``Bearer-x ...`` / ``Bearer, ...`` value, or one that arrives as a
-# literal ``Bearer [REDACTED], ...``, is therefore never mistaken for a
-# handled one. Only a double quote may follow the key so single-quoted
-# Python-repr keys stay with ``_PYTHON_REPR_SENSITIVE_LOG_VALUE_PATTERN``.
+# and skips a value only when it is a whole Bearer or Basic token (a token
+# followed by a terminator) or already one of the token passes' own outputs
+# (``Bearer [REDACTED]``, ``Basic [REDACTED]``, pattern 2's ``[REDACTED]``
+# and the JSON pass's ``"[REDACTED]"``, also escaped as ``\"[REDACTED]\"`` once
+# the error-response logger quotes the message), so a second pass over
+# rendered text changes nothing. An empty value (``Authorization: , x``) is left alone.
+# Anything else -- ``Bearer-x ...``, ``Bearer, ...``,
+# ``Bearer abc%2B...``, ``Bearer [REDACTED]GLUED`` -- fails closed. The key
+# may be followed by a closing double quote, escaped inside a JSON string
+# field (``{\"authorization\": ...}``); single-quoted Python-repr keys stay
+# with ``_PYTHON_REPR_SENSITIVE_LOG_VALUE_PATTERN``. Possessive whitespace
+# keeps long space runs linear.
+_TOKEN_TERMINATOR = r"""(?=(?:\\?["'])?(?:[\s,&]|$))"""
 _FAIL_CLOSED_AUTHORIZATION_PATTERN = re.compile(
-    r"""(?i)(authorization"?\s*[=:]\s*)"""
-    r"""(?!"\[REDACTED\]"|["']?\s*(?:bearer\s+[A-Za-z0-9._~+/=:-]|basic\s+[A-Za-z0-9+/=]))(\S.*)"""
+    r"""(?i)(authorization(?:\\?")?\s*+[=:]\s*+)"""
+    r"""(?![,&]|"\[REDACTED\]"|\\"\[REDACTED\]\\"|(?:\\?["'])?\s*+(?:"""
+    r"""bearer\s++(?:\[REDACTED\]|[A-Za-z0-9._~+/=:-]++)"""
+    r"""|basic\s++(?:\[REDACTED\]|[A-Za-z0-9+/=]++)"""
+    r"""|\[REDACTED\])""" + _TOKEN_TERMINATOR + r""")(\S.*)"""
 )
+# A Python-repr secret value the passes replaced whole (``'[REDACTED]'``,
+# ``'Basic [REDACTED]'``); any other value under a secret key is replaced.
+_FULLY_REDACTED_REPR_VALUE = re.compile(r"""\[REDACTED\]|b?(['"])(?i:(?:bearer|basic)\s+)?\[REDACTED\]\1""")
+# A line-tail value that is already only the redaction marker, with the
+# closing quote a serializer put after it, is kept so redaction stays
+# idempotent.
+_REDACTED_LINE_VALUE = re.compile(r"""\[REDACTED\](?:\\?["'])?\s*""")
 _LINE_BREAKS = re.compile(r"(\r\n|\n|\r)")
 # RFC 7617 ``Basic <base64>`` token: a reversible encoding of ``user:password``
 # that aiohttp reprs verbatim (``ClientHttpProxyError.request_info.headers``
@@ -300,7 +317,10 @@ def _redact_json_secret(match: re.Match[str]) -> str:
 
 def _redact_python_repr_secret(match: re.Match[str]) -> str:
     value = match.group(2)
-    if _LOG_REDACTION in value:
+    if _FULLY_REDACTED_REPR_VALUE.fullmatch(value):
+        # Only a value the passes above replaced whole is kept; a marker that
+        # covers part of it (``uri="/p?token=[REDACTED]", response="..."``)
+        # leaves the rest readable, so that value is replaced as well.
         return match.group(0)
     quote = value[0] if value[0] in "'\"" else ""
     return f"{match.group(1)}{quote}{_LOG_REDACTION}{quote}"
@@ -311,6 +331,8 @@ def _redact_bearer_token(match: re.Match[str]) -> str:
 
 
 def _redact_authorization_value(match: re.Match[str]) -> str:
+    if _REDACTED_LINE_VALUE.fullmatch(match.group(2)):
+        return match.group(0)
     return f"{match.group(1)}{_LOG_REDACTION}"
 
 

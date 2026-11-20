@@ -16,22 +16,38 @@ rendered log text. Resolves the auth-param-list and quoted-key classes of
 - Basic keeps the `,`/`&` bound from the existing pattern. That behavior is
   pinned by existing tests (`Authorization: Basic dXNlcjpwYXNz, status=failed`
   keeps `, status=failed`), and Basic has no auth-param list to protect.
-- The value is classified as it arrived, before the Bearer and Basic token
-  passes run. It is exempt only when a real Bearer or Basic token follows the
-  scheme, or when the JSON pass already replaced the whole quoted value. A
-  value that merely begins with `Bearer` (such as `Bearer-x a, response=...`,
-  `Bearer, ...` or `Bearer "..."`) and one that arrives already reading
-  `Bearer [REDACTED], ...` or `Basic [REDACTED], ...` fail closed.
-- Known limit: redaction is not idempotent for text that already holds the
-  comma-bounded output of the token passes. A second pass over
-  `Authorization: [REDACTED], status=failed` drops `, status=failed`, because
-  the pattern cannot tell its own output from a value that arrived reading
-  `[REDACTED]`. This is reached when an error message redacted by
-  `_redact_log_value` is logged at WARNING+ and the formatter redacts the line
-  again. The second pass only removes same-line diagnostic text; it never
-  reveals a credential.
-- Only a double quote may sit between the key and the separator. Single-quoted
-  Python-repr keys stay with the Python-repr pattern.
+- The value is classified before the Bearer and Basic token passes run. It
+  is exempt only when it is a whole Bearer or Basic token (followed by
+  whitespace, `,`, `&` or the end of the line, optionally after a closing
+  quote) or already the output of the token passes (`Bearer [REDACTED]`,
+  `Basic [REDACTED]`, `[REDACTED]`, the JSON pass's `"[REDACTED]"`). A value
+  that merely begins with `Bearer` (`Bearer-x a, ...`, `Bearer, ...`,
+  `Bearer "..."`) or whose token runs into other characters
+  (`Bearer abc%2B...`, `Bearer [REDACTED]GLUED`) fails closed.
+- Accepting the passes' own output is what keeps redaction idempotent. The
+  error-response logger redacts the message with `_redact_log_value` and the
+  WARNING+ formatter redacts the rendered line again; the second pass must
+  not drop `, status=failed` or the closing quote. A literal
+  `Bearer [REDACTED], response=...` input therefore renders exactly as a real
+  `Bearer abc, response=...` does: the same-line tail after a whole Bearer
+  token stays, as before this change (class 3 of the issue).
+- A double quote, or an escaped `\"` from a header map serialized into a JSON
+  string field, may sit between the key and the separator. Single-quoted
+  Python-repr keys stay with the Python-repr pattern, which now keeps only a
+  value replaced whole (`'[REDACTED]'`, `'Basic [REDACTED]'`); a value masked
+  in part, such as a Digest `uri="/p?token=[REDACTED]", response="..."`, is
+  replaced whole.
+- The JSON pass's `"[REDACTED]"` is also accepted escaped (`\"[REDACTED]\"`):
+  the error-response logger quotes a redacted JSON message before the
+  formatter's second pass, and fields after a nested header map must survive.
+- An empty value (`Authorization: , x`) is left unchanged, and key/value
+  whitespace is matched possessively so a long space run stays linear.
+- Known limits: a header pair without a separator (`Authorization Digest ...`),
+  a fully percent-encoded header (`Authorization%3A%20Digest...`), and a Basic
+  credential whose unencoded password contains a comma are not recognised.
+  Cookie and Set-Cookie values in header dumps are not masked: a regex over
+  arbitrary header dumps (list-valued Set-Cookie, encoded line breaks,
+  `sid = value`) is open-ended and outside this change.
 
 ## Trade-off
 

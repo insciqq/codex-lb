@@ -14,8 +14,11 @@ tracks this.
   the key and the `=`/`:` separator.
 - Keep the existing `,`/`&` bound for values that carry a real Bearer or Basic
   token. A value is classified as it arrived, before the token passes run.
-- Leave the keyed-secret WARNING gate, the `keyed_secrets=False` path, and the
-  Python-repr pattern unchanged.
+- Keep a value that is already the token passes' output, so a second pass
+  over rendered text changes nothing.
+- Replace a Python-repr secret value whole unless it is fully redacted.
+- Leave the keyed-secret WARNING gate and the `keyed_secrets=False` path
+  unchanged.
 
 ## Capabilities
 
