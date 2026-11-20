@@ -18,7 +18,11 @@ stored text against every lossless spelling of the expected value (separator,
 trailing fractional zeros, missing seconds). A value that differs, even below
 the millisecond (`.123400` versus `.123000`), never matches. A `T`-spelled
 deadline earlier today sorts after today's space spellings, so the SQLite sweep
-also scans today's `T` range below `now`. The guarded write stores the
+also scans today's `T` range below `now`. Each range ends at the shortest
+spelling of `now`, so a deadline equal to `now` is not due in any spelling. The
+sweep guards each reset with a compare-and-set on the exact stored text it
+selected, and does not attempt a guarded miss again in the same call, even when
+a concurrent writer moved it to a later deadline that is still due. The guarded write stores the
 canonical form, so legacy rows heal on their next reset without a migration.
 
 ## Request-aware reservation estimate

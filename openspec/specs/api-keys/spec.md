@@ -293,7 +293,7 @@ The system SHALL keep the existing lazy on-read reset strategy for API key usage
 
 ### Requirement: Background limit reset sweep makes forward progress
 
-The background expired-limit sweep MUST attempt each selected limit at most once per invocation, including when the guarded reset update matches no row. It MUST page through due limits in `(reset_at, id)` order on the `reset_at` index, advance past every selected row by its stored sort key, and finish for a finite set of limits without selecting a skipped row again. It MUST keep the `reset_at` compare-and-set guard, commit each processed batch, and count only successful resets. Limits with `reset_at >= now` MUST remain unchanged. On SQLite, a limit whose legacy `T`-separated `reset_at` text falls earlier on the current day MUST be treated as due.
+The background expired-limit sweep MUST attempt each selected limit at most once per invocation, including when the guarded reset update matches no row. It MUST page through due limits in `(reset_at, id)` order on the `reset_at` index, advance past every selected row by its stored sort key, and finish for a finite set of limits without selecting a skipped row again. It MUST guard each reset with a compare-and-set on the exact `reset_at` it selected, MUST NOT attempt a limit again in the same invocation after its guarded update missed, commit each processed batch, and count only successful resets. Limits with `reset_at >= now` MUST remain unchanged in every stored spelling. On SQLite, a limit whose legacy `T`-separated `reset_at` text falls earlier on the current day MUST be treated as due.
 
 #### Scenario: A limit changes between selection and its guarded update
 
@@ -314,6 +314,18 @@ The background expired-limit sweep MUST attempt each selected limit at most once
 - **GIVEN** no limit has `reset_at < now`
 - **WHEN** the background sweep runs
 - **THEN** it reads only the `reset_at` index range below `now` instead of scanning every limit
+
+#### Scenario: A deadline equal to now
+
+- **GIVEN** a SQLite limit stores `2026-10-19 12:00:00.1234` or `2026-10-19T12:00:00.1234`
+- **WHEN** the background sweep runs at `2026-10-19 12:00:00.123400`
+- **THEN** the limit is not reset
+
+#### Scenario: A guarded miss moves to a later due deadline
+
+- **GIVEN** the sweep selected an expired limit and another writer moved it to a later deadline that is still before `now`
+- **WHEN** the sweep reaches that limit again in the same invocation
+- **THEN** it does not reset it
 
 #### Scenario: A legacy same-day T spelling is due
 

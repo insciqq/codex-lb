@@ -4194,6 +4194,37 @@ async def test_reset_expired_limits_resets_same_day_t_separated_deadline(async_c
 
 
 @pytest.mark.asyncio
+async def test_reset_expired_limits_keeps_a_deadline_equal_to_now(async_client):
+    """``reset_at == now`` is not due, whatever its spelling; an earlier deadline is."""
+    key_id = await _create_daily_limits_key(async_client, "equal-to-now")
+    now = datetime(2026, 10, 19, 12, 0, 0, 123400)
+    async with SessionLocal() as session:
+        if session.get_bind().dialect.name != "sqlite":
+            pytest.skip("Legacy DateTime text spellings are SQLite-specific")
+        limits = sorted(await ApiKeysRepository(session).get_limits_by_key(key_id), key=lambda limit: limit.id)
+        for limit in limits:
+            limit.current_value = 42
+        await session.commit()
+        spellings = {
+            limits[0].id: "2026-10-19 12:00:00.1234",
+            limits[1].id: "2026-10-19T12:00:00.1234",
+            limits[2].id: "2026-10-19 12:00:00.123400",
+            limits[3].id: "2026-10-19T12:00:00.123400",
+            limits[4].id: "2026-10-19 12:00:00.123399",
+        }
+        for limit_id, spelling in spellings.items():
+            await _set_raw_reset_at(session, limit_id, spelling)
+        await session.commit()
+
+    async with SessionLocal() as session:
+        assert await ApiKeysRepository(session).reset_expired_limits(now=now) == 1
+
+    async with SessionLocal() as session:
+        values = {limit.id: limit.current_value for limit in await ApiKeysRepository(session).get_limits_by_key(key_id)}
+        assert [values[limit_id] for limit_id in spellings] == [42, 42, 42, 42, 0]
+
+
+@pytest.mark.asyncio
 async def test_expired_limit_sweep_select_uses_the_deadline_index(async_client):
     async with SessionLocal() as session:
         if session.get_bind().dialect.name != "sqlite":
@@ -4321,9 +4352,15 @@ async def test_usage_reservation_guards_reject_a_different_deadline(async_client
 
 
 @pytest.mark.asyncio
-async def test_reset_expired_limits_matches_sub_millisecond_deadlines_exactly(async_client, monkeypatch):
-    """A sub-millisecond ``T`` spelling resets; a deadline changed below the millisecond is not reset."""
-    key_id = await _create_daily_limits_key(async_client, "sub-ms-sweep")
+@pytest.mark.parametrize("batch_size", [1, 500])
+async def test_reset_expired_limits_matches_sub_millisecond_deadlines_exactly(async_client, monkeypatch, batch_size):
+    """A sub-millisecond ``T`` spelling resets; a deadline changed below the millisecond is not reset.
+
+    With one-row batches the changed row's new deadline sorts after the cursor
+    and is selected again; it must not be reset in the same sweep.
+    """
+    monkeypatch.setattr(api_keys_repository_module, "_EXPIRED_LIMIT_RESET_BATCH_SIZE", batch_size)
+    key_id = await _create_daily_limits_key(async_client, f"sub-ms-sweep-{batch_size}")
     now = datetime(2026, 10, 19)
     async with SessionLocal() as session:
         if session.get_bind().dialect.name != "sqlite":
