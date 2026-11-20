@@ -47,12 +47,18 @@ and an explicit `model_catalog_url`. Without both, Codex uses its bundled
 model list and can omit models that codex-lb already advertises. Selecting
 a model with `model = "..."` does not itself refresh the picker.
 
+Since Codex 0.166.0, `api_key_model_discovery` is stable and enabled by
+default, but a custom provider authenticated by API key still needs an
+explicit `model_catalog_url` for remote discovery. Keeping the feature
+setting is harmless with newer clients.
+
 The examples include both settings. Keep each catalog URL on the same host
 and port as its provider's `base_url`; update both when using a remote
 installation. Merge these keys into existing `[features]` and provider
 tables rather than duplicating the tables, then fully quit and reopen the
 Codex app. See the [model discovery context](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/model-catalog-compat/context.md#codex-client-discovery)
 for the client-side conditions and verification scope.
+
 ### Native web search
 
 `supports_standalone_web_search = true` declares that the custom provider supports
