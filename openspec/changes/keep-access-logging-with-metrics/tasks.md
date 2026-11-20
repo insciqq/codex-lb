@@ -5,5 +5,5 @@
 
 ## 2. Verification
 
-- [x] 2.1 Subprocess regression: access lines survive metrics server startup.
+- [x] 2.1 Regression: building the metrics server config leaves the server logging configuration unchanged.
 - [x] 2.2 Subprocess and unit regressions: JSON access lines carry client, request and status.

@@ -15,7 +15,7 @@ from functools import lru_cache
 from importlib import import_module
 from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlparse
 
 import aiohttp
@@ -152,6 +152,9 @@ from app.modules.telemetry.scheduler import build_telemetry_scheduler
 from app.modules.usage import api as usage_api
 from app.modules.usage.additional_quota_keys import reload_additional_quota_registry
 from app.modules.usage.live_ingest import start_live_usage_ingestor, stop_live_usage_ingestor
+
+if TYPE_CHECKING:
+    import uvicorn
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +391,19 @@ def _is_metrics_bind_conflict(exc: BaseException) -> bool:
 
         return exc.errno in (_errno.EADDRINUSE, _errno.EADDRNOTAVAIL)
     return False
+
+
+def _metrics_server_config(metrics_app: Any, port: int) -> "uvicorn.Config":
+    """uvicorn config for the in-process metrics server.
+
+    ``log_config`` and ``log_level`` stay None: uvicorn applies both process
+    wide when the config is built, and the stock config would replace the
+    main server's handlers on the uvicorn.* loggers and raise uvicorn.access
+    to WARNING.
+    """
+    import uvicorn
+
+    return uvicorn.Config(metrics_app, host="0.0.0.0", port=port, log_config=None, log_level=None)
 
 
 def _is_benign_metrics_bind_failure(exc: BaseException) -> bool:
@@ -771,25 +787,13 @@ async def lifespan(app: FastAPI):
     await data_retention_scheduler.start()
     await telemetry_scheduler.start()
     if settings.metrics_enabled and PROMETHEUS_AVAILABLE:
-        import uvicorn
-
         from app.core.server import SignalNeutralServer
 
         scrape_registry = make_scrape_registry()
         prometheus_module = import_module("prometheus_client")
         make_asgi_app = getattr(prometheus_module, "make_asgi_app")
         metrics_app = make_asgi_app(registry=scrape_registry)
-        # log_config/log_level None: uvicorn applies both process-wide, and the
-        # stock config would replace the main server's handlers on uvicorn.*
-        # loggers and raise uvicorn.access to WARNING.
-        config = uvicorn.Config(
-            metrics_app,
-            host="0.0.0.0",
-            port=settings.metrics_port,
-            log_config=None,
-            log_level=None,
-        )
-        metrics_server = SignalNeutralServer(config)
+        metrics_server = SignalNeutralServer(_metrics_server_config(metrics_app, settings.metrics_port))
 
         async def _serve_metrics(srv: _MetricsServer) -> None:
             try:
