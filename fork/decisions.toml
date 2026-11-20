@@ -103,7 +103,7 @@ reason = "Async tool continuity built ahead of client support; current Codex cli
 title = "fix(proxy): add native history and notes routes with account-local ownership"
 state = "open"
 status = "rejected"
-reason = "Concurrent first writes can pin different owners, the stale-session sweep retires history owners, and the session identity may diverge from the scoped cache identity; no evidence yet of the 405 responses it targets."
+reason = "Concurrent first writes can pin different owners, the stale-session sweep retires history owners, and the session identity may diverge from the scoped cache identity."
 
 [pr.2102]
 title = "feat(proxy): support Codex history and notes across account pools"
@@ -398,7 +398,8 @@ reason = "Closed by its author after review showed that main already refuses to 
 title = "fix(proxy): surface native transport give-up terminals"
 state = "open"
 status = "rejected"
-reason = "No matching production evidence for the native give-up terminal, and several edge cases remain unresolved in review."
+issues = [2470]
+reason = "Its stream-lease release was split out upstream as PR 2616. The remaining give-up terminal changes alter the native error contract and had unresolved review findings (among them a concurrent close of model-source streams it introduced); not taken."
 
 [pr.2486]
 title = "fix(balancer): admit a hard continuity owner serving its own transient backoff"
@@ -454,6 +455,7 @@ reason = "A stop can return before the leader election registers a detached body
 title = "feat(cli): add --log-level and --log-file; stop the metrics server resetting logging"
 state = "open"
 status = "pending"
+rework = "Only the logging fixes are taken; the new --log-level and --log-file server flags are not."
 
 [pr.2508]
 title = "fix(proxy): reuse bridge sessions for inline images"
@@ -539,7 +541,7 @@ reason = "Admits inline images on the HTTP bridge, a new capability continued in
 title = "fix(images): route image requests through compatible host"
 state = "closed"
 status = "rejected"
-reason = "Overrides the maintainer-approved image host selection from PR 2320 without a reproducible report, and bundles an unrelated doubling of the request-body and WebSocket message limits."
+reason = "Overrides the maintainer-approved image host selection from PR 2320, and bundles an unrelated doubling of the request-body and WebSocket message limits."
 
 [pr.2539]
 title = "fix(proxy): treat websocket close 1009 as terminal payload_too_large"
@@ -652,7 +654,8 @@ title = "fix(proxy): keep the prewarm anchor on websocket replay"
 state = "closed"
 status = "superseded"
 by = 2731
-reason = "Issue 2574 is fixed by PR 2731 plus follow-up fixes."
+issues = [2574]
+reason = "Replaced by PR 2731 and its follow-up fixes as the fix for issue 2574."
 
 [pr.2576]
 title = "fix(api-keys): expose supported image models in key picker"
@@ -669,7 +672,7 @@ reason = "A new reset-credit expiry indicator in the dashboard."
 title = "fix(proxy): fence HTTP bridge writes by dispatch generation"
 state = "open"
 status = "rejected"
-reason = "Adds a database column through a migration that is not rolling-safe; a large hardening change without a reproduced user-facing failure."
+reason = "Adds a database column through a migration that is not rolling-safe; the fork keeps the upstream schema."
 
 [pr.2581]
 title = "fix(proxy): preserve agent context across HTTP bridge reconnects"
@@ -734,7 +737,7 @@ status = "pending"
 title = "fix(proxy): allow prefix-settled replay outputs"
 state = "closed"
 status = "rejected"
-reason = "Widens account-neutral replay certification without a reported failure; a false proof would send account-bound history to another account."
+reason = "Widens account-neutral replay certification; a false proof would send account-bound history to another account."
 
 [pr.2618]
 title = "fix(http-bridge): recover from draining owner rejection"
@@ -1200,7 +1203,7 @@ title = "fix(proxy): prevent native websocket burst drops and preserve diagnosti
 state = "open"
 status = "superseded"
 by = 2635
-reason = "Burst handling is fixed by the narrower queue bound of PR 2635; the credit-based flow control adds a per-message round trip and has open review findings."
+reason = "Replaced for burst handling by the narrower queue bound of PR 2635; the credit-based flow control adds a per-message round trip and has open review findings."
 
 [pr.2712]
 title = "fix(proxy): retry zero-event bridge socket drops once"
@@ -1306,7 +1309,7 @@ title = "fix(core): harden proxy trust and restore client compatibility"
 state = "closed"
 status = "superseded"
 by = 2632
-reason = "Bundles PRs 2512, 2632, 2633, 2638, 2654, 2682 and 2692, which are reviewed individually."
+reason = "Bundles PRs 2512, 2632, 2633, 2638, 2654, 2682 and 2692, which are taken individually."
 
 [pr.2731]
 title = "fix(proxy): do not replay an unknown WebSocket anchor's delta without the anchor"
@@ -1362,6 +1365,11 @@ state = "open"
 status = "out-of-scope"
 prs = [1528]
 reason = "Feature request: per-account usage limits."
+
+[issue.730]
+title = "[bug] mem0 JSON mode requests fail when JSON instruction is in system/developer message"
+state = "closed"
+status = "pending"
 
 [issue.850]
 title = "[Feature] Full Account Backup & Restore"
@@ -1433,7 +1441,8 @@ reason = "By design: /v1/models lists only models the upstream catalog marks as 
 [issue.1470]
 title = "feat(db): make data-backfill migrations non-blocking, resumable, and observable"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "Per-revision progress logging of online migrations (start, completion with elapsed time, failure) comes from PR 2307; the requested non-blocking, resumable data-backfill phases with row-level progress are not addressed."
 
 [issue.1471]
 title = "ci(db): gate long-running migrations with a production-scale duration check"
@@ -1721,7 +1730,7 @@ reason = "Not reproducible: on upstream main the enclosing labels already give e
 title = "feat(images): support GPT Image 2.5 Flare and Sunburst in the Images API"
 state = "open"
 status = "out-of-scope"
-reason = "Feature request: accept two new image model names in the Images API; upstream asked for evidence that the backend serves these variants."
+reason = "Feature request: accept two new image model names in the Images API."
 
 [issue.2309]
 title = "docs: align agent instructions with Astra prompt guidance"
