@@ -9,9 +9,9 @@ body:
         Thanks for taking the time to file a bug report! 🙏
 
         Before you continue:
-        - Search [open & closed issues](https://github.com/Soju06/codex-lb/issues?q=is%3Aissue) — your problem may already be known.
-        - For "how do I…?" questions, please use [Discussions](https://github.com/Soju06/codex-lb/discussions) instead.
-        - For security vulnerabilities, use a [private advisory](https://github.com/Soju06/codex-lb/security/advisories/new) — **do not** post them here.
+        - Search [open & closed issues](https://github.com/insciqq/codex-lb/issues?q=is%3Aissue) — your problem may already be known.
+        - For "how do I…?" questions, please use [Discussions](https://github.com/insciqq/codex-lb/discussions) instead.
+        - For security vulnerabilities, use a [private advisory](https://github.com/insciqq/codex-lb/security/advisories/new) — **do not** post them here.
 
   - type: checkboxes
     id: preflight
@@ -21,7 +21,7 @@ body:
       options:
         - label: I searched existing issues and confirmed this is not a duplicate.
           required: true
-        - label: I am running a supported codex-lb version (see Releases).
+        - label: I am running the latest fork release (see Releases) or a newer `patched` commit.
           required: true
         - label: I can reproduce the problem with the steps below.
           required: true
@@ -31,7 +31,7 @@ body:
     attributes:
       label: codex-lb version
       description: Version shown in the dashboard status bar (or `GET /api/runtime/version`), or the image tag you deployed.
-      placeholder: "1.25.0 (dashboard status bar, `GET /api/runtime/version`, or the deployed image tag)"
+      placeholder: "<upstream base>+fork.<n> (dashboard status bar, `GET /api/runtime/version`), or the deployed image tag or digest"
     validations:
       required: true
 
@@ -41,12 +41,12 @@ body:
       label: Deployment method
       multiple: false
       options:
-        - uvx (codex-lb)
-        - pip install codex-lb
-        - Docker (ghcr.io/Soju06/codex-lb)
-        - Docker Compose
-        - Helm chart (oci://ghcr.io/soju06/charts/codex-lb)
-        - From source
+        - Docker (ghcr.io/insciqq/codex-lb)
+        - Docker Compose (from a fork checkout)
+        - Helm chart (deploy/helm/codex-lb from a fork release tag)
+        - From source (fork checkout)
+        - uvx / pip (upstream's PyPI release)
+        - Upstream image or Helm chart
         - Other (describe below)
     validations:
       required: true

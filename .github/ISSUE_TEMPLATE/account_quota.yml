@@ -22,14 +22,14 @@ body:
       options:
         - label: I searched existing issues for similar reports.
           required: true
-        - label: I'm on the latest patch release of my minor version.
+        - label: I'm on the latest fork release or a newer `patched` commit.
           required: true
 
   - type: input
     id: version
     attributes:
       label: codex-lb version
-      placeholder: "1.25.0 (dashboard status bar, `GET /api/runtime/version`, or the deployed image tag)"
+      placeholder: "<upstream base>+fork.<n> (dashboard status bar, `GET /api/runtime/version`), or the deployed image tag or digest"
     validations:
       required: true
 

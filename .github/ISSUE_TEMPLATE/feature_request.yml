@@ -8,9 +8,16 @@ body:
       value: |
         Thanks for proposing an idea! Before you continue:
 
-        - For open-ended ideas, please consider opening a
-          [Discussion](https://github.com/Soju06/codex-lb/discussions) first to
-          collect feedback. Use this form when you have a concrete, scoped proposal.
+        - New features are on hold until this fork has settled with a few
+          stable releases; feature work may be considered after that. Until
+          then the fork takes bug fixes, security, compatibility with current
+          Codex clients and the OpenAI backend, and dependency updates (see
+          [FORK.md](https://github.com/insciqq/codex-lb/blob/patched/FORK.md)).
+          Requests filed now may wait until then.
+        - Search [existing issues](https://github.com/insciqq/codex-lb/issues?q=is%3Aissue)
+          first. For open-ended ideas, please consider opening a
+          [Discussion](https://github.com/insciqq/codex-lb/discussions) first to collect feedback.
+          Use this form when you have a concrete, scoped proposal.
         - codex-lb uses **OpenSpec-first** development. Significant behavior
           changes will eventually live as an `openspec/changes/<change>/`
           proposal — you don't need to write the spec yourself, but think about

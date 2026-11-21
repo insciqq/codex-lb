@@ -7,6 +7,11 @@ the conventions yourself.
 If anything below is unclear or out of date, please open a small `docs:` PR —
 that's the easiest first contribution.
 
+This repository is a maintained fork of
+[Soju06/codex-lb](https://github.com/Soju06/codex-lb). Its scope, branches,
+CI, releases and required commit trailers are in [FORK.md](../FORK.md); where
+FORK.md differs from this document, FORK.md applies to pull requests here.
+
 ---
 
 ## Table of contents
@@ -38,15 +43,16 @@ You don't need to write code to help:
 - **Triage**: reproduce open issues, ask for missing details, add labels.
 - **Docs**: improve the README, fix typos, document a deployment recipe.
 - **Discussions**: answer "how do I…?" questions in
-  [GitHub Discussions](https://github.com/Soju06/codex-lb/discussions).
+  [GitHub Discussions](https://github.com/insciqq/codex-lb/discussions).
 - **Bug reports**: file a structured report using the Bug Report issue form.
-- **Feature ideas**: propose them in Discussions first if open-ended; use the
-  Feature Request form when the idea is concrete.
+- **Feature ideas**: new features are on hold until the fork has settled with
+  a few stable releases; propose them in Discussions first if open-ended, and
+  use the Feature Request form when the idea is concrete.
 - **Code**: fix a bug, implement a feature, refactor a hot spot.
 
 Look for issues labelled
-[`good first issue`](https://github.com/Soju06/codex-lb/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) or
-[`help wanted`](https://github.com/Soju06/codex-lb/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22)
+[`good first issue`](https://github.com/insciqq/codex-lb/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) or
+[`help wanted`](https://github.com/insciqq/codex-lb/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22)
 if you're looking for a starter task.
 
 ## Development setup
@@ -385,7 +391,7 @@ The normative requirements live in
 
 Please do **not** open public issues for security vulnerabilities. Report them
 privately via
-[GitHub Security Advisories](https://github.com/Soju06/codex-lb/security/advisories/new).
+[GitHub Security Advisories](https://github.com/insciqq/codex-lb/security/advisories/new).
 See [SECURITY.md](./SECURITY.md) for full details.
 
 ---
