@@ -1,7 +1,7 @@
 [registry]
 upstream = "Soju06/codex-lb"
 base = "72630bbfeee9e3b0d9acfb95e2b1e706b8b0188e"
-snapshot = 2026-11-20
+snapshot = 2026-11-21
 closed_since = 2026-10-16
 
 [pr.1528]
@@ -1518,6 +1518,11 @@ state = "open"
 status = "not-applicable"
 prs = [2329]
 reason = "Upstream CI proposal; an advisory migration duration benchmark is already on upstream main (PR 2329)."
+
+[issue.1530]
+title = "bug: client-fault upstream 400 penalizes the serving account and 502s unrelated hard-sticky sessions (plus an unclassified 'tool search call' missing-tool-output variant)"
+state = "closed"
+status = "pending"
 
 [issue.1572]
 title = "feat: support CODEX_LB_ENCRYPTION_KEY for stateless replicas"
