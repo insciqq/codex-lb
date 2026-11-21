@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import inspect
 import json
 import logging
@@ -3320,6 +3322,42 @@ def _http_bridge_durable_lookup_allows_turn_state_takeover(lookup: DurableBridge
     return _durable_bridge_lookup_active_owner(lookup) is None
 
 
+HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER: Final = "x-codex-bridge-affinity-key-encoding"
+_HTTP_BRIDGE_AFFINITY_KEY_BASE64URL: Final = "base64url"
+
+
+def _encode_bridge_affinity_key(key: str) -> tuple[str, str | None]:
+    """Return the header value and encoding that carry ``key`` verbatim.
+
+    Codex selection keys start with a line feed on purpose (no client header
+    can spell them), and header parsing strips surrounding whitespace, so such
+    keys travel base64url-encoded. Printable ASCII keys (an inner tab is
+    legal in a header) stay unchanged, which keeps them readable by owners
+    that predate the encoding.
+    """
+
+    if key == key.strip() and all(char == "\t" or " " <= char <= "~" for char in key):
+        return key, None
+    encoded = base64.urlsafe_b64encode(key.encode("utf-8", "surrogatepass")).decode("ascii")
+    return encoded, _HTTP_BRIDGE_AFFINITY_KEY_BASE64URL
+
+
+def _decode_bridge_affinity_key(value: str | None, encoding: str | None) -> str | None:
+    """Invert ``_encode_bridge_affinity_key``; raise ``ValueError`` on bad input."""
+
+    if encoding is None:
+        return value
+    if encoding != _HTTP_BRIDGE_AFFINITY_KEY_BASE64URL or value is None or not value.isascii():
+        raise ValueError("unsupported bridge affinity key encoding")
+    try:
+        decoded = base64.b64decode(value, altchars=b"-_", validate=True).decode("utf-8", "surrogatepass")
+    except (binascii.Error, UnicodeDecodeError) as exc:
+        raise ValueError("invalid bridge affinity key encoding") from exc
+    if not decoded:
+        raise ValueError("empty bridge affinity key")
+    return decoded
+
+
 def _forwarded_http_bridge_session_key(
     headers: Mapping[str, str],
     api_key: ApiKeyData | None,
@@ -3328,7 +3366,22 @@ def _forwarded_http_bridge_session_key(
     forwarded_affinity_key: str | None = None,
 ) -> _HTTPBridgeSessionKey | None:
     affinity_kind = forwarded_affinity_kind or _header_value_case_insensitive(headers, "x-codex-bridge-affinity-kind")
-    affinity_key = forwarded_affinity_key or _header_value_case_insensitive(headers, "x-codex-bridge-affinity-key")
+    affinity_key = forwarded_affinity_key
+    if not affinity_key:
+        try:
+            affinity_key = _decode_bridge_affinity_key(
+                _header_value_case_insensitive(headers, "x-codex-bridge-affinity-key"),
+                _header_value_case_insensitive(headers, HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER),
+            )
+        except ValueError as exc:
+            raise ProxyResponseError(
+                400,
+                openai_error(
+                    "bridge_forward_invalid",
+                    "Internal bridge forward affinity key is invalid",
+                    error_type="invalid_request_error",
+                ),
+            ) from exc
     if affinity_kind is None or affinity_key is None:
         return None
     strength: Literal["hard", "soft"]

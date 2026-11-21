@@ -75,6 +75,18 @@ safely restores conservative hard ownership during rollback. Dropping the scope
 column loses only restart-recovery state; it does not make the retained owner
 mobile.
 
+Owner forwarding encodes an affinity key that a header cannot carry. Codex
+thread and process-session selection keys start with a line feed on purpose,
+so that no client header value can name them, and header parsing also strips
+surrounding whitespace. Sending such a key raw made every cross-replica forward
+of a native Codex thread fail with `bridge_forward_invalid` (issue 2655).
+Printable keys keep their old wire form, so mixed releases still forward them.
+During a rolling upgrade, an owner of an earlier release ignores the encoding
+header and its signature check fails with `bridge_forward_invalid`, which is
+how those forwards already failed at the origin. A multi-replica upgrade to
+this release already has to stop its old replicas first (see the Kubernetes
+deployment notes); single-replica deployments never forward.
+
 ## Required-owner recovery during transient backoff
 
 A hard continuation narrows selection to its resolved owner. Its transient

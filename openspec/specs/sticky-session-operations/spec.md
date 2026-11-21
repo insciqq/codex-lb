@@ -1353,7 +1353,7 @@ When account invalidation (deactivation, re-authentication demand, proxy-binding
 Owner-forwarded HTTP bridge requests MUST validate reconstructed bridge
 metadata before building signatures or posting headers to another owner.
 Metadata values that become signed bridge headers MUST NOT contain illegal HTTP
-header control characters. If original affinity, downstream turn-state,
+header control characters. If original affinity kind, downstream turn-state,
 file-owner, client-IP, origin/target instance, or reservation metadata contains
 such a character, the proxy MUST fail closed with the structured
 `bridge_forward_invalid` error instead of sending the owner request. Ordinary
@@ -1377,6 +1377,30 @@ forwarded header map.
 - **WHEN** the origin builds the owner-forward request
 - **THEN** that client header is not forwarded
 - **AND** the signed bridge-forward metadata remains valid
+
+### Requirement: Owner forwarding carries the original affinity key verbatim
+
+An owner-forwarded HTTP bridge request MUST deliver the original affinity key
+to the owner byte-identical. A key that an HTTP header cannot carry verbatim,
+because it contains characters outside printable ASCII other than an inner
+horizontal tab, or begins or ends with whitespace, MUST be sent base64url-encoded in
+`x-codex-bridge-affinity-key` with `x-codex-bridge-affinity-key-encoding:
+base64url`; every other key MUST be sent unchanged without the encoding
+header. The forward signatures MUST cover the decoded key, and the owner MUST
+decode the key before it verifies them and before it derives the bridge session
+key. A malformed value or an unknown encoding MUST fail closed with
+`bridge_forward_invalid`.
+
+#### Scenario: A Codex thread key reaches its owner
+
+- **GIVEN** a native Codex request whose thread selection key starts with a line feed
+- **WHEN** the origin forwards it to the owner instance
+- **THEN** the owner verifies the forward and serves the turn on a bridge session with the identical key
+
+#### Scenario: A printable key keeps its wire form
+
+- **WHEN** the original affinity key is printable ASCII, possibly with inner tabs, without surrounding whitespace
+- **THEN** the forward carries it unchanged and without the encoding header
 
 ### Requirement: Isolated accounts release their soft sticky owners
 

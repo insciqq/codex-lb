@@ -5471,6 +5471,93 @@ async def test_forwarded_priority_prompt_cache_mismatch_forks_on_canonical_owner
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("original_request_unanchored", [False, True])
+async def test_forwarded_thread_affinity_key_reaches_owner_unchanged(
+    async_client,
+    app_instance,
+    monkeypatch,
+    original_request_unanchored,
+):
+    from app.modules.proxy import api as proxy_api_module
+    from app.modules.proxy.affinity import _codex_backend_identity
+    from app.modules.proxy.http_bridge_forwarding import (
+        HTTP_BRIDGE_AFFINITY_KEY_HEADER,
+        HTTPBridgeForwardContext,
+        build_owner_forward_headers,
+    )
+
+    target_settings = _make_app_settings(enabled=True, instance_id="instance-b")
+    _install_proxy_settings(
+        monkeypatch,
+        app_settings=target_settings,
+        dashboard_settings=_make_dashboard_settings(),
+    )
+    monkeypatch.setattr(proxy_api_module, "get_settings", lambda: target_settings)
+    account = await _get_account(
+        await _import_account(async_client, "acc_http_bridge_forwarded_thread", "forwarded-thread@example.com")
+    )
+    service = get_proxy_service_for_app(app_instance)
+
+    async def fake_select_account_with_budget(self, deadline, **kwargs):
+        del self, deadline, kwargs
+        return AccountSelection(account=account, error_message=None, error_code=None)
+
+    async def fake_ensure_fresh_with_budget(self, target, *, force=False, timeout_seconds):
+        del self, force, timeout_seconds
+        return target
+
+    upstream = _FakeBridgeUpstreamWebSocket("resp_forwarded_thread")
+
+    async def fake_connect_responses_websocket(*args, **kwargs):
+        del args, kwargs
+        return upstream
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+
+    # Codex thread selection keys start with a line feed, which no header can
+    # carry verbatim; the forward must still deliver the exact key.
+    client_headers = {"session-id": "forwarded-process", "thread-id": "forwarded-thread"}
+    thread_key = _codex_backend_identity(client_headers).thread_selection_key
+    assert thread_key is not None and thread_key.startswith("\n")
+    payload = proxy_module.ResponsesRequest(model="gpt-5.1", instructions="Return exactly OK.", input="hi")
+    forward_headers = build_owner_forward_headers(
+        headers=client_headers,
+        payload=payload,
+        context=HTTPBridgeForwardContext(
+            origin_instance="instance-a",
+            target_instance=target_settings.http_responses_session_bridge_instance_id,
+            codex_session_affinity=True,
+            downstream_turn_state=None,
+            original_request_unanchored=original_request_unanchored,
+            original_affinity_kind="thread_header",
+            original_affinity_key=thread_key,
+        ),
+    )
+    assert "\n" not in forward_headers[HTTP_BRIDGE_AFFINITY_KEY_HEADER]
+
+    try:
+        response = await asyncio.wait_for(
+            async_client.post(
+                "/internal/bridge/responses",
+                json=payload.model_dump_for_forwarding(),
+                headers=forward_headers,
+            ),
+            timeout=_TEST_SYNC_TIMEOUT_SECONDS,
+        )
+
+        assert response.status_code == 200, response.text
+        assert '"type":"response.completed"' in response.text
+        assert [(key.affinity_kind, key.affinity_key) for key in service._http_bridge_sessions] == [
+            ("thread_header", thread_key)
+        ]
+    finally:
+        for session in list(service._http_bridge_sessions.values()):
+            await service._close_http_bridge_session(session)
+
+
+@pytest.mark.asyncio
 async def test_forwarded_recovery_uses_durable_owner_and_strips_stale_affinity(
     async_client,
     app_instance,

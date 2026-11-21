@@ -16,6 +16,7 @@ from app.core.openai.requests import ResponsesRequest
 from app.core.utils.sse import parse_sse_data_json
 from app.modules.api_keys.service import ApiKeyUsageReservationData
 from app.modules.proxy.http_bridge_forwarding import (
+    HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER,
     HTTP_BRIDGE_AFFINITY_KEY_HEADER,
     HTTP_BRIDGE_AFFINITY_KIND_HEADER,
     HTTP_BRIDGE_CLIENT_IP_HEADER,
@@ -666,6 +667,54 @@ def test_build_owner_forward_headers_preserves_original_affinity_key() -> None:
 
     assert headers[HTTP_BRIDGE_AFFINITY_KIND_HEADER] == "session_header"
     assert headers[HTTP_BRIDGE_AFFINITY_KEY_HEADER] == "sid-123"
+    assert HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER not in headers
+
+
+def _affinity_context(key: str, *, unanchored: bool = False) -> HTTPBridgeForwardContext:
+    return HTTPBridgeForwardContext(
+        origin_instance="instance-a",
+        target_instance="instance-b",
+        codex_session_affinity=True,
+        downstream_turn_state=None,
+        original_request_unanchored=unanchored,
+        original_affinity_kind="thread_header",
+        original_affinity_key=key,
+    )
+
+
+@pytest.mark.parametrize("unanchored", [False, True])
+@pytest.mark.parametrize("key", ["\ncodex-lb-affinity-v1:thread_header:thread_only:abc", " padded ", "cl\u00e9-\u043a"])
+def test_owner_forward_round_trips_affinity_keys_headers_cannot_carry(key: str, unanchored: bool) -> None:
+    payload = _payload()
+    context = _affinity_context(key, unanchored=unanchored)
+
+    headers = build_owner_forward_headers(headers={}, payload=payload, context=context)
+
+    wire_value = headers[HTTP_BRIDGE_AFFINITY_KEY_HEADER]
+    assert wire_value.isascii() and wire_value == wire_value.strip() and wire_value.isprintable()
+    assert headers[HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER] == "base64url"
+    parsed, error = parse_forwarded_request(headers, payload=payload, current_instance="instance-b")
+    assert error is None
+    assert parsed is not None
+    assert parsed.context.original_affinity_key == key
+
+
+@pytest.mark.parametrize(
+    ("wire_value", "encoding"),
+    [("not base64!", "base64url"), ("", "base64url"), ("c2lkLTEyMw==", "gzip")],
+)
+def test_parse_forwarded_request_rejects_malformed_affinity_key_encoding(wire_value: str, encoding: str) -> None:
+    payload = _payload()
+    headers = build_owner_forward_headers(headers={}, payload=payload, context=_affinity_context("\nkey"))
+    headers[HTTP_BRIDGE_AFFINITY_KEY_HEADER] = wire_value
+    headers[HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER] = encoding
+
+    parsed, error = parse_forwarded_request(headers, payload=payload, current_instance="instance-b")
+
+    assert parsed is None
+    assert error is not None
+    assert error.status_code == 400
+    assert error.payload["error"]["code"] == "bridge_forward_invalid"
 
 
 def test_parse_forwarded_request_preserves_signed_original_unanchored_status() -> None:

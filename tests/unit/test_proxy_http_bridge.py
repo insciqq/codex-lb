@@ -19014,7 +19014,7 @@ def test_owner_forward_headers_allow_htab_in_signed_metadata_values() -> None:
     assert forwarded["authorization"] == "Bearer\tclient"
 
 
-def test_owner_forward_headers_reject_illegal_control_char_affinity_metadata() -> None:
+def test_owner_forward_headers_encode_control_char_affinity_key() -> None:
     payload = proxy_service.ResponsesRequest.model_validate({"model": "gpt-5.4", "instructions": "hi", "input": "hi"})
     context = proxy_service.HTTPBridgeForwardContext(
         origin_instance="instance-a",
@@ -19025,15 +19025,14 @@ def test_owner_forward_headers_reject_illegal_control_char_affinity_metadata() -
         original_affinity_key="cache\x00key",
     )
 
-    with pytest.raises(ProxyResponseError) as exc_info:
-        http_bridge_forwarding_module.build_owner_forward_headers(
-            headers={},
-            payload=payload,
-            context=context,
-        )
+    forwarded = http_bridge_forwarding_module.build_owner_forward_headers(
+        headers={},
+        payload=payload,
+        context=context,
+    )
 
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.payload["error"]["code"] == "bridge_forward_invalid"
+    assert forwarded["x-codex-bridge-affinity-key"] == "Y2FjaGUAa2V5"
+    assert forwarded["x-codex-bridge-affinity-key-encoding"] == "base64url"
 
 
 def test_owner_forward_headers_reject_illegal_control_char_reservation_metadata() -> None:
