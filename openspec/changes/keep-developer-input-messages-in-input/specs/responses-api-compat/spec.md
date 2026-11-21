@@ -239,38 +239,51 @@ on a Responses request) a message that mentions JSON stays, and non-text parts
 stay as a `user` message. The JSON-mode decision and the Lite classification
 MUST be taken from the request as the client sent it, before part
 sanitization and before any trim, so a trimmed suffix of a Lite request keeps
-its developer messages inline. The forwarded payload MUST keep the developer
-messages in place.
+its developer messages inline; a fresh frame retained for replay MUST keep
+the decisions of the request it came from. The forwarded payload MUST keep
+the developer messages in place.
 
-This covers the WebSocket client full-resend retry classifier, the HTTP bridge
-full-resend classifier and history signal, stored-context recording (item
-count and fingerprint), warm-session and durable stored-prefix matching with
-the stored-prefix trim and its retry-safety promotion, the durable
-retained-output and tool-manifest proofs, the compact account-neutral replay
-proof and terminal-item selection, cross-transport replay eligibility, the
+This covers the HTTP bridge full-resend classifier and history signal,
+stored-context recording (item count and fingerprint), warm-session and
+durable stored-prefix matching with the stored-prefix trim and its
+retry-safety promotion, the durable retained-output and tool-manifest proofs,
+the compact account-neutral replay proof and terminal-item selection,
+cross-transport replay eligibility, the retained-output proof that lets an
+unanchored full resend leave an account after a pre-visible quota rejection
+(the replacement keeps its developer messages in place, without item ids), the
 prior-output trims, replayed tool-call deduplication segments, and goal-marker
-detection (a developer message the hoist would have moved counts line by line,
-like `instructions`).
+detection (the text the hoist would have moved out of a developer message,
+whole or beside non-text parts, counts line by line, like `instructions`).
+Compact terminal-item selection and consumed tool-pair cleanup MUST use the
+same terminal item.
 
 When an anchored request trims a stored prefix of base-equivalent items, the
 anchor carries those items and the developer messages the stored turn sent.
-The service MUST record, with the stored context, the fingerprints of the
-developer messages in the stored turn's full client input. The trimmed range
-runs up to the next base-equivalent item after the prefix; within it, a
-developer message whose fingerprint was recorded MUST NOT be sent again, and
-a new or changed developer message MUST be sent, in order, ahead of the
-remainder. When the recorded set is unknown (a stored context hydrated from a
-durable row), every developer message in that range MUST be sent.
+The service MUST record, with the stored context and bound to the completed
+response id, the fingerprints, in order, of the developer messages the hoist
+would have moved or changed in the stored turn's full client input; every
+completion MUST replace that record, and a completion without a stored prefix
+MUST leave it unknown. The trimmed range runs up to the next base-equivalent
+item after the prefix; within it, each such developer message MUST consume one
+recorded occurrence of its fingerprint and is then not sent again, and a new,
+changed or additional occurrence MUST be sent, in client order, ahead of the
+remainder. The record MUST be used only when the request is anchored to the
+response it was recorded for. When it is unknown (or a stored context was
+hydrated from a durable row that differs from it), every such developer
+message in that range MUST be sent.
 
 Durable operation and recovery-attempt keys hash the serialized request. An
 identical retry of a turn recorded before developer messages stayed inline
 MUST still match that record: when no record matches the current key, the
-service MUST also look up the key of the same frame with the developer text
-moved into `instructions`.
+service MUST also look up the key of the same frame in the old shape, with the
+`instructions` text the old hoist produced from the raw request (system and
+developer text in input order, blank developer text included).
 
 The account-neutrality gate MUST judge item shapes on the base-equivalent
 input, as before, and MUST still reject file and other account-owned
-references anywhere in the forwarded input, developer messages included.
+references anywhere in the forwarded input, developer messages included. An
+item id on any item of the frame the replacement account would receive MUST
+keep the request on its owner.
 
 #### Scenario: Developer and user delta stays anchored on a cold bridge
 - **GIVEN** a hard bridge session with a durable latest response
@@ -282,10 +295,18 @@ references anywhere in the forwarded input, developer messages included.
 - **WHEN** upstream rejects the anchor before `response.created`
 - **THEN** the proxy does not replay the input as a fresh conversation
 
-#### Scenario: Inputs the hoist kept still count as history
+#### Scenario: A first turn resent after a lost anchor anchors the next turn
 - **GIVEN** an accepted empty prewarm on a WebSocket session
-- **WHEN** a chained first turn carries a JSON-mode instruction (also one whose JSON mention sits in a sanitized reasoning part) or a developer message with an image, and one user message, and loses its anchor
-- **THEN** the proxy replays the turn without the anchor, as before
+- **AND** a chained first turn that carries a JSON-mode instruction (also one whose JSON mention sits in a sanitized reasoning part) or a developer message with an image, and one user message, whose anchor upstream rejects
+- **WHEN** the client resends the turn without the anchor and then sends that history with a new user message
+- **THEN** the proxy does not replay the rejected turn without its anchor
+- **AND** the next request is anchored to the resent turn's response and sends only the new user message
+
+#### Scenario: An unanchored full resend with a developer prefix leaves an account after a quota rejection
+- **GIVEN** an HTTP request without `previous_response_id` whose `input` is a developer message, a user message, the prior assistant answer, its reasoning and a new user message
+- **WHEN** the account it was sent to rejects it for quota before any downstream event
+- **THEN** the proxy sends it to another account with the developer message in `input` and no item ids
+- **AND** a request whose only item before the prior answer is a developer message stays on that account
 
 #### Scenario: A new or changed developer message reaches upstream on an anchored request
 - **GIVEN** a warm session whose stored turn sent a developer message and two history items
@@ -293,6 +314,21 @@ references anywhere in the forwarded input, developer messages included.
 - **THEN** the request carries the session anchor
 - **AND** it sends the new or changed developer message, followed by the prior output and the new user message
 - **AND** the next turn does not send that developer message again
+
+#### Scenario: Developer messages are matched occurrence by occurrence
+- **GIVEN** a warm session whose stored turn sent `Use French`, then `Use English`
+- **WHEN** the next request repeats both and adds `Use French` again after the stored history
+- **THEN** the anchored request sends the added `Use French`
+
+#### Scenario: A changed instruction beside an unchanged attachment reaches upstream
+- **GIVEN** a warm session whose stored turn sent a developer message with text and a file
+- **WHEN** the next request changes only that message's text
+- **THEN** the anchored request sends the changed developer message
+
+#### Scenario: A developer record applies only to its own response
+- **GIVEN** a warm session whose latest response received a new developer message the earlier response did not
+- **WHEN** a request is anchored to the earlier response, or follows a turn with no stored prefix
+- **THEN** the request sends the developer messages of the trimmed range
 
 #### Scenario: A developer message the anchor carries is not sent again
 - **GIVEN** a warm session whose stored turn ended with a developer message
@@ -318,8 +354,9 @@ references anywhere in the forwarded input, developer messages included.
 - **GIVEN** a verified complete transcript whose developer message carries Codex metadata or a client item id
 - **WHEN** its owner account becomes unavailable
 - **THEN** the transcript may move to another account, without the developer item id
+- **AND** a developer message the hoist kept in JSON mode keeps its id and the request stays on its owner
 
 #### Scenario: A pre-upgrade operation still fences its retry
-- **GIVEN** a durable operation recorded before developer messages stayed inline
+- **GIVEN** a durable operation recorded before developer messages stayed inline, including one whose developer message preceded a system message or was blank
 - **WHEN** an identical retry arrives
 - **THEN** the service finds that operation instead of dispatching the turn again

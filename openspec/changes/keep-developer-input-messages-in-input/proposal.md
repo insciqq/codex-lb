@@ -41,8 +41,9 @@ None.
   the upstream in `input` as that requirement states, instead of being hoisted afterwards; `system` messages are still
   hoisted.
 - Requests with `additional_tools` are unchanged (Responses Lite rule).
-- Replay and continuity decisions (`app/modules/proxy`: WebSocket and HTTP bridge classifiers, stored-context
-  recording and matching, prefix trims, durable and compact proofs, cross-transport replay, tool-call dedupe) judge
+- Replay and continuity decisions (`app/modules/proxy`: the HTTP bridge classifier, stored-context recording and
+  matching, prefix trims, durable and compact proofs, cross-transport replay, the unanchored replay after a quota
+  rejection, tool-call dedupe) judge
   the base-equivalent input, the list the old hoist produced, so replay behaviour stays as it was; the
   account-neutrality gate judges item shapes on that list too. See the ADDED requirement.
 - Anchored requests that trim a stored prefix still send new or changed developer messages from that range; durable

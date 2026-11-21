@@ -90,6 +90,8 @@ The Helm chart auto-configures HTTP `/responses` owner handoff for multi-replica
 
 In multi-replica setups, replicas must share the same encryption key (the Helm chart default) for bootstrap-token restart recovery and encrypted-data access to work.
 
+**Upgrading to the release that keeps developer messages in `input`:** stop the old replicas first in a multi-replica install. A replica of this release signs owner handoffs with developer messages inline; a replica of an earlier release hoists them while validating the forwarded body, so its signature check fails and the turn returns `400 bridge_forward_invalid` while both releases serve. The chart's default `RollingUpdate` keeps old and new pods serving side by side, so scale to zero before `helm upgrade` (or stop the old colour of a blue/green pair). Single-replica installs are not affected.
+
 ### Account concurrency caps are cluster-wide
 
 Under the default `CODEX_LB_PROXY_ACCOUNT_CAPS_SCOPE=partitioned`, `CODEX_LB_PROXY_ACCOUNT_STREAM_LIMIT` (default 8) and `CODEX_LB_PROXY_ACCOUNT_RESPONSE_CREATE_LIMIT` are cluster-wide targets. Each replica enforces its own deterministic share of a **positive** cap — `floor(cap / replicas)`, with the remainder distributed one slot at a time and every share floored at 1 — so with the default stream cap and three replicas, one account gets 3/3/2 slots per replica, not 8 each. A cap of `0` stays unlimited on every replica; it is never floored to one slot. Setting the scope to `replica` opts out of partitioning entirely: every replica then enforces the full configured cap.

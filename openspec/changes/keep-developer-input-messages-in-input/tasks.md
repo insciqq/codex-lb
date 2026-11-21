@@ -8,9 +8,10 @@
 - [x] 1.2 Developer messages with no content left after part sanitization are dropped, on `input` and on both
   `messages` aliases.
 - [x] 1.3 One base-equivalent input view (`base_equivalent_input` in `app/core/openai/requests.py`, the old hoist rule
-  reused) drives every replay and continuity decision: the WebSocket and bridge full-resend classifiers, stored-context
+  reused) drives every replay and continuity decision: the bridge full-resend classifier, stored-context
   recording and matching, stored-prefix and prior-output trims (mapped back to wire positions), the durable and compact
-  proofs, cross-transport replay eligibility, and replayed tool-call dedupe. The account-neutrality gate judges item shapes on
+  proofs, cross-transport replay eligibility, the unanchored replay after a pre-visible quota rejection, and replayed
+  tool-call dedupe. The account-neutrality gate judges item shapes on
   the same view and rejects account-owned references anywhere.
 - [x] 1.4 The stored context records the fingerprints of the stored turn's developer messages; the bridge
   store-context and recovery trims and the WebSocket session-anchor trim send new or changed developer messages from
@@ -34,16 +35,23 @@
 - [x] 2.4 Product-path regressions: `tests/integration/test_proxy_websocket_developer_messages.py` (prewarm-chained
   turn keeps developer messages; rejected deltas with developer messages of any shape, and the `/v1/responses` alias
   with an empty developer message, are not replayed; a captured standard Codex first turn, a JSON-mode first turn and
-  a developer-image first turn after an empty prewarm still recover; a full resend after a developer-only turn is not
+  a developer-image first turn after an empty prewarm that lose their anchor are not replayed, and the client's resend
+  keeps its developer messages and anchors the next turn; a full resend after a developer-only turn is not
   anchored; echo trim around a developer update), `tests/unit/test_proxy_http_bridge_developer_messages.py`
   (cold-bridge anchor for developer deltas of any shape; preserved non-Lite full resends including content-kinds,
   blank-part and developer-only prefixes; a developer-only previous turn leaves no stored context; a prepended developer
   message keeps the warm-session anchor; echo trim around a developer update; dedupe across a developer update; no
   cross-transport failover on a repeated developer instruction), `tests/unit/test_replay_safety.py` (gate on inline
   developer messages), `tests/unit/test_openai_requests.py` (the base-equivalent view), the compact owner-loss and
-  developer-id failover tests, and the `messages` alias route tests in `tests/integration/test_openai_compat_features.py`
-  and `tests/integration/test_proxy_compact.py`.
+  developer-id failover tests, the `messages` alias route tests in `tests/integration/test_openai_compat_features.py`
+  and `tests/integration/test_proxy_compact.py`, and the pre-visible quota replay in
+  `tests/integration/test_proxy_transient_retry.py` (a developer prefix moves, a developer-only prefix stays).
 - [x] 2.5 `tests/integration/test_http_bridge_developer_messages.py` (seven insert/change/trailing/removed cases on a
   warm bridge across three turns; developer attachment still promotes history), the WebSocket changed-developer and
-  Lite-dedupe tests, the sanitized-JSON recovery case, the pre-upgrade operation retry, the developer-id failover, the
-  compact trailing-developer terminal case and the goal marker on a later developer line.
+  Lite-dedupe tests, the sanitized-JSON resend after a lost anchor, the pre-upgrade operation retry, the developer-id
+  failover, the compact trailing-developer terminal case and the goal marker on a later developer line.
+- [x] 2.6 Occurrence-by-occurrence developer matching (HTTP bridge and WebSocket), a changed text beside an unchanged
+  attachment, a developer record used only for its own response (branch from an older response, after a
+  developer-only turn), pre-upgrade operation keys against frames captured from the old normalizer (developer before
+  system, blank developer), a JSON-kept developer id that keeps failover on the owner, the next turn after a WebSocket
+  resend, compact consumed-pair cleanup behind a trailing developer message, and the goal marker beside an attachment.

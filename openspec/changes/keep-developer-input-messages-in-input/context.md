@@ -42,16 +42,28 @@ question about it):
   behaviour, stored contexts and tool-call dedupe match the behaviour before this change, and stored contexts
   recorded before it stay valid. An anchored request that trims a stored prefix still sends a new or changed
   developer message from that range (before, the current developer text reached every request through
-  `instructions`) and skips one the stored turn already sent. After a reattach from a durable row the stored turn's
-  developer messages are unknown, so that one request sends the developer messages of the trimmed range again.
+  `instructions`) and skips one the stored turn already sent. The stored turn's developer messages are recorded for that exact
+  response: a request anchored to another response, a turn without a stored prefix, or a reattach from a durable row
+  that differs from the in-memory record leaves them unknown, so that one request sends the developer messages of the
+  trimmed range again. Each recorded occurrence covers one occurrence on the next request; a developer message whose
+  attachment the hoist kept as a `user` item is matched as a whole message.
 - Operation keys: durable operation and recovery-attempt records from before the change still match an identical
-  retry, through a second lookup of the key with the developer text in `instructions`.
+  retry, through a second lookup of the key rebuilt in the old frame shape (the `instructions` text the old hoist
+  produced from the raw request, recorded at validation).
 - Account neutrality: the gate judges item shapes on the base-equivalent input and still rejects account-owned
   references anywhere in the forwarded input. A developer message the hoist would have moved whole is forwarded
-  without its client item id, as the hoist dropped it.
+  without its client item id, as the hoist dropped it; any item id left on the frame the replacement account would
+  receive keeps the request on its owner.
 - Compact budget: developer messages now count toward the compact input budget and are trim anchors, so a compact
   request with a single very large developer message can now fail with `responses_compact_input_too_large`, where the
   same text in `instructions` was not counted.
 - Developer messages without content are dropped, as the hoist used to drop them.
+- Rolling deploy: a replica of this release cannot forward a request with an inline developer message to an owner
+  replica of an earlier release (the owner hoists it before verifying the forwarding signature, `400
+  bridge_forward_invalid`). A multi-replica deployment must stop its old replicas before the new ones serve;
+  single-replica deployments are unaffected.
+- Transitional: a recovery checkpoint recorded before the change in the `REPLAYED` state is keyed with the developer
+  text in `instructions`; an identical retry after the upgrade records a new checkpoint under the new key and can
+  dispatch that consumed turn once more.
 - Limitation: `system` messages are still hoisted, because upstream rejects them in `input`. A `system` message on a
   request chained through `previous_response_id` therefore applies to that request only.
