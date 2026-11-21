@@ -491,6 +491,7 @@ title = "fix(proxy): reuse bridge sessions for inline images"
 state = "open"
 status = "superseded"
 by = 2503
+issues = [2425]
 reason = "PR 2503 is the narrower fix of the same image bridge-bypass."
 
 [pr.2512]
@@ -1002,13 +1003,14 @@ reason = "PR 2690 carries the same or newer versions."
 title = "fix(proxy): use configuration_update reasoning effort"
 state = "open"
 status = "rejected"
-reason = "An enforced-model alias masks disallowed efforts, compact trimming drops the authorizing update, and model-source egress changes the cache-sensitive starting effort."
+issues = [2664]
+reason = "An enforced-model alias masks disallowed efforts, compact trimming drops the authorizing update, and model-source egress changes the cache-sensitive starting effort. Issue 2664 is fixed by the fork's own commits."
 
 [pr.2666]
 title = "fix(proxy): recover complete native HTTP tool resends"
 state = "open"
 status = "rejected"
-reason = "The owner-bound replay proof can accept incomplete history and relocate owner content; socket-bound anchoring of native full histories replaces it."
+reason = "The complete native HTTP resend after a bridge reconnect is fixed by the fork's own change, which never adds a proxy anchor to native Codex HTTP history; the PR's owner-bound replay proof can accept incomplete history and relocate owner content."
 
 [pr.2667]
 title = "fix(proxy): classify controlled interruptions as cancelled"
