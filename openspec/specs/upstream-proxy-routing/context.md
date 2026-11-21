@@ -93,17 +93,24 @@ row, stub the route lookup; real-row coverage lives in
 ## Codex usage identity and team seats
 
 Seats of one team workspace share `chatgpt-account-id`, so `/api/codex/usage`
-identifies the caller by the seat claim in its bearer token
-(`resolve_seat_identity`) against every local seat of that account, inactive
-ones included. The claim is not signature-checked: it only selects the route
-of the caller's own request, upstream validates the token, and a token with
-altered claims is no longer a working credential. Seats without a stored
-`chatgpt_user_id` fall back to the claim in their stored ID token; import now
-stores the column, and token refreshes keep it current.
+identifies the caller by the identity claims of its bearer token
+(`chatgpt_user_id`, `user_id`, `chatgpt_account_user_id`, `sub`), compared
+as a set with each seat's stored `chatgpt_user_id` and the claims of its
+stored ID token. Candidates are every local seat of the header's account in
+any status, plus legacy rows without a stored account id that match the
+caller. The claims are not signature-checked: they only select the route of
+the caller's own request, upstream validates the token, and a token with
+altered claims is no longer a working credential. A token whose own account
+claim contradicts the header, or with claims of the wrong type, is rejected
+before any request.
+
+The route agreed during validation is checked again before each later
+dispatch of the caller's token (the reset-credit consume and the usage
+refresh after it). A change fails the consume closed and skips the refresh.
 
 Example: seats A (bound to pool P) and B (unbound) share workspace W. A's
 token uses P. If A is paused, its token is rejected before any request,
-instead of leaving through B's direct route. A token without a seat claim is
-sent only if A and B resolve to the same egress; here they differ, so it
-fails with 503. When the usage reply names a workspace whose local row is B,
-an identified caller A keeps its own seat for the consume and refresh.
+instead of leaving through B's direct route. A token without a usable seat
+claim is sent only if A and B resolve to the same egress; here they differ,
+so it fails with 503. When the usage reply names a workspace whose local row
+is B, an identified caller A keeps its own seat for the consume and refresh.

@@ -810,7 +810,7 @@ async def test_codex_usage_reset_consume_refreshes_matched_workspace_account(asy
         accounts_repo = AccountsRepository(session)
         await accounts_repo.upsert(
             _make_account(
-                "workspace_reset_multi_default",
+                "workspace_reset_multi_00",
                 "reset-multi@example.com",
                 chatgpt_account_id=raw_chatgpt_account_id,
             )

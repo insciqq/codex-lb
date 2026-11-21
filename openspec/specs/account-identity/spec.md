@@ -24,7 +24,7 @@ Dashboard account summaries MUST expose and render the upstream ChatGPT account 
 
 ### Requirement: Imported accounts store their seat identity
 
-`auth.json` import MUST store the seat identity (`chatgpt_user_id`, resolved from the ID token like OAuth does) on the account it creates or replaces, so seats sharing one ChatGPT account id can be told apart. Readers of the seat identity MUST fall back to the account's stored ID-token claims when the column is empty.
+`auth.json` import MUST store the seat identity (`chatgpt_user_id`, resolved from the ID token like OAuth does) on the account it creates or replaces, so seats sharing one ChatGPT account id can be told apart. Codex usage seat matching MUST also compare the identity claims of the account's stored ID token, so rows imported before the column was filled can still be matched.
 
 #### Scenario: Import stores the seat identity
 - **GIVEN** an `auth.json` whose ID token carries a ChatGPT user id

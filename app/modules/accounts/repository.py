@@ -300,14 +300,19 @@ class AccountsRepository:
             return dict(summaries)
         return summaries
 
-    async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
-        """Every local seat of one ChatGPT account, in any status, by id.
+    async def list_codex_usage_seats(self, chatgpt_account_id: str) -> list[Account]:
+        """Seats a Codex caller for ``chatgpt_account_id`` may be, by id.
 
-        Team workspaces share one ChatGPT account id across several seats, so
-        callers must identify the seat rather than take an arbitrary match.
+        Every local seat of that ChatGPT account, in any status, plus the
+        rows that predate the ChatGPT account id column (NULL), which the
+        caller can only claim by identity. Team workspaces share one ChatGPT
+        account id across several seats, so callers must identify the seat
+        rather than take an arbitrary match.
         """
         result = await self._session.execute(
-            select(Account).where(Account.chatgpt_account_id == chatgpt_account_id).order_by(Account.id)
+            select(Account)
+            .where(or_(Account.chatgpt_account_id == chatgpt_account_id, Account.chatgpt_account_id.is_(None)))
+            .order_by(Account.id)
         )
         return list(result.scalars().all())
 

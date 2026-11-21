@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 from starlette.datastructures import Headers
 
+from app.core.auth import codex_usage_seats
 from app.core.auth import dependencies as auth_dependencies
 from app.core.clients.proxy import CODEX_LB_REQUIRED_CAPABILITY_HEADER
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute, UpstreamProxyRouteError
@@ -124,6 +125,12 @@ async def test_validate_codex_provider_usage_identity_preserves_headerless_ident
     assert resolved is principal
 
 
+def _patch_seat_lookup(monkeypatch: pytest.MonkeyPatch, repo: type, resolve_route: Any) -> None:
+    monkeypatch.setattr(auth_dependencies, "AccountsRepository", repo)
+    monkeypatch.setattr(codex_usage_seats, "AccountsRepository", repo)
+    monkeypatch.setattr(codex_usage_seats, "resolve_upstream_route", resolve_route)
+
+
 def _account() -> Account:
     return Account(
         id="acc_1",
@@ -154,7 +161,7 @@ async def test_validate_codex_usage_identity_passes_resolved_route(monkeypatch: 
         def __init__(self, session: object) -> None:
             calls["repo_session"] = session
 
-        async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
+        async def list_codex_usage_seats(self, chatgpt_account_id: str) -> list[Account]:
             calls["lookup"] = chatgpt_account_id
             return [account]
 
@@ -170,8 +177,7 @@ async def test_validate_codex_usage_identity_passes_resolved_route(monkeypatch: 
         calls["fetch_kwargs"] = kwargs
 
     monkeypatch.setattr(auth_dependencies, "get_background_session", session_context)
-    monkeypatch.setattr(auth_dependencies, "AccountsRepository", Repo)
-    monkeypatch.setattr(auth_dependencies, "resolve_upstream_route", resolve_route)
+    _patch_seat_lookup(monkeypatch, Repo, resolve_route)
     monkeypatch.setattr(auth_dependencies, "fetch_usage", fetch_usage)
 
     result = await auth_dependencies.validate_codex_usage_identity(cast(Any, request))
@@ -220,7 +226,7 @@ async def test_validate_codex_usage_identity_fails_closed_when_workspace_seats_r
         def __init__(self, session: object) -> None:
             pass
 
-        async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
+        async def list_codex_usage_seats(self, chatgpt_account_id: str) -> list[Account]:
             return [account, workspace_account] if chatgpt_account_id == "chatgpt_1" else []
 
         async def get_by_id(self, account_id: str) -> Account | None:
@@ -239,8 +245,7 @@ async def test_validate_codex_usage_identity_fails_closed_when_workspace_seats_r
         raise AssertionError("a token that could be either seat must not be sent")
 
     monkeypatch.setattr(auth_dependencies, "get_background_session", session_context)
-    monkeypatch.setattr(auth_dependencies, "AccountsRepository", Repo)
-    monkeypatch.setattr(auth_dependencies, "resolve_upstream_route", resolve_route)
+    _patch_seat_lookup(monkeypatch, Repo, resolve_route)
     monkeypatch.setattr(auth_dependencies, "fetch_usage", fetch_usage)
 
     # The token carries no seat claim, so it may belong to either row; their
@@ -282,7 +287,7 @@ async def test_validate_codex_usage_identity_switches_to_limited_workspace_accou
         def __init__(self, session: object) -> None:
             pass
 
-        async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
+        async def list_codex_usage_seats(self, chatgpt_account_id: str) -> list[Account]:
             return [account, workspace_account] if chatgpt_account_id == "chatgpt_1" else []
 
         async def get_by_id(self, account_id: str) -> Account | None:
@@ -303,8 +308,7 @@ async def test_validate_codex_usage_identity_switches_to_limited_workspace_accou
         return UsagePayload(workspace_id="ws_1", workspace_label="Team")
 
     monkeypatch.setattr(auth_dependencies, "get_background_session", session_context)
-    monkeypatch.setattr(auth_dependencies, "AccountsRepository", Repo)
-    monkeypatch.setattr(auth_dependencies, "resolve_upstream_route", resolve_route)
+    _patch_seat_lookup(monkeypatch, Repo, resolve_route)
     monkeypatch.setattr(auth_dependencies, "fetch_usage", fetch_usage)
 
     result = await auth_dependencies.validate_codex_usage_identity(cast(Any, request))
@@ -343,7 +347,7 @@ async def test_validate_codex_usage_identity_rejects_inactive_workspace_account(
         def __init__(self, session: object) -> None:
             pass
 
-        async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
+        async def list_codex_usage_seats(self, chatgpt_account_id: str) -> list[Account]:
             return [account, workspace_account] if chatgpt_account_id == "chatgpt_1" else []
 
         async def get_by_id(self, account_id: str) -> Account | None:
@@ -362,8 +366,7 @@ async def test_validate_codex_usage_identity_rejects_inactive_workspace_account(
         return UsagePayload(workspace_id="ws_1", workspace_label="Team")
 
     monkeypatch.setattr(auth_dependencies, "get_background_session", session_context)
-    monkeypatch.setattr(auth_dependencies, "AccountsRepository", Repo)
-    monkeypatch.setattr(auth_dependencies, "resolve_upstream_route", resolve_route)
+    _patch_seat_lookup(monkeypatch, Repo, resolve_route)
     monkeypatch.setattr(auth_dependencies, "fetch_usage", fetch_usage)
 
     with pytest.raises(auth_dependencies.ProxyAuthError):
@@ -384,7 +387,7 @@ async def test_validate_codex_usage_identity_fails_closed_when_route_unavailable
         def __init__(self, session: object) -> None:
             pass
 
-        async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
+        async def list_codex_usage_seats(self, chatgpt_account_id: str) -> list[Account]:
             return [account]
 
     @asynccontextmanager
@@ -395,8 +398,7 @@ async def test_validate_codex_usage_identity_fails_closed_when_route_unavailable
         raise UpstreamProxyRouteError("default_pool_unconfigured", account_id="acc_1")
 
     monkeypatch.setattr(auth_dependencies, "get_background_session", session_context)
-    monkeypatch.setattr(auth_dependencies, "AccountsRepository", Repo)
-    monkeypatch.setattr(auth_dependencies, "resolve_upstream_route", resolve_route)
+    _patch_seat_lookup(monkeypatch, Repo, resolve_route)
 
     with pytest.raises(auth_dependencies.ProxyUpstreamError):
         await auth_dependencies.validate_codex_usage_identity(

@@ -317,33 +317,38 @@ An operation that already loaded an account and dispatches with that account's c
 
 ### Requirement: Codex usage identity validation routes by the caller's seat
 
-`GET /api/codex/usage` and the Codex reset-credit consume endpoint, which share its caller check, MUST choose the egress route for the caller's ChatGPT token before any upstream request. Seats sharing the `chatgpt-account-id` are told apart by the seat identity in the token's claims, compared against each local seat's stored seat identity, or the identity in its stored ID token when that column is empty. Matching MUST consider every local seat of that ChatGPT account, inactive ones included.
+`GET /api/codex/usage` and the Codex reset-credit consume endpoint, which share its caller check, MUST choose the egress route for the caller's ChatGPT token before any upstream request. A token whose own ChatGPT account claim differs from the `chatgpt-account-id` header, or whose account or identity claims have the wrong type, MUST be rejected before any upstream request. The candidate seats are every local seat of the header's ChatGPT account, inactive ones included, plus rows without a stored ChatGPT account id whose identity matches the caller. A seat matches when any identity claim of the token (`chatgpt_user_id`, `user_id`, `chatgpt_account_user_id`, `sub`) equals the seat's stored seat identity or an identity claim of its stored ID token. Every route lookup MUST use the strict account check.
 
 #### Scenario: Identified seat uses its own route
 - **GIVEN** a bound and an unbound seat share a ChatGPT account id
-- **WHEN** the caller's token identifies one active seat
+- **WHEN** the caller's token matches exactly one active seat
 - **THEN** usage validation MUST use that seat's route
 
 #### Scenario: Identified inactive seat is rejected before dispatch
-- **GIVEN** the caller's token identifies only paused or deactivated seats
+- **GIVEN** the caller's token matches only paused or deactivated seats
 - **WHEN** usage validation runs
 - **THEN** it MUST reject the caller as unknown or inactive before any upstream request
 
-#### Scenario: Unidentified caller with differing seat routes fails closed
-- **GIVEN** the caller's token identifies no single active seat
-- **AND** the candidate seats, including inactive bound seats, do not all resolve to the same egress
+#### Scenario: Ambiguous caller with differing seat routes fails closed
+- **GIVEN** the caller's token matches several active seats, or none
+- **AND** the candidates (every matched seat in any status, or every seat when none matched) do not all resolve to the same egress
 - **WHEN** usage validation runs
 - **THEN** it MUST fail with the upstream-proxy error before any upstream request
 
-#### Scenario: Unidentified caller with a common route proceeds
+#### Scenario: Ambiguous caller with a common route proceeds
 - **GIVEN** every candidate seat resolves to the same pool, or every one to direct egress
 - **WHEN** the caller's token identifies no single seat
 - **THEN** usage validation MUST use that common route
 
+#### Scenario: Every later dispatch re-checks the route
+- **WHEN** the reset-credit consume, or the usage refresh after it, forwards the caller's token again
+- **THEN** the candidates MUST be resolved again and still agree on the egress validated before the first request
+- **AND** otherwise the consume MUST fail with the upstream-proxy error and the refresh MUST be skipped
+
 #### Scenario: Workspace reconciliation keeps the identified seat
 - **GIVEN** the caller's token identified one seat
 - **WHEN** the usage reply's workspace maps to a different local row
-- **THEN** the consume request and the follow-up usage refresh MUST use the identified seat and its route
+- **THEN** the consume request and the follow-up usage refresh MUST use the identified seat
 - **AND** workspace reconciliation MAY switch rows only among the candidate seats whose routes were agreed before dispatch
 
 ### Requirement: Diagnostic probes use the selected local account route

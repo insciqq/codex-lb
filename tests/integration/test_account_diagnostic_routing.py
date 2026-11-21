@@ -719,11 +719,11 @@ async def test_codex_usage_identity_uses_shared_route_when_unmatched_seats_agree
 async def test_codex_usage_identity_seat_deleted_before_route_lookup_never_dispatches(
     async_client, monkeypatch, caller, status
 ):
-    from app.core.auth import dependencies
+    from app.core.auth import codex_usage_seats
 
     await _seed()
     fetch = _mock_usage_fetch(monkeypatch)
-    _delete_before(monkeypatch, dependencies, "bound-seat", "finalized")
+    _delete_before(monkeypatch, codex_usage_seats, "bound-seat", "finalized")
 
     response = await _codex_usage(async_client, caller)
 
@@ -823,3 +823,226 @@ async def test_quota_warmup_deleted_during_routed_stream_settles(db_setup, trans
         assert row is not None and row.account_id is None
         assert row.status == ("success" if terminal == "completed" else "error")
         assert decision is not None and decision.status == result.status
+
+
+def _jwt(claims: dict) -> str:
+    import base64
+    import json
+
+    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"e30.{body}.sig"
+
+
+async def _codex_usage_with(async_client, token: str, header: str = "shared-workspace"):
+    return await async_client.get(
+        "/api/codex/usage", headers={"Authorization": f"Bearer {token}", "chatgpt-account-id": header}
+    )
+
+
+async def test_codex_usage_identity_rejects_a_token_for_another_account_than_the_header(async_client, monkeypatch):
+    """The header alone chose the candidate seats: a bound seat's token sent
+    with a registered, unbound account's header must not go out directly."""
+    await _seed()
+    await _update_seat("bound-seat", chatgpt_account_id="other-workspace")
+    fetch = _mock_usage_fetch(monkeypatch)
+    token = _jwt(
+        {"https://api.openai.com/auth": {"chatgpt_account_id": "other-workspace", "chatgpt_user_id": "bound-seat"}}
+    )
+
+    response = await _codex_usage_with(async_client, token)
+
+    assert response.status_code == 401, response.text
+    fetch.assert_not_awaited()
+
+
+async def test_codex_usage_identity_finds_a_legacy_seat_without_chatgpt_account_id(async_client, monkeypatch):
+    """A bound row stored before the ChatGPT account id column was filled is
+    still the caller's seat when its identity matches."""
+    await _seed()
+    await _update_seat("bound-seat", chatgpt_account_id=None)
+    fetch = _mock_usage_fetch(monkeypatch)
+    token = _jwt(
+        {"https://api.openai.com/auth": {"chatgpt_account_id": "shared-workspace", "chatgpt_user_id": "bound-seat"}}
+    )
+
+    response = await _codex_usage_with(async_client, token)
+
+    assert response.status_code == 200, response.text
+    route, allow_direct = _dispatched_route(fetch)
+    assert route is not None and route.pool_id == "bound-pool"
+    assert allow_direct is False
+
+
+async def test_codex_usage_identity_several_active_copies_count_a_paused_bound_copy(async_client, monkeypatch):
+    """Two active unbound copies and a paused bound copy of one principal:
+    the token cannot tell them apart, so all three must agree on egress."""
+    await _seed()
+    await _update_seat("bound-seat", status=AccountStatus.PAUSED)
+    await _update_seat("direct-seat", chatgpt_user_id="bound-seat")
+    async with SessionLocal() as session:
+        token = TokenEncryptor().encrypt("synthetic-token")
+        session.add(
+            Account(
+                id="third-copy",
+                email="direct-seat@example.test",
+                plan_type="plus",
+                chatgpt_account_id="shared-workspace",
+                chatgpt_user_id="bound-seat",
+                access_token_encrypted=token,
+                refresh_token_encrypted=token,
+                id_token_encrypted=token,
+                last_refresh=utcnow(),
+                status=AccountStatus.ACTIVE,
+            )
+        )
+        await session.commit()
+    fetch = _mock_usage_fetch(monkeypatch)
+
+    response = await _codex_usage(async_client, "bound-seat")
+
+    assert response.status_code == 503, response.text
+    fetch.assert_not_awaited()
+
+
+_REALISTIC_ID_TOKEN = {
+    "email": "bound-seat@example.test",
+    "sub": "auth0|principal-bound",
+    "https://api.openai.com/auth": {
+        "chatgpt_account_id": "shared-workspace",
+        "chatgpt_plan_type": "team",
+        "chatgpt_user_id": "user-bound",
+        "user_id": "user-bound",
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "access_claims",
+    [
+        {
+            "sub": "auth0|principal-bound",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "shared-workspace",
+                "chatgpt_account_user_id": "user-bound__shared-workspace",
+                "chatgpt_plan_type": "team",
+                "chatgpt_user_id": "user-bound",
+                "user_id": "user-bound",
+            },
+        },
+        # Only the workspace-scoped user id and the login principal: the
+        # stored ID token names the user differently, but shares ``sub``.
+        {
+            "sub": "auth0|principal-bound",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "shared-workspace",
+                "chatgpt_account_user_id": "user-bound__shared-workspace",
+            },
+        },
+    ],
+    ids=["full", "workspace-scoped-only"],
+)
+async def test_codex_usage_identity_matches_realistic_claim_sets(async_client, monkeypatch, access_claims):
+    await _seed()
+    await _update_seat(
+        "bound-seat",
+        chatgpt_user_id="user-bound",
+        id_token_encrypted=TokenEncryptor().encrypt(_jwt(_REALISTIC_ID_TOKEN)),
+    )
+    fetch = _mock_usage_fetch(monkeypatch)
+
+    response = await _codex_usage_with(async_client, _jwt(access_claims))
+
+    assert response.status_code == 200, response.text
+    route, _ = _dispatched_route(fetch)
+    assert route is not None and route.pool_id == "bound-pool"
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"https://api.openai.com/auth": {"chatgpt_user_id": ["bound-seat"]}},
+        {"https://api.openai.com/auth": {"chatgpt_account_id": 7}},
+        {"https://api.openai.com/auth": "bound-seat"},
+        {"sub": {"id": "bound-seat"}},
+    ],
+    ids=["list-user", "int-account", "string-auth", "object-sub"],
+)
+async def test_codex_usage_identity_rejects_wrongly_typed_claims(async_client, monkeypatch, claims):
+    await _seed()
+    fetch = _mock_usage_fetch(monkeypatch)
+
+    response = await _codex_usage_with(async_client, _jwt(claims))
+
+    assert response.status_code == 401, response.text
+    fetch.assert_not_awaited()
+
+
+async def test_codex_reset_credit_consume_fails_closed_when_the_route_changed_after_validation(
+    async_client, monkeypatch
+):
+    """The caller's seat is bound while validation is in flight: the consume
+    must not reuse the direct route validated before."""
+    from app.core.clients.usage import ConsumeRateLimitResetCreditResponse
+    from app.core.usage.models import UsagePayload
+
+    await _seed()
+
+    async def bind_during_validation(**kwargs):
+        async with SessionLocal() as session:
+            session.add(AccountProxyBinding(id="late-binding", account_id="direct-seat", pool_id="bound-pool"))
+            await session.commit()
+        return UsagePayload(plan_type="plus")
+
+    consume = AsyncMock(return_value=ConsumeRateLimitResetCreditResponse(code="reset", windows_reset=1))
+    monkeypatch.setattr("app.core.auth.dependencies.fetch_usage", bind_during_validation)
+    monkeypatch.setattr("app.modules.proxy.api.consume_rate_limit_reset_credit", consume)
+
+    response = await async_client.post(
+        "/api/codex/rate-limit-reset-credits/consume",
+        headers={"Authorization": f"Bearer {_caller_token('direct-seat')}", "chatgpt-account-id": "shared-workspace"},
+        json={"redeem_request_id": "redeem-late-binding"},
+    )
+
+    assert response.status_code == 503, response.text
+    consume.assert_not_awaited()
+
+
+async def test_codex_reset_credit_refresh_skips_an_ambiguous_token_whose_seats_stopped_agreeing(
+    async_client, monkeypatch
+):
+    """Both seats shared one pool when the unidentified caller was validated;
+    the selected seat's binding is disabled during the consume, so the
+    follow-up refresh must not send the caller's token directly."""
+    from app.core.clients.usage import ConsumeRateLimitResetCreditResponse
+
+    await _seed()
+    async with SessionLocal() as session:
+        session.add(AccountProxyBinding(id="second-binding", account_id="direct-seat", pool_id="bound-pool"))
+        await session.commit()
+    _mock_usage_fetch(monkeypatch)
+    token = _caller_token(None)
+
+    async def consume(**kwargs):
+        assert kwargs["route"].pool_id == "bound-pool"
+        async with SessionLocal() as session:
+            binding = await session.get(AccountProxyBinding, "binding")
+            assert binding is not None
+            binding.is_active = False
+            await session.commit()
+        return ConsumeRateLimitResetCreditResponse(code="reset", windows_reset=1)
+
+    refresh_fetch = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.modules.proxy.api.consume_rate_limit_reset_credit", consume)
+    monkeypatch.setattr("app.modules.usage.updater.fetch_usage", refresh_fetch)
+
+    response = await async_client.post(
+        "/api/codex/rate-limit-reset-credits/consume",
+        headers={"Authorization": f"Bearer {token}", "chatgpt-account-id": "shared-workspace"},
+        json={"redeem_request_id": "redeem-ambiguous"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert not any(
+        call.kwargs.get("access_token") == token and call.kwargs.get("allow_direct_egress")
+        for call in refresh_fetch.await_args_list
+    )

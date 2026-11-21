@@ -45,6 +45,7 @@ from starlette.datastructures import Headers
 from starlette.websockets import WebSocketState
 
 from app.core import usage as usage_core
+from app.core.auth.codex_usage_seats import CodexUsageSeat, revalidate_codex_usage_route
 from app.core.auth.dependencies import (
     set_openai_error_format,
     validate_codex_provider_usage_identity,
@@ -7564,7 +7565,14 @@ async def _consume_rate_limit_reset_credit_for_request(
     chatgpt_account_id = _request_state_str(request, "codex_usage_identity_chatgpt_account_id")
     if access_token is None or chatgpt_account_id is None:
         raise ProxyAuthError("ChatGPT authentication required for usage limit reset credits")
-    route = getattr(request.state, "codex_usage_identity_route", None)
+    seat = getattr(request.state, "codex_usage_identity_seat", None)
+    # The route was agreed during validation; bindings can change since, so
+    # the caller's token is forwarded again only through the same egress.
+    route = (
+        await revalidate_codex_usage_route(seat)
+        if isinstance(seat, CodexUsageSeat)
+        else getattr(request.state, "codex_usage_identity_route", None)
+    )
     try:
         return await consume_rate_limit_reset_credit(
             access_token=access_token,
@@ -7586,6 +7594,16 @@ async def _force_refresh_codex_usage_identity_account(request: Request) -> None:
     if account_id is None:
         return
     access_token = _request_state_str(request, "codex_usage_identity_access_token")
+    seat = getattr(request.state, "codex_usage_identity_seat", None)
+    if isinstance(seat, CodexUsageSeat):
+        # The refresh forwards the caller's token once more: only while every
+        # seat it may belong to still agrees on the egress it was validated
+        # through.
+        try:
+            await revalidate_codex_usage_route(seat)
+        except (ProxyAuthError, ProxyUpstreamError):
+            logger.warning("Skipping usage refresh after reset: the caller's route changed account_id=%s", account_id)
+            return
     async with get_background_session() as session:
         accounts_repo = AccountsRepository(session)
         account = await accounts_repo.get_by_id(account_id)
