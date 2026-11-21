@@ -703,3 +703,55 @@ async def test_decoded_body_is_not_copied_once_more_before_the_route(encoding: s
     # The decoded body once (plus growth slack and the encoded input), not
     # accumulated in a bytearray and then copied into ``bytes``.
     assert peak - baseline < 1.5 * len(body) + 2 * len(compressed)
+
+
+@pytest.mark.asyncio
+async def test_middleware_keeps_neither_body_once_the_route_has_it() -> None:
+    import base64
+    import gc
+    import os
+    import tracemalloc
+
+    # Base64 of random bytes compresses poorly, so the encoded body is large too.
+    body = b'{"input":"' + base64.b64encode(os.urandom(6 * 1024 * 1024)) + b'"}'
+    compressed = zstd.ZstdCompressor().compress(body)
+    assert len(compressed) > 4 * 1024 * 1024
+    held_while_routing: list[int] = []
+
+    async def route(scope: Scope, receive: Receive, send: Send) -> None:
+        message = await receive()
+        assert message["body"] == body
+        del message
+        gc.collect()
+        held_while_routing.append(tracemalloc.get_traced_memory()[0])
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    messages: list[Message] = [{"type": "http.request", "body": compressed, "more_body": False}]
+    del compressed
+
+    async def receive() -> Message:
+        return messages.pop(0)
+
+    async def send(_message: Message) -> None:
+        return None
+
+    scope: Scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/backend-api/codex/responses",
+        "root_path": "",
+        "headers": [(b"content-encoding", b"zstd")],
+    }
+    gc.collect()
+    tracemalloc.start()
+    baseline, _ = tracemalloc.get_traced_memory()
+    try:
+        await RequestDecompressionMiddleware(route)(scope, receive, send)
+    finally:
+        tracemalloc.stop()
+
+    # The test's own ``body`` predates tracing; the middleware's encoded body
+    # and its decoded copy are both released before the route finishes.
+    (held,) = held_while_routing
+    assert held - baseline < 1024 * 1024
