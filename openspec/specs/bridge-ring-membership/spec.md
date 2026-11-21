@@ -25,17 +25,34 @@ Each registered replica MUST refresh its ring row via an upsert heartbeat every 
 - **THEN** the replica's next heartbeat re-upserts the row with a fresh timestamp
 
 ### Requirement: Ring heartbeat is independent of bridge maintenance
-The per-replica bridge maintenance passes (durable ownership reconciliation, stale operation abandonment, idle session sweep) and the cap-partition refresh MUST run in a loop separate from the ring heartbeat, on the heartbeat cadence, so a slow or blocked maintenance pass cannot delay the next heartbeat. The maintenance loop MUST run one pass at a time: a pass that has not finished MUST NOT have another pass started alongside it. A failing maintenance pass or cap-partition refresh MUST be logged and MUST NOT stop either loop.
+The per-replica bridge maintenance passes (durable ownership reconciliation, stale operation abandonment, idle session sweep) and the cap-partition refresh, including the first refresh after registration, MUST run in a loop separate from the ring heartbeat, on the heartbeat cadence, so a slow or blocked maintenance pass cannot delay the next heartbeat. Both loops MUST start as soon as registration completes. The maintenance loop MUST run one pass at a time: a pass that has not finished MUST NOT have another pass started alongside it. A failing maintenance pass or cap-partition refresh MUST be logged and MUST NOT stop either loop.
+
+The replica's ring registration, heartbeat and stale-marking writes MUST use a dedicated unpooled (`NullPool`) engine on the main database URL that no request, background-task or maintenance work shares, so work holding or waiting for pooled connections cannot starve the heartbeat. Each ring write opens one transient connection and nothing is held between writes. The cap-partition refresh is maintenance and MUST read membership through the main pool, so the ring writes add at most one transient connection per replica. The engine MUST be disposed at shutdown after stale-marking or after stale-marking is skipped. In-memory SQLite, where a second engine would open a separate empty database, uses the main session factory. No setting is introduced for this.
 
 #### Scenario: Blocked maintenance pass does not age the ring row
 - **WHEN** a maintenance pass blocks without returning
 - **THEN** the replica keeps heartbeating its ring row every heartbeat interval
 - **AND** no second maintenance pass starts while the blocked pass is still running
 
+#### Scenario: Failing first cap-partition refresh does not stop the heartbeat
+- **WHEN** the cap-partition refresh right after registration stalls or raises
+- **THEN** the replica still heartbeats its ring row every heartbeat interval
+- **AND** a raised refresh is logged and retried on the next maintenance pass
+
+#### Scenario: Ring writes do not share any pool
+- **WHEN** the replica writes its ring row
+- **THEN** the session is bound to the dedicated unpooled ring engine, not to the main or background pooled engine
+- **AND** that engine is disposed after the shutdown stale-marking step
+
 #### Scenario: Shutdown stops both loops before aging the ring row
 - **WHEN** a replica shuts down gracefully while a maintenance pass is in progress
 - **THEN** the heartbeat loop and the maintenance loop are both cancelled and awaited before the ring row is aged
 - **AND** no heartbeat is written after the ring row is aged
+
+#### Scenario: Ring loops that outlive the stop bound do not delay shutdown
+- **WHEN** cancellation-deferring cleanup keeps either loop running for longer than the 2-second stop bound
+- **THEN** shutdown proceeds after the bound without aging the ring row, so the row expires after the stale threshold
+- **AND** the shutdown is not recorded as clean, because database work is still unwinding
 
 ### Requirement: Shutdown ages the ring row instead of deleting it
 On graceful shutdown a replica MUST age its ring row's heartbeat close to the stale threshold rather than deleting the row, leaving a short grace window (heartbeat interval plus 5 seconds) during which sibling workers sharing the same instance id can refresh the row while a fully terminating pod still ages out quickly.

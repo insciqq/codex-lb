@@ -124,9 +124,10 @@ config:
   # @param config.databaseMigrateOnStartup Disable auto-migration (migration Job handles it)
   databaseMigrateOnStartup: false
   # @param config.databasePoolSize SQLAlchemy connection pool size
-  # Each supported replica has one worker with two pools (request + background).
-  # Reserve 20 of PostgreSQL's default 100 slots for PG internals, migrations, and operations.
-  # Default (3+1)×2×1×10=80. Prod uses (1+1)×2×1×20=80.
+  # Each supported replica has one worker with two pools (request + background)
+  # plus one transient bridge ring writer connection.
+  # Reserve 20 PostgreSQL slots for PG internals, migrations, and operations.
+  # Default ((3+1)×2+1)×1×10=90 (max_connections=110). Prod uses ((1+1)×2+1)×1×20=100 (max_connections=120).
   # Increase PG max_connections or deploy PgBouncer if more concurrency is needed.
   databasePoolSize: 3
   # @param config.databaseMaxOverflow SQLAlchemy connection pool max overflow

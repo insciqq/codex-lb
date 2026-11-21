@@ -45,9 +45,10 @@ ingress:
   certManager:
     enabled: true
 config:
-  # Each supported replica has one worker with two pools. For maxReplicas=20:
-  # (databasePoolSize + databaseMaxOverflow) × 2 × 1 × 20 = (1+1)×2×20 = 80.
-  # This fits PG's default max_connections=100 and reserves 20 connections for DB operations.
+  # Each supported replica has one worker with two pools plus one transient
+  # bridge ring writer connection. For maxReplicas=20:
+  # ((databasePoolSize + databaseMaxOverflow) × 2 + 1) × 1 × 20 = ((1+1)×2+1)×20 = 100.
+  # Set PG max_connections=120 to keep 20 connections reserved for DB operations.
   databasePoolSize: 1
   databaseMaxOverflow: 1
 externalSecrets:

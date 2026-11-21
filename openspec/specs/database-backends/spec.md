@@ -330,6 +330,21 @@ The application SHALL define its per-worker PostgreSQL connection capacity as th
 - **WHEN** `CODEX_LB_TEST_DATABASE_URL` selects `NullPool`
 - **THEN** pool sizing controls and the production pooled-engine budget do not apply to that test engine
 
+### Requirement: The bridge ring writer engine is unpooled and outside the pooled budget
+
+The application SHALL create one additional engine per worker for the replica's own bridge ring writes (registration, heartbeat, shutdown stale-marking). On PostgreSQL it MUST use the main database URL, the same asyncpg connect arguments as the pooled engines (UTC session time zone and statement timeout) and `NullPool`; on file-backed SQLite it MUST use the same unpooled connections, busy timeout and PRAGMAs as the main engine. It MUST NOT be created through the role-aware pooled engine factory and is not counted among the pooled engine roles. Because ring writes run one at a time, it adds at most one transient connection per worker, which deployment sizing MUST count per replica on top of `(database_pool_size + database_max_overflow) * 2`.
+
+#### Scenario: Ring engine on PostgreSQL
+
+- **WHEN** the application creates the bridge ring writer engine for a PostgreSQL URL
+- **THEN** the engine uses `NullPool` and the pooled engines' connect arguments
+- **AND** no pooled engine role is declared for it
+
+#### Scenario: Ring engine on in-memory SQLite
+
+- **WHEN** the database URL is in-memory SQLite
+- **THEN** no separate ring engine is created and ring writes use the main session factory
+
 ### Requirement: SQLAlchemy-rendered Windows SQLite paths are percent-decoded before opening
 
 When a SQLite database URL is converted to a filesystem path for direct filesystem use (e.g. startup directory creation, startup integrity checks, migration locks, or the usage repository's read-only helper), a path that matches a recognizable SQLAlchemy-rendered Windows form — an encoded drive marker (`<letter>%3A` followed by an encoded or raw path separator) or an encoded UNC prefix (`%5C%5C`) — MUST be percent-decoded before being handed to the filesystem. SQLAlchemy's `URL.render_as_string()` percent-encodes a Windows-style default path (`C:\Users\...` -> `C%3A%5CUsers%5C...`); without decoding, the literal escaped string either fails to open with "unable to open database file" or creates a stray 0-byte database next to the current working directory, which breaks account/usage reads with `no such table`.
@@ -506,8 +521,8 @@ File-backed SQLite session teardown (rollback and close) MUST use an initial bou
 
 The default values of `database_pool_size` and `database_max_overflow` MUST
 keep one replica's aggregate application connection capacity —
-`(database_pool_size + database_max_overflow) * 2 pooled engines * 1
-supported worker` — at or below 80, so a single replica on PostgreSQL's
+`((database_pool_size + database_max_overflow) * 2 pooled engines + 1
+bridge ring writer connection) * 1 supported worker` — at or below 80, so a single replica on PostgreSQL's
 default `max_connections=100` retains at least 20 raw server slots for
 PostgreSQL-reserved connections, the migration path's two-connection peak,
 administration, and transient non-application clients.

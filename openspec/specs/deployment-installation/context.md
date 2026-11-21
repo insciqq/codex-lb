@@ -292,9 +292,9 @@ Phase 3 (10 removed):
   timeout fixed 30.0 s and recycle window fixed 1800 s
   (`_POSTGRES_POOL_*` constants in `app/db/session.py`).
   `CODEX_LB_DATABASE_POOL_SIZE` / `CODEX_LB_DATABASE_MAX_OVERFLOW` stay:
-  PostgreSQL HA operators must budget both independently pooled engines in
-  every supported one-worker replica:
-  `(pool_size + max_overflow) x 2 x replicas`, while reserving server
+  PostgreSQL HA operators must budget both independently pooled engines and
+  the transient bridge ring writer connection in every supported one-worker
+  replica: `((pool_size + max_overflow) x 2 + 1) x replicas`, while reserving server
   connections for PostgreSQL internals, migrations, and operations. The owned
   CLI launcher pins one worker; custom multi-worker launchers are unsupported.
   The Helm chart pins both pool inputs.

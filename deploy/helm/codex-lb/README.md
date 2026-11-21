@@ -265,10 +265,12 @@ Normative contracts: [database backends](../../../openspec/specs/database-backen
 and [deployment installation](../../../openspec/specs/deployment-installation/).
 
 Each supported pod runs one application worker with two independent SQLAlchemy
-pools: one for request-path work and one for background tasks.
+pools: one for request-path work and one for background tasks. The worker also
+opens at most one transient, unpooled connection for its bridge ring writes
+(registration, heartbeat, shutdown stale-marking).
 
 ```
-total_connections = (databasePoolSize + databaseMaxOverflow) × 2 pools × 1 worker × replicas
+total_connections = ((databasePoolSize + databaseMaxOverflow) × 2 pools + 1 ring writer) × 1 worker × replicas
 ```
 
 Keep this within your PostgreSQL `max_connections` budget, including capacity
@@ -355,12 +357,13 @@ A static ring is incompatible with autoscaling and must list exactly the Statefu
 ### Connection Pool Budget
 
 Each supported pod maintains one worker with two independent SQLAlchemy
-connection pools: the request pool and the background-task pool. The total
-connections across all replicas must leave room within PostgreSQL's
-`max_connections` for reserved slots, migrations, and operations:
+connection pools, the request pool and the background-task pool, plus at most
+one transient connection for its bridge ring writes. The total connections
+across all replicas must leave room within PostgreSQL's `max_connections` for
+reserved slots, migrations, and operations:
 
 ```
-(databasePoolSize + databaseMaxOverflow) × 2 × 1 × maxReplicas ≤ PostgreSQL max_connections - reserve
+((databasePoolSize + databaseMaxOverflow) × 2 + 1) × 1 × maxReplicas ≤ PostgreSQL max_connections - reserve
 ```
 
 **Example for `values-prod.yaml`:**
@@ -373,10 +376,12 @@ autoscaling:
   maxReplicas: 20
 ```
 
-Calculation: `(1 + 1) × 2 × 20 = 80` application connections. This fits
-within PostgreSQL's default `max_connections=100` while reserving 20
-raw server slots: three default superuser-reserved slots, two simultaneous
-migrator connections, and fifteen further operational connections.
+Calculation: `((1 + 1) × 2 + 1) × 20 = 100` application connections. Set
+PostgreSQL's `max_connections=120` (the default is 100) for this ceiling,
+reserving 20 raw server slots: three default superuser-reserved slots, two
+simultaneous migrator connections, and fifteen further operational
+connections. On the default `max_connections=100`, keep `maxReplicas` at 16
+or lower.
 
 **Tuning:**
 

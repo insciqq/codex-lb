@@ -253,6 +253,68 @@ async def test_postgres_creation_paths_cover_every_budgeted_engine_role_once(mon
 
 
 @pytest.mark.asyncio
+async def test_bridge_ring_engine_is_unpooled_and_outside_the_budgeted_roles(monkeypatch) -> None:
+    database_url = "postgresql+asyncpg://u:p@h/db"
+    created_roles: list[session_module._PostgresPooledEngineRole] = []
+    original_factory = session_module._create_postgres_async_engine
+    monkeypatch.delenv("CODEX_LB_TEST_DATABASE_URL", raising=False)
+    monkeypatch.setattr(session_module, "_database_url", database_url)
+
+    def recording_factory(url: str, *, role: session_module._PostgresPooledEngineRole) -> session_module.AsyncEngine:
+        created_roles.append(role)
+        return original_factory(url, role=role)
+
+    created_kwargs: list[dict[str, Any]] = []
+    original_create_async_engine = session_module.create_async_engine
+
+    def recording_create_async_engine(url: str, **kwargs: Any) -> session_module.AsyncEngine:
+        created_kwargs.append(kwargs)
+        return original_create_async_engine(url, **kwargs)
+
+    monkeypatch.setattr(session_module, "_create_postgres_async_engine", recording_factory)
+    monkeypatch.setattr(session_module, "create_async_engine", recording_create_async_engine)
+
+    factory, ring_engine = session_module.create_bridge_ring_session_factory()
+    assert ring_engine is not None
+    try:
+        assert created_roles == []
+        assert isinstance(ring_engine.pool, NullPool)
+        assert ring_engine.url == make_url(database_url)
+        assert factory.kw["bind"] is ring_engine
+        # Same UTC session time zone and statement bound as the pooled engines.
+        assert created_kwargs[-1]["connect_args"] == session_module._postgres_async_connect_args(database_url)
+    finally:
+        await ring_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_bridge_ring_engine_targets_the_sqlite_file_with_busy_timeout(monkeypatch, tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'ring.db'}"
+    monkeypatch.setattr(session_module, "_database_url", database_url)
+
+    factory, ring_engine = session_module.create_bridge_ring_session_factory()
+    assert ring_engine is not None
+    try:
+        assert isinstance(ring_engine.pool, NullPool)
+        async with factory() as session:
+            busy_timeout = (await session.execute(sa_text("PRAGMA busy_timeout"))).scalar_one()
+            journal_mode = (await session.execute(sa_text("PRAGMA journal_mode"))).scalar_one()
+        assert busy_timeout == session_module._SQLITE_BUSY_TIMEOUT_MS
+        assert str(journal_mode).lower() == "wal"
+    finally:
+        await ring_engine.dispose()
+
+
+def test_bridge_ring_engine_reuses_the_main_factory_for_in_memory_sqlite(monkeypatch) -> None:
+    monkeypatch.setattr(session_module, "_database_url", "sqlite+aiosqlite:///:memory:")
+
+    factory, ring_engine = session_module.create_bridge_ring_session_factory()
+
+    assert ring_engine is None
+    assert factory is session_module.SessionLocal
+
+
+@pytest.mark.asyncio
 async def test_postgres_test_engines_keep_declared_roles_but_disable_pooling(monkeypatch) -> None:
     monkeypatch.setenv("CODEX_LB_TEST_DATABASE_URL", "1")
     engines = [

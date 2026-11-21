@@ -1284,13 +1284,13 @@ async def test_lifespan_marks_bridge_membership_stale_for_hostname_shared_ids(
     ring_service.unregister.assert_not_called()
 
 
-_BRIDGE_RING_LOOP_TASK_NAMES = frozenset({"bridge-ring-heartbeat", "bridge-ring-maintenance"})
+_BRIDGE_RING_LOOP_TASK_NAMES = frozenset({"bridge-ring-membership", "bridge-ring-heartbeat", "bridge-ring-maintenance"})
 
 
 def _install_bridge_ring_lifespan_doubles(
     monkeypatch: pytest.MonkeyPatch,
     ring_service: SimpleNamespace,
-) -> None:
+) -> SimpleNamespace:
     import app.main as main
 
     settings = Settings(
@@ -1329,8 +1329,10 @@ def _install_bridge_ring_lifespan_doubles(
     monkeypatch.setattr(main, "init_http_client", AsyncMock())
     monkeypatch.setattr(main, "_ensure_bridge_durable_schema_ready", AsyncMock())
     monkeypatch.setattr(main, "verify_encryption_key_fingerprint", AsyncMock(return_value=None))
+    teardown = SimpleNamespace(close_db=AsyncMock(return_value=True), mark_clean=Mock())
     monkeypatch.setattr(main, "close_http_client", AsyncMock())
-    monkeypatch.setattr(main, "close_db", AsyncMock())
+    monkeypatch.setattr(main, "close_db", teardown.close_db)
+    monkeypatch.setattr(main, "mark_sqlite_shutdown_clean", teardown.mark_clean)
     monkeypatch.setattr(main, "build_usage_refresh_scheduler", lambda: _DummyScheduler())
     monkeypatch.setattr(main, "build_api_key_limit_reset_scheduler", lambda: _DummyScheduler())
     monkeypatch.setattr(main, "build_model_refresh_scheduler", lambda: _DummyScheduler())
@@ -1349,6 +1351,7 @@ def _install_bridge_ring_lifespan_doubles(
         "app.modules.proxy.account_cache.get_routing_availability_cache",
         lambda: SimpleNamespace(refresh_from_db=AsyncMock()),
     )
+    return teardown
 
 
 @pytest.mark.asyncio
@@ -1452,6 +1455,197 @@ async def test_lifespan_stops_ring_heartbeat_and_maintenance_before_marking_stal
     )
     running = {task.get_name() for task in asyncio.all_tasks() if not task.done()}
     assert not running & _BRIDGE_RING_LOOP_TASK_NAMES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["stalls", "raises"])
+async def test_lifespan_keeps_ring_heartbeat_running_when_cap_partition_refresh_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+):
+    import app.main as main
+
+    heartbeats_seen = asyncio.Event()
+    heartbeat_count = 0
+
+    async def heartbeat(_instance_id: str, *, endpoint_base_url: str | None = None) -> None:
+        nonlocal heartbeat_count
+        heartbeat_count += 1
+        if heartbeat_count >= 3:
+            heartbeats_seen.set()
+
+    ring_service = SimpleNamespace(
+        register=AsyncMock(),
+        mark_stale=AsyncMock(),
+        unregister=AsyncMock(),
+        heartbeat=AsyncMock(side_effect=heartbeat),
+        list_active=AsyncMock(return_value=["pod-a"]),
+    )
+    _install_bridge_ring_lifespan_doubles(monkeypatch, ring_service)
+    monkeypatch.setattr(main, "run_http_bridge_heartbeat_maintenance", AsyncMock())
+    refresh = AsyncMock(side_effect=RuntimeError("cap refresh failed"))
+    if failure == "stalls":
+        # The first membership read after registration never returns.
+        ring_service.list_active.side_effect = asyncio.Event().wait
+    else:
+        monkeypatch.setattr(main, "refresh_cap_partition", refresh)
+
+    async with asyncio.timeout(5):
+        async with main.lifespan(main.app):
+            await heartbeats_seen.wait()
+            if failure == "raises":
+                # A failed refresh is logged; the maintenance loop keeps going.
+                while refresh.await_count < 2:
+                    await asyncio.sleep(0.01)
+
+    ring_service.mark_stale.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_ring_writes_use_a_dedicated_unpooled_engine(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    import app.db.session as session_module
+    import app.main as main
+
+    # Request and maintenance work use the main pool, background tasks and
+    # request-path auth the background pool; either can be exhausted.
+    background_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'background.db'}")
+    monkeypatch.setattr(session_module, "_background_engine", background_engine)
+    monkeypatch.setattr(
+        session_module,
+        "_background_session_factory",
+        async_sessionmaker(background_engine, expire_on_commit=False, class_=AsyncSession),
+    )
+    events: list[str] = []
+    ring_engines: list[AsyncEngine | None] = []
+    real_factory = main.create_bridge_ring_session_factory
+
+    def recording_factory() -> Any:
+        factory, engine = real_factory()
+        ring_engines.append(engine)
+        return factory, engine
+
+    real_dispose = AsyncEngine.dispose
+
+    async def recording_dispose(self: AsyncEngine, close: bool = True) -> None:
+        if ring_engines and self is ring_engines[0]:
+            events.append("dispose_ring_engine")
+        await real_dispose(self, close=close)
+
+    async def mark_stale(_instance_id: str, **_kwargs: object) -> None:
+        events.append("mark_stale")
+
+    ring_service = SimpleNamespace(
+        register=AsyncMock(),
+        mark_stale=AsyncMock(side_effect=mark_stale),
+        unregister=AsyncMock(),
+        heartbeat=AsyncMock(),
+        list_active=AsyncMock(return_value=["pod-a"]),
+    )
+    _install_bridge_ring_lifespan_doubles(monkeypatch, ring_service)
+    monkeypatch.setattr(main, "create_bridge_ring_session_factory", recording_factory)
+    monkeypatch.setattr(AsyncEngine, "dispose", recording_dispose)
+    session_factories: list[Any] = []
+
+    def ring_membership_service(session_factory: Any) -> SimpleNamespace:
+        session_factories.append(session_factory)
+        return ring_service
+
+    monkeypatch.setattr(main, "RingMembershipService", ring_membership_service)
+
+    try:
+        async with main.lifespan(main.app):
+            await asyncio.sleep(0)
+
+        # The writer gets the dedicated engine; the cap-partition reader is
+        # maintenance and stays on the main pool.
+        assert len(session_factories) == 2
+        writer_factory, reader_factory = session_factories
+        assert reader_factory is session_module.SessionLocal
+        session = writer_factory()
+        try:
+            ring_engine = session.bind
+            assert ring_engine is ring_engines[0]
+            assert ring_engine is not session_module.engine
+            assert ring_engine is not background_engine
+            assert isinstance(ring_engine.pool, NullPool)
+            assert ring_engine.url == session_module.engine.url
+        finally:
+            await session.close()
+        assert events == ["mark_stale", "dispose_ring_engine"]
+    finally:
+        await real_dispose(background_engine)
+
+
+@pytest.mark.asyncio
+async def test_lifespan_bounds_ring_loop_stop_and_skips_stale_marking_while_they_unwind(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import app.main as main
+
+    heartbeat_seen = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    heartbeats_after_release = 0
+
+    async def heartbeat(_instance_id: str, *, endpoint_base_url: str | None = None) -> None:
+        nonlocal heartbeats_after_release
+        if release_cleanup.is_set():
+            heartbeats_after_release += 1
+        heartbeat_seen.set()
+
+    maintenance_entered = asyncio.Event()
+
+    async def blocked_maintenance(_proxy_service: object) -> None:
+        maintenance_entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Cancellation-deferring cleanup, such as a session rollback on a
+            # wedged connection, keeps the loop alive after the cancel.
+            cleanup_started.set()
+            await release_cleanup.wait()
+            raise
+
+    ring_service = SimpleNamespace(
+        register=AsyncMock(),
+        mark_stale=AsyncMock(),
+        unregister=AsyncMock(),
+        heartbeat=AsyncMock(side_effect=heartbeat),
+        list_active=AsyncMock(return_value=["pod-a"]),
+    )
+    teardown = _install_bridge_ring_lifespan_doubles(monkeypatch, ring_service)
+    monkeypatch.setattr(main, "run_http_bridge_heartbeat_maintenance", blocked_maintenance)
+    monkeypatch.setattr(main, "_RING_LOOPS_STOP_TIMEOUT_SECONDS", 0.05)
+
+    loop = asyncio.get_running_loop()
+    # Without a bounded stop the shutdown waits for this release.
+    loop.call_later(2.0, release_cleanup.set)
+    try:
+        async with asyncio.timeout(5):
+            async with main.lifespan(main.app):
+                await heartbeat_seen.wait()
+                await maintenance_entered.wait()
+                shutdown_started = loop.time()
+        assert loop.time() - shutdown_started < 1.5
+        assert cleanup_started.is_set()
+        assert not release_cleanup.is_set()
+        ring_service.mark_stale.assert_not_awaited()
+        teardown.close_db.assert_awaited_once()
+        teardown.mark_clean.assert_not_called()
+    finally:
+        release_cleanup.set()
+        leftovers = [task for task in asyncio.all_tasks() if task.get_name() in _BRIDGE_RING_LOOP_TASK_NAMES]
+        await asyncio.gather(*leftovers, return_exceptions=True)
+        # An unwound loop must not heartbeat again and revive the row.
+        await asyncio.sleep(0.05)
+
+    assert heartbeats_after_release == 0
 
 
 @pytest.mark.asyncio

@@ -347,19 +347,19 @@ layout instead of failing the template.
 
 ### Requirement: Helm PostgreSQL capacity guidance accounts for both application pools
 
-Helm sizing documentation and production-oriented values SHALL calculate maximum application PostgreSQL connections as `(databasePoolSize + databaseMaxOverflow) * 2 pooled engines * 1 supported worker * maxReplicas`. Values described as fitting PostgreSQL's default `max_connections=100` MUST reserve at least 20 raw server slots for PostgreSQL-reserved connections, the migration path's two-connection peak, administration, and transient non-application clients.
+Helm sizing documentation and production-oriented values SHALL calculate maximum application PostgreSQL connections as `((databasePoolSize + databaseMaxOverflow) * 2 pooled engines + 1 bridge ring writer connection) * 1 supported worker * maxReplicas`. The documented PostgreSQL `max_connections` for a values profile MUST reserve at least 20 raw server slots beyond that total for PostgreSQL-reserved connections, the migration path's two-connection peak, administration, and transient non-application clients.
 
 #### Scenario: Default chart reaches its HPA ceiling
 
 - **WHEN** the default chart scales to `autoscaling.maxReplicas`
-- **THEN** both application pools across all replicas require no more than 80 PostgreSQL connections
-- **AND** at least 20 raw server slots remain outside the application-pool budget
+- **THEN** both application pools and the ring writers across all replicas require no more than 90 PostgreSQL connections
+- **AND** the documented `max_connections=110` leaves at least 20 raw server slots outside the application budget
 
 #### Scenario: Production overlay reaches its HPA ceiling
 
 - **WHEN** `values-prod.yaml` scales to `autoscaling.maxReplicas`
-- **THEN** both application pools across all replicas require no more than 80 PostgreSQL connections
-- **AND** at least 20 raw server slots remain available for PostgreSQL reservations, migrations, administration, and transient non-application clients
+- **THEN** both application pools and the ring writers across all replicas require no more than 100 PostgreSQL connections
+- **AND** the documented `max_connections=120` leaves at least 20 raw server slots for PostgreSQL reservations, migrations, administration, and transient non-application clients
 
 ### Requirement: Helm Grafana dashboard titles are configurable
 

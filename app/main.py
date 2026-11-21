@@ -83,6 +83,7 @@ from app.db.session import (
     close_db,
     close_db_teardown_wait_seconds,
     close_session,
+    create_bridge_ring_session_factory,
     init_background_db,
     init_db,
     mark_sqlite_shutdown_clean,
@@ -251,6 +252,44 @@ async def _release_leader_lease_within(timeout: float) -> bool:
     if release_task.result() is False:
         logger.warning("Scheduler leader lease release did not complete; suppressing the SQLite clean marker")
         return False
+    return True
+
+
+_RING_LOOPS_STOP_TIMEOUT_SECONDS = 2.0
+# Strong references keep an abandoned, still-unwinding ring task alive.
+_abandoned_ring_loops: set[asyncio.Task[None]] = set()
+
+
+def _log_abandoned_ring_loops(task: asyncio.Task[None]) -> None:
+    _abandoned_ring_loops.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("Abandoned bridge ring loops finished with error", exc_info=exc)
+
+
+async def _stop_bridge_ring_loops_within(task: asyncio.Task[None], timeout: float) -> bool:
+    """Cancel the ring registration/heartbeat/maintenance task within ``timeout``.
+
+    Cancellation-deferring cleanup in a loop (a session rollback/close) can
+    outlive the cancel, so ``asyncio.wait_for`` would stretch shutdown by that
+    cleanup. Observe the task with a bounded wait instead. ``False`` means it
+    is still unwinding: the caller must then neither age the ring row (a late
+    heartbeat could revive it) nor treat the database work as drained.
+    """
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if task not in done:
+        logger.warning(
+            "Bridge ring loops did not stop within %.1fs; abandoning them so shutdown can proceed",
+            timeout,
+        )
+        _abandoned_ring_loops.add(task)
+        task.add_done_callback(_log_abandoned_ring_loops)
+        return False
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        logger.warning("Bridge ring loops stopped with an error", exc_info=exc)
     return True
 
 
@@ -983,25 +1022,30 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.warning("Ring heartbeat failed", exc_info=True)
 
-    async def _maintenance_loop(svc: RingMembershipService, iid: str) -> None:
+    async def _refresh_cap_partition_logged(reader: RingMembershipService, iid: str) -> None:
+        try:
+            await refresh_cap_partition(reader.list_active, iid)
+        except Exception:
+            logger.warning("Cap partition refresh failed", exc_info=True)
+
+    async def _maintenance_loop(reader: RingMembershipService, iid: str) -> None:
         # One pass at a time on the heartbeat cadence; a slow pass delays the
-        # next one instead of stacking another on top of it.
+        # next one instead of stacking another on top of it. The first cap
+        # refresh runs here too, so a stalled read cannot hold the heartbeat.
+        await _refresh_cap_partition_logged(reader, iid)
         while True:
             await asyncio.sleep(RING_HEARTBEAT_INTERVAL_SECONDS)
             await run_http_bridge_heartbeat_maintenance(getattr(app.state, "proxy_service", None))
-            try:
-                await refresh_cap_partition(svc.list_active, iid)
-            except Exception:
-                logger.warning("Cap partition refresh failed", exc_info=True)
+            await _refresh_cap_partition_logged(reader, iid)
 
-    async def _heartbeat_and_maintain(svc: RingMembershipService, iid: str) -> None:
+    async def _heartbeat_and_maintain(svc: RingMembershipService, reader: RingMembershipService, iid: str) -> None:
         # Both loops are owned by this task: cancelling it cancels and awaits
         # both, and neither loop lets an ordinary exception escape.
         async with asyncio.TaskGroup() as group:
             group.create_task(_heartbeat_loop(svc, iid), name="bridge-ring-heartbeat")
-            group.create_task(_maintenance_loop(svc, iid), name="bridge-ring-maintenance")
+            group.create_task(_maintenance_loop(reader, iid), name="bridge-ring-maintenance")
 
-    async def _register_and_heartbeat(svc: RingMembershipService, iid: str) -> None:
+    async def _register_and_heartbeat(svc: RingMembershipService, reader: RingMembershipService, iid: str) -> None:
         attempt = 0
         while True:
             attempt += 1
@@ -1013,8 +1057,7 @@ async def lifespan(app: FastAPI):
                 delay = min(5.0 * (2 ** min(attempt - 1, 5)), 60.0)
                 logger.warning("Ring registration attempt %d failed, retrying in %.0fs", attempt, delay, exc_info=True)
                 await asyncio.sleep(delay)
-        await refresh_cap_partition(svc.list_active, iid)
-        await _heartbeat_and_maintain(svc, iid)
+        await _heartbeat_and_maintain(svc, reader, iid)
 
     async def _activate_bridge_membership(svc: RingMembershipService, iid: str) -> None:
         if bridge_endpoint_base_url is None:
@@ -1025,9 +1068,19 @@ async def lifespan(app: FastAPI):
     ring_service: RingMembershipService | None = None
     instance_id: str | None = None
     heartbeat_task: asyncio.Task[None] | None = None
-    ring_service = RingMembershipService(SessionLocal)
+    # Ring writes (register, heartbeat, mark_stale) use a dedicated unpooled
+    # engine: request, background-task and durable maintenance work can hold
+    # every pooled connection, and a heartbeat queued behind them ages this
+    # replica out of the ring. The cap-partition refresh is maintenance and
+    # reads through the main pool, so ring writes add at most one transient
+    # connection per replica.
+    ring_session_factory, ring_engine = create_bridge_ring_session_factory()
+    ring_service = RingMembershipService(ring_session_factory)
+    ring_reader = RingMembershipService(SessionLocal)
     instance_id = settings.http_responses_session_bridge_instance_id
-    heartbeat_task = asyncio.create_task(_register_and_heartbeat(ring_service, instance_id))
+    heartbeat_task = asyncio.create_task(
+        _register_and_heartbeat(ring_service, ring_reader, instance_id), name="bridge-ring-membership"
+    )
     loop_lag_task: asyncio.Task[None] | None = None
     if settings.event_loop_lag_warn_threshold_seconds > 0:
         loop_lag_task = asyncio.create_task(
@@ -1081,12 +1134,10 @@ async def lifespan(app: FastAPI):
         database_tasks_drained = database_tasks_drained and final_proxy_persistence_drained
         # Cancel the heartbeat and maintenance loops, then age the shared
         # ring row near expiry.
+        ring_loops_stopped = True
         if heartbeat_task is not None:
-            heartbeat_task.cancel()
-            try:
-                await asyncio.wait_for(heartbeat_task, timeout=2)
-            except (asyncio.CancelledError, TimeoutError):
-                pass
+            ring_loops_stopped = await _stop_bridge_ring_loops_within(heartbeat_task, _RING_LOOPS_STOP_TIMEOUT_SECONDS)
+            database_tasks_drained = database_tasks_drained and ring_loops_stopped
 
         if loop_lag_task is not None:
             loop_lag_task.cancel()
@@ -1095,7 +1146,13 @@ async def lifespan(app: FastAPI):
             except (asyncio.CancelledError, TimeoutError):
                 pass
 
-        if ring_service is not None and instance_id is not None:
+        if ring_service is not None and instance_id is not None and not ring_loops_stopped:
+            logger.warning(
+                "Skipped marking bridge ring membership stale: the ring loops are still stopping; "
+                "the row expires after the stale threshold",
+                extra={"instance_id": instance_id},
+            )
+        elif ring_service is not None and instance_id is not None:
             try:
                 await asyncio.wait_for(
                     ring_service.mark_stale(
@@ -1111,6 +1168,13 @@ async def lifespan(app: FastAPI):
                 )
             except Exception:
                 logger.warning("Failed to mark bridge ring membership stale during shutdown", exc_info=True)
+        if ring_engine is not None:
+            # NullPool keeps no idle connection; a write still unwinding in an
+            # abandoned ring loop closes its own connection when it ends.
+            try:
+                await ring_engine.dispose()
+            except Exception:
+                logger.warning("Failed to dispose the bridge ring engine during shutdown", exc_info=True)
 
         if metrics_server is not None:
             metrics_server.should_exit = True

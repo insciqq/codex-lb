@@ -22,7 +22,7 @@ import pytest
 import yaml
 
 from app.core.config.settings import Settings
-from app.db.session import _POSTGRES_POOLED_ENGINES_PER_WORKER
+from app.db.session import _BRIDGE_RING_WRITER_CONNECTIONS_PER_WORKER, _POSTGRES_POOLED_ENGINES_PER_WORKER
 
 pytestmark = pytest.mark.unit
 
@@ -32,7 +32,6 @@ _CHART_README = _CHART_DIR / "README.md"
 _SMOKE_SCRIPT = _REPO_ROOT / "scripts" / "helm-kind-smoke.sh"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
 _HTTP_PORT = 2455
-_POSTGRES_DEFAULT_MAX_CONNECTIONS = 100
 _POSTGRES_DEFAULT_SUPERUSER_RESERVED_CONNECTIONS = 3
 _MIGRATOR_PEAK_CONNECTIONS = 2
 _REQUIRED_RAW_CONNECTION_RESERVE = 20
@@ -215,14 +214,16 @@ def _connection_budget(values: dict) -> int:
     config = values["config"]
     autoscaling = values["autoscaling"]
     return (
-        (config["databasePoolSize"] + config["databaseMaxOverflow"])
-        * _POSTGRES_POOLED_ENGINES_PER_WORKER
+        (
+            (config["databasePoolSize"] + config["databaseMaxOverflow"]) * _POSTGRES_POOLED_ENGINES_PER_WORKER
+            + _BRIDGE_RING_WRITER_CONNECTIONS_PER_WORKER
+        )
         * _SUPPORTED_WORKERS_PER_REPLICA
         * autoscaling["maxReplicas"]
     )
 
 
-def test_helm_pool_budgets_count_both_postgres_engines() -> None:
+def test_helm_pool_budgets_count_both_postgres_engines_and_the_ring_writer() -> None:
     defaults = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
     production = yaml.safe_load((_CHART_DIR / "values-prod.yaml").read_text())
     merged_production = {
@@ -232,13 +233,15 @@ def test_helm_pool_budgets_count_both_postgres_engines() -> None:
         "autoscaling": {**defaults["autoscaling"], **production["autoscaling"]},
     }
 
-    for values in (defaults, merged_production):
-        budget = _connection_budget(values)
-        reserve = _POSTGRES_DEFAULT_MAX_CONNECTIONS - budget
-
-        assert budget == 80
-        assert reserve >= _REQUIRED_RAW_CONNECTION_RESERVE
-        assert reserve >= _POSTGRES_DEFAULT_SUPERUSER_RESERVED_CONNECTIONS + _MIGRATOR_PEAK_CONNECTIONS
+    for values, expected_budget in ((defaults, 90), (merged_production, 100)):
+        assert _connection_budget(values) == expected_budget
+    assert _REQUIRED_RAW_CONNECTION_RESERVE >= (
+        _POSTGRES_DEFAULT_SUPERUSER_RESERVED_CONNECTIONS + _MIGRATOR_PEAK_CONNECTIONS
+    )
+    # The documented production sizing keeps the full raw-slot reserve on top
+    # of the application budget; the ring writer is not drawn from it.
+    required_max_connections = _connection_budget(merged_production) + _REQUIRED_RAW_CONNECTION_RESERVE
+    assert f"max_connections={required_max_connections}" in _CHART_README.read_text()
 
 
 def test_helm_codex_prewarm_defaults_off_like_settings() -> None:
@@ -309,12 +312,12 @@ def test_pool_budget_documentation_names_both_engines_one_worker_and_reserve() -
     deployment_context = (_REPO_ROOT / "openspec" / "specs" / "deployment-installation" / "context.md").read_text()
     database_context = (_REPO_ROOT / "openspec" / "specs" / "database-backends" / "context.md").read_text()
 
-    assert "× 2 pools × 1 worker × replicas" in readme
+    assert "× 2 pools + 1 ring writer) × 1 worker × replicas" in readme
     assert "WEB_CONCURRENCY" in readme
     assert "reserving 20" in readme
     assert "../../../openspec/specs/database-backends/" in readme
     assert "../../../openspec/specs/deployment-installation/" in readme
-    assert "(pool_size + max_overflow) x 2 x replicas" in deployment_context
+    assert "((pool_size + max_overflow) x 2 + 1) x replicas" in deployment_context
     assert "one worker with two independently pooled PostgreSQL engine roles" in database_context
 
 

@@ -119,6 +119,9 @@ class _PostgresPooledEngineRole(StrEnum):
 # PostgreSQL budget from the roles that the real creation paths must declare.
 _POSTGRES_POOLED_ENGINE_ROLES = tuple(_PostgresPooledEngineRole)
 _POSTGRES_POOLED_ENGINES_PER_WORKER = len(_POSTGRES_POOLED_ENGINE_ROLES)
+# The unpooled bridge ring writer engine (create_bridge_ring_session_factory)
+# writes one at a time, so it adds at most one connection per worker.
+_BRIDGE_RING_WRITER_CONNECTIONS_PER_WORKER = 1
 
 
 def _is_sqlite_url(url: str) -> bool:
@@ -1001,6 +1004,41 @@ def init_background_db(url: str | None = None) -> None:
         )
 
     _background_session_factory = async_sessionmaker(_background_engine, expire_on_commit=False, class_=AsyncSession)
+
+
+def create_bridge_ring_session_factory() -> tuple[async_sessionmaker[AsyncSession], AsyncEngine | None]:
+    """Create the session factory for this replica's own bridge ring writes.
+
+    Ring registration, heartbeat and stale-marking must not queue for a
+    connection behind request, background-task or durable bridge work: a
+    starved heartbeat ages the replica out of the ring and peers treat it as
+    dead. The factory is bound to a dedicated engine on the main database URL
+    with ``NullPool``, so it opens one transient connection per ring write and
+    holds nothing between writes. That engine is not one of the pooled engine
+    roles in the connection budget.
+
+    Returns the factory and the dedicated engine, which the caller owns and
+    disposes. In-memory SQLite has no dedicated engine (a second engine would
+    open a separate, empty database): the main factory and ``None`` are
+    returned instead.
+    """
+    if _is_sqlite_url(_database_url):
+        if _is_sqlite_memory_url(_database_url):
+            return SessionLocal, None
+        ring_engine = create_async_engine(
+            sqlalchemy_sqlite_url(_database_url),
+            echo=False,
+            **_sqlite_file_async_engine_kwargs(),
+        )
+        _configure_sqlite_engine(ring_engine.sync_engine, enable_wal=True)
+    else:
+        ring_engine = create_async_engine(
+            _database_url,
+            echo=False,
+            poolclass=NullPool,
+            connect_args=_postgres_async_connect_args(_database_url) or {},
+        )
+    return async_sessionmaker(ring_engine, expire_on_commit=False, class_=AsyncSession), ring_engine
 
 
 @asynccontextmanager
