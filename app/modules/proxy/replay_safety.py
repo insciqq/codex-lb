@@ -931,12 +931,53 @@ def responses_payload_has_only_encrypted_account_scoped_state(payload: Mapping[s
     input_items = cast(list[JsonValue], input_value)
     if extract_input_file_ids(input_items) or _contains_non_ciphertext_account_scoped_input_state(input_items):
         return False
-    ciphertext_items = [item for item in input_items if _contains_encrypted_content(item)]
+    ciphertext_items = [item for item in input_items if _is_supported_ciphertext_item(item)]
     if not ciphertext_items:
         return False
+    # Only a supported ciphertext-carrying item is set aside. Any other item
+    # with ``encrypted_content`` (a tool call, say) stays in the projection, so
+    # its caller, call pairing and the ciphertext itself still fail the
+    # canonical predicate instead of being skipped.
     projected_payload = dict(payload)
-    projected_payload["input"] = [item for item in input_items if not _contains_encrypted_content(item)]
+    projected_payload["input"] = [item for item in input_items if not _is_supported_ciphertext_item(item)]
     return responses_payload_is_account_neutral_fresh_replay(projected_payload)
+
+
+# Item shapes whose only account-scoped state is their ``encrypted_content``.
+_CIPHERTEXT_ITEM_FIELDS = {
+    "reasoning": frozenset({"content", "encrypted_content", "id", "status", "summary", "type"}),
+    "compaction": frozenset({"encrypted_content", "id", "type"}),
+}
+_REASONING_TEXT_PART_TYPES = {"summary": "summary_text", "content": "reasoning_text"}
+
+
+def _is_supported_ciphertext_item(item: JsonValue) -> bool:
+    if not isinstance(item, dict):
+        return False
+    allowed_fields = _CIPHERTEXT_ITEM_FIELDS.get(
+        cast(str, item.get("type")) if _is_nonblank_string(item.get("type")) else ""
+    )
+    if allowed_fields is None or not set(item) <= allowed_fields:
+        return False
+    if not _is_nonblank_string(item.get("encrypted_content")):
+        return False
+    if item.get("id") is not None and not _is_nonblank_string(item.get("id")):
+        return False
+    if item.get("status") not in (None, "completed"):
+        return False
+    for field, part_type in _REASONING_TEXT_PART_TYPES.items():
+        parts = item.get(field)
+        if parts is None:
+            continue
+        if not isinstance(parts, list) or not all(
+            isinstance(part, dict)
+            and set(part) == {"type", "text"}
+            and part.get("type") == part_type
+            and isinstance(part.get("text"), str)
+            for part in parts
+        ):
+            return False
+    return True
 
 
 def _reasoning_config_is_account_neutral(reasoning: JsonValue | None) -> bool:
@@ -1291,19 +1332,6 @@ def _contains_mcp_tool_state(value: JsonValue) -> bool:
         current = pending.pop()
         if isinstance(current, dict):
             if current.get("type") == "mcp" or _is_nonblank_string(current.get("server_label")):
-                return True
-            pending.extend(current.values())
-        elif isinstance(current, list):
-            pending.extend(current)
-    return False
-
-
-def _contains_encrypted_content(value: JsonValue) -> bool:
-    pending = [value]
-    while pending:
-        current = pending.pop()
-        if isinstance(current, dict):
-            if current.get("encrypted_content") not in (None, ""):
                 return True
             pending.extend(current.values())
         elif isinstance(current, list):

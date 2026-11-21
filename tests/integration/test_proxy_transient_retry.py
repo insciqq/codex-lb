@@ -1096,6 +1096,90 @@ async def test_stream_unresolved_file_reference_429_remains_on_first_dispatch_ac
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "input_items",
+    [
+        pytest.param(
+            [
+                {
+                    "type": "function_call",
+                    "call_id": "call_program_owned",
+                    "name": "lookup",
+                    "arguments": "{}",
+                    "caller": {"type": "program", "caller_id": "prog_owner_bound"},
+                    "encrypted_content": "opaque-tool-call-state",
+                },
+                {"type": "function_call_output", "call_id": "call_program_owned", "output": "done"},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+            id="encrypted-program-tool-call",
+        ),
+        pytest.param(
+            [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "run it"}]},
+                {
+                    "type": "function_call",
+                    "call_id": "call_program_unpaired",
+                    "name": "lookup",
+                    "arguments": "{}",
+                    "caller": {"type": "program", "caller_id": "prog_owner_bound"},
+                    "encrypted_content": "opaque-tool-call-state",
+                },
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+            id="encrypted-unpaired-program-tool-call",
+        ),
+        pytest.param(
+            [
+                {
+                    "type": "reasoning",
+                    "id": "rs_with_caller",
+                    "summary": [],
+                    "caller": {"type": "program", "caller_id": "prog_owner_bound"},
+                    "encrypted_content": "opaque-reasoning-state",
+                },
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+            id="reasoning-with-foreign-field",
+        ),
+    ],
+)
+async def test_stream_encrypted_non_ciphertext_state_429_remains_on_first_dispatch_account(
+    async_client, monkeypatch, input_items
+):
+    """Ciphertext only releases ownership on a supported item shape; other fields stay validated."""
+    await _import_account(async_client, "acc_stream_enc_tool_429_a", "streamenctool429a@example.com")
+    await _import_account(async_client, "acc_stream_enc_tool_429_b", "streamenctool429b@example.com")
+
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        raise ProxyResponseError(
+            429,
+            openai_error("usage_limit_reached", "usage limit reached"),
+            failure_phase="status",
+        )
+        yield  # pragma: no cover - retain the async-generator transport contract
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        json={
+            "model": "gpt-5.1",
+            "input": input_items,
+            "prompt_cache_key": "cache_encrypted_tool_429",
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "usage_limit_reached"
+    assert len(seen_account_ids) == 1
+
+
+@pytest.mark.asyncio
 async def test_stream_encrypted_reasoning_429_cross_account_failover_is_unchanged(async_client, monkeypatch):
     """A rejected pending owner may fail over without rewriting ciphertext."""
     await _import_account(async_client, "acc_stream_reasoning_429_a", "reasoning429a@example.com")
