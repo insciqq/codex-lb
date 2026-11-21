@@ -34,6 +34,8 @@ from app.core.clients.proxy_websocket import UpstreamWebSocket
 from app.core.errors import openai_error
 from app.db.models import AccountStatus
 from app.modules.proxy import service as proxy_service
+from app.modules.proxy._load_balancer.tunables import RoutingTunables
+from app.modules.proxy._service.http_bridge import request_submit as http_bridge_request_submit_module
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio(loop_scope="session")]
 
@@ -212,6 +214,19 @@ class TestMidRequestFailurePreservesPreviousResponseId:
             service,
             "_fail_pending_websocket_requests",
             AsyncMock(),
+        )
+        # The session holds no stream lease, so admission reads the dashboard
+        # settings for its reacquire; this unit test has no database.
+        monkeypatch.setattr(
+            service,
+            "_http_bridge_reacquire_snapshot",
+            AsyncMock(
+                return_value=http_bridge_request_submit_module._HTTPBridgeReacquireSnapshot(
+                    concurrency_caps=http_bridge_request_submit_module.effective_account_concurrency_caps(),
+                    fair_share_threshold_pct=0,
+                    routing_tunables=RoutingTunables(),
+                )
+            ),
         )
 
         with pytest.raises(ProxyResponseError) as exc_info:
