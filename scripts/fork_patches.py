@@ -25,6 +25,8 @@ UPSTREAM_REPO = "Soju06/codex-lb"
 FIELD_SEP = "\x1f"
 RECORD_SEP = "\x1e"
 TRAILER_KEYS = ("Upstream-PR", "Upstream-PR-Head", "Upstream-Issue", "Fork-Only")
+# Upstream `main`: the `upstream` remote, else the fork's `upstream-main` mirror.
+UPSTREAM_BASE_REFS = ("upstream/main", "origin/upstream-main")
 
 
 @dataclass
@@ -66,6 +68,14 @@ def read_patches(base: str, head: str) -> list[Patch]:
         sha, subject, prs, heads, issues, fork_only = record.split(FIELD_SEP)
         patches.append(Patch(sha, subject, _split(prs), _split(heads), _split(issues), _split(fork_only)))
     return patches
+
+
+def default_base() -> str:
+    for ref in UPSTREAM_BASE_REFS:
+        probe = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True)
+        if probe.returncode == 0:
+            return ref
+    return UPSTREAM_BASE_REFS[0]
 
 
 class Upstream:
@@ -152,12 +162,16 @@ def render(patches: list[Patch], base: str, head: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--base", default="upstream/main", help="upstream ref the queue sits on")
-    parser.add_argument("--head", default="HEAD", help="patched ref to report")
+    parser.add_argument(
+        "--base",
+        help="upstream ref the queue sits on (default: upstream/main, else origin/upstream-main)",
+    )
+    parser.add_argument("--head", default="HEAD", help="fork ref to report")
     parser.add_argument("--repo", default=UPSTREAM_REPO, help="upstream repository, owner/name")
     parser.add_argument("--offline", action="store_true", help="validate trailers without GitHub lookups")
     parser.add_argument("--fail-on-signal", action="store_true", help="exit 1 when any patch needs attention")
     args = parser.parse_args()
+    args.base = args.base or default_base()
 
     patches = read_patches(args.base, args.head)
     upstream = Upstream(args.repo)

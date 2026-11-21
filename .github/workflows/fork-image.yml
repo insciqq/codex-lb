@@ -9,7 +9,7 @@ name: Fork image
 # --ref v<version>`. The run's commit is then the tag commit, so the
 # provenance attestation names the commit that was built.
 #
-# verify  the tag commit is reachable from origin/patched, has a successful
+# verify  the tag commit is reachable from origin/main (the fork's main), has a successful
 #         full CI run (checks are per commit, so the green wip/merge-* run of
 #         the same SHA counts) and carries the tag's version in every
 #         release-managed file.
@@ -71,7 +71,7 @@ jobs:
             exit 1
           fi
 
-      # fetch-depth 0 brings every branch and tag, including origin/patched.
+      # fetch-depth 0 brings every branch and tag, including origin/main.
       - name: Checkout tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -91,14 +91,14 @@ jobs:
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
           echo "${RELEASE_TAG} -> ${sha}"
 
-      - name: Require the commit on patched
+      - name: Require the commit on the fork's main
         env:
           SHA: ${{ steps.tag.outputs.sha }}
         run: |
           set -euo pipefail
-          git rev-parse --verify refs/remotes/origin/patched > /dev/null
-          if ! git merge-base --is-ancestor "${SHA}" refs/remotes/origin/patched; then
-            echo "::error::${SHA} is not reachable from origin/patched"
+          git rev-parse --verify refs/remotes/origin/main > /dev/null
+          if ! git merge-base --is-ancestor "${SHA}" refs/remotes/origin/main; then
+            echo "::error::${SHA} is not reachable from origin/main"
             exit 1
           fi
 

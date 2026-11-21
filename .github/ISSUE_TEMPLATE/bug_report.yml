@@ -21,7 +21,7 @@ body:
       options:
         - label: I searched existing issues and confirmed this is not a duplicate.
           required: true
-        - label: I am running the latest fork release (see Releases) or a newer `patched` commit.
+        - label: I am running the latest fork release (see Releases) or a newer commit on the fork's `main`.
           required: true
         - label: I can reproduce the problem with the steps below.
           required: true

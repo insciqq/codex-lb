@@ -21,7 +21,7 @@ contact_links:
       topics for this fork's releases — check there first.
 
   - name: 🍴 Fork policy and releases (FORK.md)
-    url: https://github.com/insciqq/codex-lb/blob/patched/FORK.md
+    url: https://github.com/insciqq/codex-lb/blob/main/FORK.md
     about: |
       What the fork takes from upstream, how it is released, and how to
       deploy and verify its images.

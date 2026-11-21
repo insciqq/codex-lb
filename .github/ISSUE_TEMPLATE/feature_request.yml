@@ -12,7 +12,7 @@ body:
           stable releases; feature work may be considered after that. Until
           then the fork takes bug fixes, security, compatibility with current
           Codex clients and the OpenAI backend, and dependency updates (see
-          [FORK.md](https://github.com/insciqq/codex-lb/blob/patched/FORK.md)).
+          [FORK.md](https://github.com/insciqq/codex-lb/blob/main/FORK.md)).
           Requests filed now may wait until then.
         - Search [existing issues](https://github.com/insciqq/codex-lb/issues?q=is%3Aissue)
           first. For open-ended ideas, please consider opening a

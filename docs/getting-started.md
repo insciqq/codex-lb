@@ -58,4 +58,4 @@ Running behind a reverse proxy or exposing codex-lb to other machines? See [Remo
 
 ---
 
-*Spec: [deployment-installation](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/deployment-installation)*
+*Spec: [deployment-installation](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/deployment-installation)*

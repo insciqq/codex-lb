@@ -273,8 +273,8 @@ Images and default account probes choose `gpt-5.6-luna`, then `gpt-5.5`,
 using registry plan visibility and suppression. If neither qualifies, they
 use `gpt-5.6-luna`. Catalog visibility does not guarantee account access.
 There is no host-model setting. See the
-[Images spec](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/images-api-compat)
-and [probe spec](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/usage-refresh-policy).
+[Images spec](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/images-api-compat)
+and [probe spec](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/usage-refresh-policy).
 
 Removed settings (ignored with a one-release startup warning; each is now a
 fixed default or a dashboard runtime setting — see PRINCIPLES.md P2 /
@@ -326,4 +326,4 @@ issue [#1340](https://github.com/Soju06/codex-lb/issues/1340)):
 
 ---
 
-*Specs: [user-documentation](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/user-documentation) · [responses-api-compat](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/responses-api-compat) · [rate-limit-reset-credits](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/rate-limit-reset-credits) · [deployment-installation](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/deployment-installation) · [proxy-runtime-observability](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/proxy-runtime-observability)*
+*Specs: [user-documentation](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/user-documentation) · [responses-api-compat](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/responses-api-compat) · [rate-limit-reset-credits](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/rate-limit-reset-credits) · [deployment-installation](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/deployment-installation) · [proxy-runtime-observability](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/proxy-runtime-observability)*

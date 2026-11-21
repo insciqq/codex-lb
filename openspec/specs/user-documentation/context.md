@@ -67,7 +67,7 @@ README and sample env stay slim without losing content.
 ## Constraints / failure modes
 
 - GitHub Pages must be enabled out-of-band by an admin
-  (`gh api -X POST repos/Soju06/codex-lb/pages -f build_type=workflow`) before
+  (`gh api -X POST repos/insciqq/codex-lb/pages -f build_type=workflow`) before
   the first `main` deploy; until then the deploy job fails while the build
   check still protects PRs.
 - `uv.lock` must be regenerated whenever the `docs` group changes — CI and the

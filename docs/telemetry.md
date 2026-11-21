@@ -42,7 +42,7 @@ verify signed updates. Activation sends only `{"action": "activate"}`.
 The schema never includes account emails, workspace identifiers, client IP addresses, API keys,
 request or response content, raw user-agent strings, per-account records, custom model names, or
 free-text errors. Exact schemas and privacy constraints live in the
-[telemetry OpenSpec capability](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/telemetry).
+[telemetry OpenSpec capability](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/telemetry).
 
 ## Consent, opting in and disabling
 
@@ -98,4 +98,4 @@ Snapshot and opt-out endpoint failures use a five-second total timeout, retry no
 are logged only at debug level, and never interrupt proxy traffic or change the dashboard
 settings response.
 
-*Source of truth: [telemetry OpenSpec capability](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/telemetry)*
+*Source of truth: [telemetry OpenSpec capability](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/telemetry)*

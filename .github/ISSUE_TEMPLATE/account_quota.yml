@@ -22,7 +22,7 @@ body:
       options:
         - label: I searched existing issues for similar reports.
           required: true
-        - label: I'm on the latest fork release or a newer `patched` commit.
+        - label: I'm on the latest fork release or a newer commit on the fork's `main`.
           required: true
 
   - type: input

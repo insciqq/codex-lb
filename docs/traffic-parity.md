@@ -6,12 +6,12 @@ SSE, and WebSocket as distinct transports while projecting them into a common
 Responses turn model.
 
 The normative tooling contract is
-[`openspec/specs/compatibility-tooling`](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/compatibility-tooling).
+[`openspec/specs/compatibility-tooling`](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/compatibility-tooling).
 The native cutover is governed by
-[`outbound-http-clients`](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/outbound-http-clients),
-[`responses-api-compat`](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/responses-api-compat),
+[`outbound-http-clients`](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/outbound-http-clients),
+[`responses-api-compat`](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/responses-api-compat),
 and
-[`deployment-installation`](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/deployment-installation).
+[`deployment-installation`](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/deployment-installation).
 
 ## What the three paths mean
 
@@ -255,7 +255,7 @@ The catalog must be pinned to a file. The Codex model manager caches `/models`
 for 300 s and invalidates the cache on a `client_version` mismatch, so a run
 with a newer CLI always refetches from whatever base URL the provider names.
 `--catalog` therefore defaults to the committed reference catalog in
-[`scripts/traffic_analysis/catalogs/`](https://github.com/insciqq/codex-lb/tree/patched/scripts/traffic_analysis/catalogs/README.md),
+[`scripts/traffic_analysis/catalogs/`](https://github.com/insciqq/codex-lb/tree/main/scripts/traffic_analysis/catalogs/README.md),
 the one that produced the fixture corpus: its SHA-256 is the `catalog_sha256`
 those provenance entries record, and the corpus gate pins the two together, so
 any operator can reproduce a capture and verify the recorded digest. To capture
@@ -423,7 +423,7 @@ the same session.
 
 The corpus contract, the per-fixture provenance and the recorded verdicts are
 documented in
-[`tests/fixtures/codex_bodies/README.md`](https://github.com/insciqq/codex-lb/tree/patched/tests/fixtures/codex_bodies/README.md),
+[`tests/fixtures/codex_bodies/README.md`](https://github.com/insciqq/codex-lb/tree/main/tests/fixtures/codex_bodies/README.md),
 and gated by `tests/unit/test_codex_body_fixtures.py`.
 
 ### Controlled failure-path matrix

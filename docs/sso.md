@@ -111,4 +111,4 @@ Native OIDC (the "Continue with your provider" button, the connection wizard and
 
 ---
 
-*Specs: [admin-auth](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/admin-auth) · [identity-providers](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/identity-providers) · [dashboard-users](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/dashboard-users)*
+*Specs: [admin-auth](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/admin-auth) · [identity-providers](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/identity-providers) · [dashboard-users](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/dashboard-users)*

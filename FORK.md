@@ -9,11 +9,14 @@ own; feature work may be considered after that.
 
 | Branch | Content |
 |---|---|
-| `patched` | Default branch. Upstream `main` plus the patch queue. Deploy only full SHAs from this branch with green CI. |
-| `main` | Mirror of upstream `main`. No fork commits. Sync with `git push origin upstream/main:main`. |
-| `wip/merge-*` | A ready change set on top of `patched`. The only branches pushed for CI. |
+| `main` | Default branch, the fork's `main`. Upstream `main` plus the patch queue. Deploy only full SHAs from this branch with green CI. |
+| `upstream-main` | Mirror of upstream `main`. No fork commits. Sync with `git push origin upstream/main:upstream-main`. |
+| `wip/merge-*` | A ready change set on top of the fork's `main`. The only branches pushed for CI. |
 
-Work branches stay local. When a `wip/merge-*` head is green, `patched` is
+In this document `upstream/main` is the `upstream` remote's branch, Soju06/codex-lb
+`main`; the fork's `main` is always called that.
+
+Work branches stay local. When a `wip/merge-*` head is green, the fork's `main` is
 fast-forwarded to exactly the SHA that CI tested. Take the literal SHA from
 the successful run, not a remote ref that may have moved since:
 
@@ -21,27 +24,29 @@ the successful run, not a remote ref that may have moved since:
 sha="$(gh run list --workflow CI --branch wip/merge-<name> --event push \
   --status success -L 1 --json headSha --jq '.[0].headSha // empty')" &&
   [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] &&
-  git push origin "${sha}:refs/heads/patched"
+  git push origin "${sha}:refs/heads/main"
 ```
 
 ## CI
 
 `.github/workflows/ci.yml` runs the full suite on every push to a
-`wip/merge-*` branch. Pushes to `patched` and `main` do not run it:
+`wip/merge-*` branch. Pushes to the fork's `main` and to `upstream-main` do
+not run it:
 
-* Checks belong to a commit, not to a branch. A `patched` head moved to a
+* Checks belong to a commit, not to a branch. A head of the fork's `main` moved to a
   green `wip/merge-*` SHA shows the green checks of that run, so a second run
   would test the same tree again.
-* `.github/workflows/patched-ci-guard.yml` runs on every push to `patched`
+* `.github/workflows/main-ci-guard.yml` runs on every push to the fork's `main`
   and takes seconds. It fails unless a successful full CI run (push, manual
   or merge queue, not pull request) exists for the pushed SHA, so an
-  unchecked `patched` head shows red. It stays red until CI for that SHA is
-  green and the guard run is re-run. A `patched` head without a guard
+  unchecked head shows red. It stays red until CI for that SHA is
+  green and the guard run is re-run. A head of the fork's `main` without a guard
   result, for example because a skip-ci directive in the commit message
   suppressed the run, counts as unchecked as well.
-* `main` carries no fork commits. A push to `main` still runs the workflows
-  defined in the pushed upstream commit, because GitHub reads workflow files
-  from that commit.
+* `upstream-main` carries no fork commits. A push to it runs the workflows
+  defined in the pushed upstream commit that match the branch, because
+  GitHub reads workflow files from that commit; the workflows in an upstream
+  commit trigger on `main`, not on `upstream-main`.
 
 Run CI by hand on any branch, for example a work branch pushed for an early
 signal; a manual run also executes the full suite:
@@ -51,15 +56,15 @@ gh workflow run CI --ref <branch>
 gh run list --workflow CI --branch <branch> --limit 1
 ```
 
-Only CI, the patched CI guard, Fork image and Docs run in the fork. Docs
-publishes the site at <https://insciqq.github.io/codex-lb/> from `patched`;
-the `github-pages` environment accepts only `patched`, so a push to the
-`main` mirror cannot deploy upstream's docs. Release, publishing, release
-guard, simplicity budget, labeler, stale and metadata workflows are disabled
-in the Actions settings; they serve upstream's `main`, pull requests and
-releases.
+Only CI, the main CI guard, Fork image and Docs run in the fork. Docs
+publishes the site at <https://insciqq.github.io/codex-lb/> from the fork's
+`main`; the `github-pages` environment accepts only `main`, so a push to the
+`upstream-main` mirror cannot deploy upstream's docs. Release, publishing,
+release guard, simplicity budget, labeler, stale and metadata workflows are
+disabled in the Actions settings and must stay disabled: they serve
+upstream's releases and several of them trigger on pushes to the fork's `main`.
 
-Tags named `patched/<date>-<short>` keep previous `patched` heads reachable
+Tags named `rebuild/<date>-<short>` keep previous heads of the fork's `main` reachable
 after a rebuild. They are recovery points, not versions.
 
 ## Releases and images
@@ -79,8 +84,8 @@ floating tags. Images are built by GitHub Actions, never locally.
   linux/arm64. There is no `latest`, and a tag that already names another
   digest is never moved.
 * The workflow runs on the tag ref only. Before building, it requires the
-  run's commit to be the tag commit, the commit to be reachable from
-  `patched`, a successful full CI run for that exact commit, the tag's
+  run's commit to be the tag commit, the commit to be reachable from the
+  fork's `main`, a successful full CI run for that exact commit, the tag's
   version in every release-managed file listed above and in the fork
   versions named by the READMEs, `docs/` and the chart README, and that
   `:<version>` is not published yet. Whether a tag exists is read from the
@@ -124,7 +129,7 @@ The Fork image workflow has to be enabled once in the Actions settings. The
 first publish creates the `codex-lb` container package; check in its
 settings that it is public before relying on anonymous pulls.
 
-## What goes into `patched`
+## What goes into the fork's `main`
 
 * Pull requests opened in upstream Soju06/codex-lb within the fork's scope:
   bug fixes, security, compatibility with current Codex clients and the OpenAI
@@ -157,7 +162,7 @@ and rebuilds do not add cross-reference events to upstream threads.
 
 ```bash
 git fetch upstream
-python3 scripts/fork_patches.py --base upstream/main --head patched
+python3 scripts/fork_patches.py --base upstream/main --head origin/main
 ```
 
 The report lists every patch with its upstream PR and issue state. Signals:
@@ -208,23 +213,23 @@ it and `sync` keeps it. A taken PR or a trailer-fixed issue cannot be deferred.
 Upstream squash-merges, so a plain rebase does not recognise merged patches.
 Rebuild instead:
 
-1. `git fetch upstream` and run the report against the current `patched`.
-2. `git tag patched/<date>-<short> patched` and push the tag.
-3. `git switch -C patched upstream/main`, then cherry-pick the patches
+1. `git fetch origin upstream` and run the report against the current fork `main`.
+2. `git tag rebuild/<date>-<short> origin/main` and push the tag.
+3. `git switch -C rebuild-<date> upstream/main`, then cherry-pick the patches
    without a `merged upstream` signal, in report order.
-4. Push the rebuilt head for CI, `git push origin patched:refs/heads/wip/merge-rebuild-<date>`,
-   and wait until it is green. A push to `patched` runs no CI.
-5. Move `patched` to the SHA that run tested, not to a ref that may have
+4. Push the rebuilt head for CI, `git push origin rebuild-<date>:refs/heads/wip/merge-rebuild-<date>`,
+   and wait until it is green. A push to the fork's `main` runs no CI.
+5. Move the fork's `main` to the SHA that run tested, not to a ref that may have
    moved:
 
    ```bash
    sha="$(gh run list --workflow CI --branch wip/merge-rebuild-<date> --event push \
      --status success -L 1 --json headSha --jq '.[0].headSha // empty')" &&
      [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] &&
-     git push --force-with-lease origin "${sha}:refs/heads/patched"
+     git push --force-with-lease origin "${sha}:refs/heads/main"
    ```
 
-   A head is deployable only after its checks are green; the patched CI
+   A head is deployable only after its checks are green; the main CI
    guard turns red otherwise.
 
 ## Considered, not taken

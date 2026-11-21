@@ -2,7 +2,7 @@
 
 This repository is a maintained fork of
 [Soju06/codex-lb](https://github.com/Soju06/codex-lb). This policy covers the
-fork: its `patched` branch, its releases and its container images. See
+fork: its `main` branch, its releases and its container images. See
 [FORK.md](../FORK.md) for how the fork is built and released.
 
 ## Reporting a vulnerability
@@ -90,7 +90,7 @@ release deadlines.
 ## Supported versions
 
 Only the **latest fork release** receives security fixes. Fork releases are
-tagged `v<upstream base>-fork.<n>` on the `patched` branch; see
+tagged `v<upstream base>-fork.<n>` on the fork's `main` branch; see
 [Releases](https://github.com/insciqq/codex-lb/releases). Older releases do
 not receive backports — please upgrade.
 

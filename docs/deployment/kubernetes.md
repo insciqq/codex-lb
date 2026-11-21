@@ -82,7 +82,7 @@ values before the drop), so there is no data to lose, only the read path to prot
 never configured", which is what they always were. Do not start a rolled-back replica while the drop
 is in flight; roll back the schema first, then the image.
 
-Contract: [database-migrations](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/database-migrations).
+Contract: [database-migrations](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/database-migrations).
 
 ## Multi-replica behavior
 
@@ -104,7 +104,7 @@ Practical consequences:
 - Persistent `account_stream_cap` errors with idle replicas are the undersizing signature; raise the cap first.
 - Run one process per pod: shares are partitioned across ring members, and worker processes inside one pod would silently multiply the share. `CODEX_LB_WORKERS_PER_INSTANCE` is a startup guard, not a setting — any value other than `1` fails startup.
 
-Semantics and sizing rationale: [proxy-admission-control](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/proxy-admission-control).
+Semantics and sizing rationale: [proxy-admission-control](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/proxy-admission-control).
 
 ## Graceful shutdown
 
@@ -140,8 +140,8 @@ The defaults satisfy the chart's timing guards. When tuning them, keep
 `preStopSleepSeconds <= config.shutdownDrainTimeoutSeconds` and
 `terminationGracePeriodSeconds >= config.shutdownDrainTimeoutSeconds + 32`.
 See the owning
-[deployment-installation](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/deployment-installation)
-contract and [replica-operations](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/replica-operations)
+[deployment-installation](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/deployment-installation)
+contract and [replica-operations](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/replica-operations)
 operational context.
 
 ## Gateway API path filters
@@ -244,8 +244,8 @@ preserves the default dashboard titles.
 ## Full chart reference
 
 For external database, production config, ingress, observability, and more see the
-[Helm chart README](https://github.com/insciqq/codex-lb/blob/patched/deploy/helm/codex-lb/README.md).
+[Helm chart README](https://github.com/insciqq/codex-lb/blob/main/deploy/helm/codex-lb/README.md).
 
 ---
 
-*Specs: [deployment-installation](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/deployment-installation) · [deployment-networking](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/deployment-networking) · [replica-operations](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/replica-operations) · [proxy-admission-control](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/proxy-admission-control)*
+*Specs: [deployment-installation](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/deployment-installation) · [deployment-networking](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/deployment-networking) · [replica-operations](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/replica-operations) · [proxy-admission-control](https://github.com/insciqq/codex-lb/tree/main/openspec/specs/proxy-admission-control)*
