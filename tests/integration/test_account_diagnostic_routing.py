@@ -1046,3 +1046,29 @@ async def test_codex_reset_credit_refresh_skips_an_ambiguous_token_whose_seats_s
         call.kwargs.get("access_token") == token and call.kwargs.get("allow_direct_egress")
         for call in refresh_fetch.await_args_list
     )
+
+
+async def test_codex_usage_identity_ignores_a_legacy_row_of_another_workspace(async_client, monkeypatch):
+    """The same person's user and login claims are equal in every workspace:
+    a legacy row whose stored ID token names another ChatGPT account must
+    not count as a copy of their seat here."""
+    await _seed()
+    await _update_seat("direct-seat", chatgpt_user_id="user-person")
+    await _update_seat(
+        "bound-seat",
+        chatgpt_account_id=None,
+        chatgpt_user_id="user-person",
+        id_token_encrypted=TokenEncryptor().encrypt(
+            _jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "personal-workspace"}})
+        ),
+    )
+    fetch = _mock_usage_fetch(monkeypatch)
+    token = _jwt(
+        {"https://api.openai.com/auth": {"chatgpt_account_id": "shared-workspace", "chatgpt_user_id": "user-person"}}
+    )
+
+    response = await _codex_usage_with(async_client, token)
+
+    assert response.status_code == 200, response.text
+    route, allow_direct = _dispatched_route(fetch)
+    assert route is None and allow_direct is True

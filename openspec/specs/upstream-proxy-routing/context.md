@@ -98,7 +98,8 @@ identifies the caller by the identity claims of its bearer token
 as a set with each seat's stored `chatgpt_user_id` and the claims of its
 stored ID token. Candidates are every local seat of the header's account in
 any status, plus legacy rows without a stored account id that match the
-caller. The claims are not signature-checked: they only select the route of
+caller and whose stored ID token names no other account (user and login
+claims are the same in every workspace a person belongs to). The claims are not signature-checked: they only select the route of
 the caller's own request, upstream validates the token, and a token with
 altered claims is no longer a working credential. A token whose own account
 claim contradicts the header, or with claims of the wrong type, is rejected

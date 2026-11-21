@@ -126,16 +126,17 @@ def _claim(claims: dict[str, Any], name: str) -> str | None:
     return value.strip() or None
 
 
-def stored_seat_identities(account: Account, encryptor: TokenEncryptor) -> frozenset[str]:
-    """The identities a local seat is known by: its stored column and the
-    claims of its stored ID token (the only record for rows imported before
-    the column was filled)."""
-    identities = {account.chatgpt_user_id} if account.chatgpt_user_id else set()
+def stored_seat_claims(account: Account, encryptor: TokenEncryptor) -> TokenClaims:
+    """What a local seat is known by: its stored identity column plus the
+    account and identity claims of its stored ID token (the only record for
+    rows imported before those columns were filled)."""
     try:
-        identities |= token_claims(encryptor.decrypt(account.id_token_encrypted)).identities
+        claims = token_claims(encryptor.decrypt(account.id_token_encrypted))
     except Exception:
-        pass
-    return frozenset(identities)
+        claims = TokenClaims(account_id=None, identities=frozenset())
+    if account.chatgpt_user_id:
+        claims = TokenClaims(claims.account_id, claims.identities | {account.chatgpt_user_id})
+    return claims
 
 
 def seat_is_active(account: Account) -> bool:
@@ -162,10 +163,13 @@ async def select_codex_usage_seat(session: AsyncSession, header_account_id: str,
     seats: list[Account] = []
     matched: list[Account] = []
     for row in await AccountsRepository(session).list_codex_usage_seats(header_account_id):
-        is_match = bool(claims.identities & stored_seat_identities(row, encryptor))
+        stored = stored_seat_claims(row, encryptor)
+        is_match = bool(claims.identities & stored.identities)
         # Rows without a ChatGPT account id predate that column; they belong
-        # to this caller only when the identity says so.
-        if row.chatgpt_account_id is None and not is_match:
+        # to this caller only when the identity says so, and never when their
+        # ID token names another ChatGPT account (the user and login claims
+        # are the same in every workspace a person belongs to).
+        if row.chatgpt_account_id is None and (not is_match or stored.account_id not in (None, header_account_id)):
             continue
         seats.append(row)
         if is_match:
