@@ -507,6 +507,7 @@ class _StreamingMixin(_StreamingRetryMixin):
         actual_service_tier: str | None = None
         reasoning_effort = payload.reasoning.effort if payload.reasoning else None
         session_id = _owner_lookup_session_id_from_headers(headers)
+        anchor = payload.previous_response_id
         # Keep selection/failover waits out of latency and TTFT, record them as
         # queue time, then re-anchor after this attempt's admission wait.
         attempt_started_at = start = clock.monotonic()
@@ -635,7 +636,7 @@ class _StreamingMixin(_StreamingRetryMixin):
             first_payload = parse_sse_data_json(first)
             event_type = classify_event_type(first_payload)
             event = parse_sse_event_payload(first_payload) if event_type in _LIFECYCLE_EVENT_TYPES else None
-            _publish_http_response_owner(proxy, event, first_payload, first, account_id_value, api_key, session_id)
+            _publish_http_response_owner(proxy, event, first_payload, first, account.id, api_key, session_id, anchor)
             preserve_raw_sse_line = not enforce_openai_sdk_contract and event_type == "error"
             malformed_error_rewrite = _rewrite_malformed_stream_error_event(
                 enforce_openai_sdk_contract=enforce_openai_sdk_contract,
@@ -793,7 +794,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                 event_payload = parse_sse_data_json(line)
                 event_type = classify_event_type(event_payload)
                 event = parse_sse_event_payload(event_payload) if event_type in _LIFECYCLE_EVENT_TYPES else None
-                _publish_http_response_owner(proxy, event, event_payload, line, account_id_value, api_key, session_id)
+                _publish_http_response_owner(proxy, event, event_payload, line, account.id, api_key, session_id, anchor)
                 preserve_raw_sse_line = not enforce_openai_sdk_contract and event_type == "error"
                 malformed_error_rewrite = _rewrite_malformed_stream_error_event(
                     enforce_openai_sdk_contract=enforce_openai_sdk_contract,

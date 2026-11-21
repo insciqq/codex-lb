@@ -486,8 +486,13 @@ def _publish_http_response_owner(
     account_id: str,
     api_key: ApiKeyData | None,
     session_id: str | None,
+    previous_response_id: str | None,
 ) -> None:
     if event is None or event.response is None or not event.response.id or event_payload is None:
+        return
+    # An upstream lifecycle failure can echo the request's own anchor; that id
+    # already belongs to whoever created it, not to the account just dispatched.
+    if event.response.id == previous_response_id:
         return
     if isinstance(block, ParsedSseBlock) and (block.is_local or block.response_id_is_local):
         return

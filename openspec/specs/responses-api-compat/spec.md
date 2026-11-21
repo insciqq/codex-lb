@@ -11346,6 +11346,12 @@ When normalization of an actual upstream error supplies a local response ID, tha
 - **THEN** no new cache entry is inferred from that request
 - **AND** existing durable lookup, authorization and unknown-owner fail-closed rules apply
 
+#### Scenario: Upstream lifecycle failure echoes the request's own anchor
+- **GIVEN** an HTTP request whose `previous_response_id` has no known owner and is dispatched to the only eligible account
+- **WHEN** upstream answers with a lifecycle event, such as `response.failed`, whose `response.id` equals that `previous_response_id`
+- **THEN** the dispatched account is not recorded as the owner of that ID
+- **AND** a later continuation with the same anchor in a pool with several eligible accounts fails closed with `previous_response_owner_unavailable` before upstream dispatch
+
 #### Scenario: Background acknowledgement precedes its log
 - **GIVEN** two eligible accounts and a canonical HTTP background JSON acknowledgement with status `queued` or `in_progress`
 - **WHEN** the same caller submits a continuation after receiving the acknowledgement while its log is pending

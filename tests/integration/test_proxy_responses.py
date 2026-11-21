@@ -1674,6 +1674,55 @@ async def test_v1_responses_missing_previous_response_owner_fails_closed_before_
 
 
 @pytest.mark.asyncio
+async def test_v1_responses_echoed_anchor_failure_does_not_record_dispatched_owner(async_client, monkeypatch):
+    """An upstream lifecycle failure that echoes the request's own
+    previous_response_id must not record the dispatched account as that
+    anchor's owner; a later continuation in a larger pool fails closed."""
+
+    async def import_account(raw_account_id: str, email: str) -> None:
+        auth_json = _make_auth_json(raw_account_id, email)
+        files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+        response = await async_client.post("/api/accounts/import", files=files)
+        assert response.status_code == 200
+
+    dispatched: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
+        del headers, access_token, base_url, raise_for_status, kwargs
+        dispatched.append(account_id)
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "id": payload.previous_response_id,
+                        "status": "failed",
+                        "error": {"code": "server_error", "message": "upstream failed"},
+                    },
+                }
+            )
+            + "\n\n"
+        )
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    request = {"model": "gpt-5.1", "input": "continue", "previous_response_id": "resp_echoed_anchor_unknown"}
+    headers = {"session_id": "sid_echoed_anchor_unknown"}
+
+    await import_account("acc_echoed_anchor_1", "echoed-anchor-1@example.com")
+    first = await async_client.post("/v1/responses", json=request, headers=headers)
+    assert first.status_code != 200
+    assert dispatched == ["acc_echoed_anchor_1"]
+
+    await import_account("acc_echoed_anchor_2", "echoed-anchor-2@example.com")
+    second = await async_client.post("/v1/responses", json=request, headers=headers)
+
+    assert second.status_code == 502
+    assert second.json()["error"]["code"] == "previous_response_owner_unavailable"
+    assert dispatched == ["acc_echoed_anchor_1"]
+
+
+@pytest.mark.asyncio
 async def test_v1_responses_preserves_legacy_raw_owner_conflict(async_client, monkeypatch):
     from app.modules.proxy.sticky_repository import StickySessionsRepository
 
