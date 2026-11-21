@@ -50,8 +50,11 @@ The fork publishes container images only: no PyPI package, Helm chart or
 floating tags. Images are built by GitHub Actions, never locally.
 
 * Version tags are `v<upstream base>-fork.<n>`, for example `v1.25.0-fork.1`
-  on upstream's 1.25.0 train. The Python package version is the PEP 440 form
-  `1.25.0+fork.1`; SemVer files use `1.25.0-fork.1`.
+  on upstream's 1.25.0 train. `pyproject.toml`, `app/__init__.py`, `uv.lock`
+  and `frontend/package.json` carry the PEP 440 form `1.25.0+fork.1`, which
+  the dashboard and `X-App-Version` show. The Helm chart's `version` and
+  `appVersion` use `1.25.0-fork.1`, like the image tag, because image tags
+  and Kubernetes label values do not allow `+`.
 * Pushing a version tag runs `.github/workflows/fork-image.yml`, which
   publishes `ghcr.io/insciqq/codex-lb:<version>` and
   `ghcr.io/insciqq/codex-lb:sha-<full commit SHA>` for linux/amd64 and
