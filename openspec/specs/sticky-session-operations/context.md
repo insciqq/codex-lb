@@ -98,6 +98,16 @@ entirely, and a reuse probe would reopen on the backed-off account instead of
 letting its caller pick a healthy sibling. Only a resolved hard sticky owner
 or `required_continuity_owner` set the capability.
 
+An input-file owner is a continuity owner when an existing HTTP bridge
+session reconnects, because the reconnect passes the file pin as continuity
+evidence. On first bridge session creation the file pin is merged into the
+required account after continuity provenance is computed, so the request is
+only an ownership constraint there. A file-pinned first request whose owner
+is in transient backoff therefore still fails closed with `no_accounts`, as
+upstream does. Carrying the verified file pin into bridge creation would also
+have to keep the file-pin scope and single-account routing rules, which the
+reconnect path does through `preferred_account_overrides_single_account_routing`.
+
 For example, account A serves transient backoff while a conversation's
 complete history can only be served by A. A separate thread may use B, while a
 complete resend on the original thread recovers on A with its encrypted

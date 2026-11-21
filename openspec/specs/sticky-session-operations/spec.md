@@ -1608,11 +1608,14 @@ When a pre-visible upstream failure on the HTTP stream transport is a code-less 
 When a request is bound to one resolved account by hard continuation ownership,
 the service MUST keep that account eligible for the existing transient-error
 backoff fallback. Hard continuation ownership means a resolved hard sticky
-owner or a required continuity owner (such as a previous-response or file
-owner). The fallback MUST NOT authorize an account switch or clear health
-penalties merely to select the owner. Persisted unavailability, account scope,
-security policy, concurrency caps, and explicit caller exclusions MUST remain
-enforced. A soft preferred account, the account configured for single-account
+owner or a required continuity owner (such as a previous-response owner, or
+an input-file owner when an existing HTTP bridge session reconnects). An
+input-file pin on first HTTP bridge session creation is not carried as
+continuity evidence; it keeps the upstream behaviour, so an owner in
+transient backoff fails closed there. The fallback MUST NOT authorize an
+account switch or clear health penalties merely to select the owner.
+Persisted unavailability, account scope, security policy, concurrency caps,
+and explicit caller exclusions MUST remain enforced. A soft preferred account, the account configured for single-account
 routing, and a reuse probe that disables fallback only to test whether the
 current account can serve the next turn are not ownership: they MUST keep
 their error backoff, so the caller can select a healthy sibling instead.

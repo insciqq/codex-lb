@@ -76,7 +76,10 @@ This change was ported with two differences from the upstream pull request.
   Regressions in `tests/unit/test_load_balancer_contract.py` cover the owner,
   hard sticky, soft preference, single-account and reuse-probe cases at the
   balancer, at service selection, and through the WebSocket revalidation and
-  HTTP bridge reconnect paths.
+  HTTP bridge reconnect paths. An input-file owner gets the bypass when an
+  existing bridge session reconnects; a file pin on first bridge session
+  creation is not continuity evidence and fails closed during backoff, as
+  upstream does.
 - **Route test.** The fork never anchors native Codex HTTP history, so the
   anchor-denial step of upstream's route test cannot occur. The fork's test
   sends one native turn, puts the owner into transient backoff, serves a
