@@ -57,7 +57,8 @@ from app.core.errors import openai_error
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
     ResponsesRequest,
-    responses_payload_json_mode,
+    base_hoisted_request_text,
+    responses_payload_base_hoist,
 )
 from app.core.resilience.overload import is_local_overload_error_code
 from app.core.types import JsonObject, JsonValue
@@ -137,6 +138,7 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _estimated_lease_tokens_from_request_usage_budget,
     _inline_top_level_input_image_urls,
     _input_context,
+    _input_developer_fingerprints,
     _normalize_service_tier_value,
     _normalize_session_id,
     _prepare_websocket_request_state_for_account_switch,
@@ -779,18 +781,22 @@ class _HTTPBridgeRequestSubmitMixin:
     ) -> tuple[_WebSocketRequestState, str]:
         deduped_replayed_input_count: int | None = None
         deduped_replayed_input_fingerprint: str | None = None
-        json_mode = responses_payload_json_mode(payload)
+        deduped_replayed_developer_fingerprints: frozenset[str] | None = None
+        hoist = responses_payload_base_hoist(payload)
         deduped_replayed_tool_call_count = 0
         if payload.previous_response_id is not None and isinstance(payload.input, list):
             replayed_input_items = cast(list[JsonValue], payload.input)
             deduped_input_items, deduped_replayed_tool_call_count = dedupe_replayed_side_effect_input_items(
                 replayed_input_items,
                 sanitize_missing_outputs=False,
-                json_mode=json_mode,
+                hoist=hoist,
             )
             if deduped_replayed_tool_call_count > 0:
                 deduped_replayed_input_count, deduped_replayed_input_fingerprint = _input_context(
-                    replayed_input_items, json_mode=json_mode
+                    replayed_input_items, hoist=hoist
+                )
+                deduped_replayed_developer_fingerprints = _input_developer_fingerprints(
+                    replayed_input_items, hoist=hoist
                 )
                 payload = payload.model_copy(update={"input": deduped_input_items})
                 # The caller's dump describes the un-deduped input; it must not
@@ -822,10 +828,12 @@ class _HTTPBridgeRequestSubmitMixin:
         forwarded_service_tier = _normalize_service_tier_value(upstream_payload.get("service_tier"))
         input_item_count = 0
         input_full_fingerprint: str | None = None
+        input_developer_fingerprints: frozenset[str] | None = None
         payload_input = payload.input
         if isinstance(payload_input, list):
             payload_input_list = cast(list[JsonValue], payload_input)
-            input_item_count, context_fingerprint = _input_context(payload_input_list, json_mode=json_mode)
+            input_item_count, context_fingerprint = _input_context(payload_input_list, hoist=hoist)
+            input_developer_fingerprints = _input_developer_fingerprints(payload_input_list, hoist=hoist)
             if input_item_count > 0:
                 input_full_fingerprint = context_fingerprint
 
@@ -872,9 +880,11 @@ class _HTTPBridgeRequestSubmitMixin:
             connection_request_kind=connection_request_kind,
             generate_false_prewarm=generate_false_prewarm,
         )
+        request_state.input_developer_fingerprints = input_developer_fingerprints
         if deduped_replayed_input_count is not None:
             request_state.input_item_count = deduped_replayed_input_count
             request_state.input_full_fingerprint = deduped_replayed_input_fingerprint
+            request_state.input_developer_fingerprints = deduped_replayed_developer_fingerprints
             logger.warning(
                 "%s_replayed_tool_call_input_deduped request_id=%s original_items=%s deduped_to=%s "
                 "removed_tool_calls=%s previous_response_id=%s",
@@ -1360,16 +1370,41 @@ class _HTTPBridgeRequestSubmitMixin:
                 get_operation_by_fingerprint = getattr(self._durable_bridge, "get_operation_by_fingerprint", None)
                 get_operation = getattr(self._durable_bridge, "get_operation", None)
 
-                async def lookup_operation() -> Any:
+                async def lookup_operation_by(fingerprint: str, candidate_id: str) -> Any:
                     operation = None
                     if callable(get_operation_by_fingerprint):
                         operation = await _call_with_supported_optional_kwargs(
                             get_operation_by_fingerprint,
                             optional_kwargs={"api_key_scope": api_key_scope},
-                            request_fingerprint=operation_fingerprint,
+                            request_fingerprint=fingerprint,
                         )
                     if operation is None and callable(get_operation):
-                        operation = await get_operation(operation_id=operation_id)
+                        operation = await get_operation(operation_id=candidate_id)
+                    return operation
+
+                async def lookup_operation() -> Any:
+                    nonlocal operation_fingerprint, operation_id, operation_tagged_text
+                    operation = await lookup_operation_by(operation_fingerprint, operation_id)
+                    if operation is not None:
+                        return operation
+                    # A turn recorded before developer messages stayed inline
+                    # hashed its frame with the developer text in
+                    # ``instructions``; keep matching that record.
+                    legacy_text = base_hoisted_request_text(_text_without_account_installation_id(text_data))
+                    if legacy_text is None:
+                        return None
+                    legacy_fingerprint = durable_bridge_operation_fingerprint(
+                        api_key_scope=api_key_scope,
+                        request_text=legacy_text,
+                    )
+                    legacy_operation_id = durable_bridge_operation_id(
+                        cast(str, session.durable_session_id), legacy_fingerprint
+                    )
+                    operation = await lookup_operation_by(legacy_fingerprint, legacy_operation_id)
+                    if operation is not None:
+                        operation_fingerprint = legacy_fingerprint
+                        operation_id = legacy_operation_id
+                        operation_tagged_text = _text_with_operation_id(text_data, operation_id)
                     return operation
 
                 existing_operation = await lookup_operation()

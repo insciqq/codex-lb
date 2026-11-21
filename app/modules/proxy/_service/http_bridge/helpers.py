@@ -68,10 +68,12 @@ from app.core.metrics.prometheus import (
 from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
+    NO_BASE_HOIST,
+    BaseHoist,
     ResponsesRequest,
     base_equivalent_input,
     base_equivalent_input_positions,
-    responses_payload_json_mode,
+    responses_payload_base_hoist,
 )
 from app.core.resilience.overload import local_overload_error
 from app.core.types import JsonValue
@@ -1143,7 +1145,7 @@ def _http_bridge_precreated_retry_failure_error(
 
 
 def _trim_http_bridge_previous_response_input_items(
-    input_items: list[JsonValue], *, json_mode: bool = False
+    input_items: list[JsonValue], *, hoist: BaseHoist = NO_BASE_HOIST
 ) -> list[JsonValue]:
     first_output_index = next(
         (
@@ -1159,7 +1161,7 @@ def _trim_http_bridge_previous_response_input_items(
     # Judge the prefix on the base-equivalent input. A developer message the
     # old hoist removed (a fresh control between the echoed output and the
     # tool result) stays, in order, while the echo is trimmed.
-    base_item_indices = {index for index, _ in base_equivalent_input_positions(input_items, json_mode=json_mode)}
+    base_item_indices = {index for index, _ in base_equivalent_input_positions(input_items, hoist=hoist)}
     kept_prefix_items: list[JsonValue] = []
     for index, item in enumerate(input_items[:first_output_index]):
         if index not in base_item_indices:
@@ -2120,7 +2122,7 @@ def _http_bridge_payload_looks_like_full_resend(payload: ResponsesRequest) -> bo
     if isinstance(input_value, Sequence) and not isinstance(input_value, (str, bytes, bytearray)):
         # Judge the history the old hoist left in ``input``: a turn delta that
         # brings fresh developer messages is still a delta.
-        history_items = base_equivalent_input(list(input_value), json_mode=responses_payload_json_mode(payload))
+        history_items = base_equivalent_input(list(input_value), hoist=responses_payload_base_hoist(payload))
         if len(history_items) > 1:
             return True
         if len(history_items) == 1:

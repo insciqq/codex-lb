@@ -1284,6 +1284,9 @@ class _WebSocketRequestState:
     seen_tool_call_keys: dict[ToolCallDedupeKey, None] = field(default_factory=dict)
     input_item_count: int = 0
     input_full_fingerprint: str | None = None
+    # Fingerprints of the developer messages the old hoist would have moved,
+    # in the full client input (``None``: unknown).
+    input_developer_fingerprints: frozenset[str] | None = None
     api_key_reservation_last_touch_at: float = field(default_factory=time.monotonic)
     api_key_reservation_heartbeat_stop: asyncio.Event | None = None
     api_key_reservation_heartbeat_task: asyncio.Task[None] | None = None
@@ -1409,6 +1412,8 @@ class _HTTPBridgeSession:
     turn_state_alias_registration_generations: dict[str, int] = field(default_factory=dict)
     previous_response_alias_registration_generations: dict[str, int] = field(default_factory=dict)
     last_completed_input_count: int = 0
+    # Developer messages of the stored input (see ``input_developer_fingerprints``).
+    last_completed_input_developer_fingerprints: frozenset[str] | None = None
     last_completed_response_id: str | None = None
     # Account that owns ``last_completed_response_id``. A previous_response_id
     # anchor is account-scoped upstream, so it may only be replayed on the same
@@ -1592,6 +1597,7 @@ class _WebSocketContinuityState:
     last_completed_input_count: int = 0
     last_completed_response_id: str | None = None
     last_completed_input_prefix_fingerprint: str | None = None
+    last_completed_input_developer_fingerprints: frozenset[str] | None = None
     last_pending_function_call_ids: list[str] = field(default_factory=list)
     last_pending_tool_call_types: dict[str, str] = field(default_factory=dict)
     responses_lite_model: str | None = None
@@ -1602,6 +1608,7 @@ class _WebSocketContinuityState:
 class _WebSocketContinuityAnchor:
     previous_response_id: str
     stored_input_item_count: int
+    stored_developer_fingerprints: frozenset[str] | None = None
 
 
 @dataclass(slots=True)

@@ -60,10 +60,12 @@ from app.core.exceptions import AppError
 from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
+    NO_BASE_HOIST,
+    BaseHoist,
     ResponsesRequest,
     base_equivalent_input_positions,
     extract_input_file_ids,
-    responses_payload_json_mode,
+    responses_payload_base_hoist,
 )
 from app.core.types import JsonValue
 from app.core.utils.shared_future import (
@@ -769,6 +771,7 @@ def _retire_websocket_continuity_anchor(continuity_state: _WebSocketContinuitySt
     continuity_state.last_completed_connection_id = None
     continuity_state.last_completed_input_count = 0
     continuity_state.last_completed_input_prefix_fingerprint = None
+    continuity_state.last_completed_input_developer_fingerprints = None
     continuity_state.last_pending_function_call_ids = []
     continuity_state.last_pending_tool_call_types = {}
 
@@ -805,12 +808,13 @@ def _websocket_continuity_anchor_for_payload(
         responses_payload.input,
         stored_count=stored_count,
         stored_fingerprint=continuity_state.last_completed_input_prefix_fingerprint,
-        json_mode=responses_payload_json_mode(responses_payload),
+        hoist=responses_payload_base_hoist(responses_payload),
     ):
         return None
     return _WebSocketContinuityAnchor(
         previous_response_id=previous_response_id,
         stored_input_item_count=stored_count,
+        stored_developer_fingerprints=continuity_state.last_completed_input_developer_fingerprints,
     )
 
 
@@ -868,9 +872,11 @@ def _record_websocket_continuity_completion(
     if request_state.input_item_count > 0 and request_state.input_full_fingerprint is not None:
         continuity_state.last_completed_input_count = request_state.input_item_count
         continuity_state.last_completed_input_prefix_fingerprint = request_state.input_full_fingerprint
+        continuity_state.last_completed_input_developer_fingerprints = request_state.input_developer_fingerprints
     else:
         continuity_state.last_completed_input_count = 0
         continuity_state.last_completed_input_prefix_fingerprint = None
+        continuity_state.last_completed_input_developer_fingerprints = None
     continuity_state.last_pending_function_call_ids = list(request_state.pending_function_call_ids)
     continuity_state.last_pending_tool_call_types = dict(request_state.pending_tool_call_types)
 
@@ -1410,24 +1416,32 @@ def _refresh_websocket_request_input_fingerprint_from_text(request_state: _WebSo
     if not request_state.request_text:
         request_state.input_item_count = 0
         request_state.input_full_fingerprint = None
+        request_state.input_developer_fingerprints = None
         return
     try:
         payload = json.loads(request_state.request_text)
     except json.JSONDecodeError:
         request_state.input_item_count = 0
         request_state.input_full_fingerprint = None
+        request_state.input_developer_fingerprints = None
         return
     if not isinstance(payload, dict):
         request_state.input_item_count = 0
         request_state.input_full_fingerprint = None
+        request_state.input_developer_fingerprints = None
         return
     input_items = payload.get("input")
     if not isinstance(input_items, list):
         request_state.input_item_count = 0
         request_state.input_full_fingerprint = None
+        request_state.input_developer_fingerprints = None
         return
+    hoist = responses_payload_base_hoist(payload)
     request_state.input_item_count, request_state.input_full_fingerprint = _facade()._input_context(
-        cast(list[JsonValue], input_items), json_mode=responses_payload_json_mode(payload)
+        cast(list[JsonValue], input_items), hoist=hoist
+    )
+    request_state.input_developer_fingerprints = _facade()._input_developer_fingerprints(
+        cast(list[JsonValue], input_items), hoist=hoist
     )
 
 
@@ -2426,7 +2440,7 @@ def _serialize_websocket_error_event(payload: dict[str, JsonValue]) -> str:
 
 
 def _trim_websocket_previous_response_input_items(
-    input_items: list[JsonValue], *, json_mode: bool = False
+    input_items: list[JsonValue], *, hoist: BaseHoist = NO_BASE_HOIST
 ) -> list[JsonValue]:
     first_output_index = next(
         (
@@ -2442,7 +2456,7 @@ def _trim_websocket_previous_response_input_items(
     # Judge the prefix on the base-equivalent input. A developer message the
     # old hoist removed (a fresh control between the echoed output and the
     # tool result) stays, in order, while the echo is trimmed.
-    base_item_indices = {index for index, _ in base_equivalent_input_positions(input_items, json_mode=json_mode)}
+    base_item_indices = {index for index, _ in base_equivalent_input_positions(input_items, hoist=hoist)}
     kept_prefix_items: list[JsonValue] = []
     for index, item in enumerate(input_items[:first_output_index]):
         if index not in base_item_indices:

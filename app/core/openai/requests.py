@@ -10,6 +10,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
     PrivateAttr,
     SerializeAsAny,
     SkipValidation,
@@ -374,6 +375,17 @@ def _normalize_responses_input_instructions(data: JsonValue, *, keep_json_mode_i
             # One without content carries no instruction and is dropped, as the
             # hoist dropped it.
             if _developer_message_has_content(item_mapping.get("content")):
+                instruction_text, preserved_content = _split_responses_instruction_item_content(item_mapping)
+                if (
+                    "id" in item_mapping
+                    and preserved_content is None
+                    and not (keep_json_mentions and _mentions_json(instruction_text))
+                ):
+                    # The hoist dropped the client item id of a developer
+                    # message it moved whole (only the text survived); that id
+                    # never reached upstream and would tie the body to one
+                    # account.
+                    item = {key: value for key, value in item_mapping.items() if key != "id"}
                 input_items.append(item)
             # A developer-only input still needs ``instructions`` to default to "".
             changed = True
@@ -430,10 +442,65 @@ def _hoist_instruction_message(
     return instruction_text, preserved_item
 
 
+@dataclass(frozen=True, slots=True)
+class BaseHoist:
+    """How the old hoist treated one request's ``input``.
+
+    ``lite`` is the Responses Lite classification of the request as the client
+    sent it (``None``: infer it from the list being judged), so a suffix trimmed
+    from a Lite request keeps its developer messages inline. ``json_kept`` holds
+    the canonical JSON of the developer messages the hoist kept for JSON mode,
+    decided on the raw content before part sanitization (``None``: decide from
+    the text with ``json_mode``).
+    """
+
+    json_mode: bool = False
+    lite: bool | None = None
+    json_kept: frozenset[str] | None = None
+
+
+NO_BASE_HOIST = BaseHoist()
+
+
+def _canonical_item(item: JsonValue) -> str:
+    return json.dumps(item, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def _base_hoist_from_raw(data: JsonValue) -> BaseHoist:
+    """Record the old hoist's decisions from a raw Responses request body."""
+    if not is_json_mapping(data):
+        return NO_BASE_HOIST
+    json_mode = _requests_json_object_format(data.get("text"))
+    input_value = data.get("input")
+    if not is_json_list(input_value):
+        return BaseHoist(json_mode=json_mode)
+    lite = responses_input_uses_lite_tools(input_value)
+    if lite or not json_mode:
+        return BaseHoist(json_mode=json_mode, lite=lite, json_kept=frozenset())
+    kept: list[JsonValue] = []
+    for item in input_value:
+        item_mapping = _json_mapping_or_none(item)
+        if (
+            item_mapping is None
+            or item_mapping.get("role") not in ("system", "developer")
+            or _is_preserved_non_message_directive(item_mapping)
+        ):
+            continue
+        _, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=True)
+        if kept_item is not None and _json_mapping_or_none(kept_item) is not None:
+            if cast(Mapping[str, JsonValue], kept_item).get("role") == "developer":
+                kept.append(kept_item)
+    return BaseHoist(
+        json_mode=json_mode,
+        lite=lite,
+        json_kept=frozenset(_canonical_item(item) for item in _sanitize_input_items(kept)),
+    )
+
+
 def base_equivalent_input_positions(
     input_items: list[JsonValue],
     *,
-    json_mode: bool = False,
+    hoist: BaseHoist = NO_BASE_HOIST,
 ) -> list[tuple[int, JsonValue]]:
     """Return ``(wire index, item)`` for the ``input`` the normalizer produced before developer messages stayed inline.
 
@@ -442,11 +509,12 @@ def base_equivalent_input_positions(
     history they judged before upstream issue 2563 was fixed, while the wire
     keeps developer messages in place. Outside Responses Lite each developer
     message goes through the old hoist: it leaves ``input``, except a JSON
-    mention in JSON mode (``json_mode``, set only for Responses requests whose
-    ``text.format.type`` is ``json_object``), which stays, and non-text parts,
-    which stay as a ``user`` message.
+    mention in JSON mode, which stays, and non-text parts, which stay as a
+    ``user`` message. ``hoist`` carries the request's own decisions (see
+    ``BaseHoist``).
     """
-    if responses_input_uses_lite_tools(input_items):
+    lite = hoist.lite if hoist.lite is not None else responses_input_uses_lite_tools(input_items)
+    if lite:
         return list(enumerate(input_items))
     positions: list[tuple[int, JsonValue]] = []
     for index, item in enumerate(input_items):
@@ -458,43 +526,105 @@ def base_equivalent_input_positions(
         ):
             positions.append((index, item))
             continue
-        _, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=json_mode)
+        if hoist.json_kept is not None:
+            if _canonical_item(item) in hoist.json_kept:
+                positions.append((index, item))
+                continue
+            _, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=False)
+        else:
+            _, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=hoist.json_mode)
         if kept_item is not None:
             positions.append((index, kept_item))
     return positions
 
 
-def base_equivalent_input(input_items: list[JsonValue], *, json_mode: bool = False) -> list[JsonValue]:
+def base_equivalent_input(input_items: list[JsonValue], *, hoist: BaseHoist = NO_BASE_HOIST) -> list[JsonValue]:
     """The ``input`` list the normalizer produced before developer messages stayed inline."""
-    return [item for _, item in base_equivalent_input_positions(input_items, json_mode=json_mode)]
+    return [item for _, item in base_equivalent_input_positions(input_items, hoist=hoist)]
 
 
-def base_equivalent_wire_prefix_end(input_items: list[JsonValue], count: int, *, json_mode: bool = False) -> int:
+def base_equivalent_wire_prefix_end(
+    input_items: list[JsonValue], count: int, *, hoist: BaseHoist = NO_BASE_HOIST
+) -> int:
     """Map a prefix of ``count`` base-equivalent items back to a wire prefix length.
 
     The wire prefix ends right after the wire item behind the ``count``-th
-    base-equivalent item, so developer messages inside it go with the prefix
-    and developer messages after it stay with the remainder.
+    base-equivalent item.
     """
     if count <= 0:
         return 0
-    positions = base_equivalent_input_positions(input_items, json_mode=json_mode)
+    positions = base_equivalent_input_positions(input_items, hoist=hoist)
     if count > len(positions):
         return len(input_items)
     return positions[count - 1][0] + 1
 
 
-def responses_payload_json_mode(payload: object) -> bool:
-    """Whether ``payload`` kept JSON-mentioning instructions in ``input`` under the old hoist."""
+def base_hoisted_request_text(text: str) -> str | None:
+    """Re-serialize a request frame in the shape it had before developer messages stayed inline.
+
+    Durable operation and recovery-attempt keys hash the serialized frame. A
+    turn recorded before the change carried its developer text in
+    ``instructions``; this rebuilds that frame (same key order and separators)
+    so an identical retry still finds its record. Returns ``None`` when the
+    frame has no developer message the old hoist would have moved.
+    """
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    input_value = payload.get("input")
+    if not isinstance(input_value, list) or responses_input_uses_lite_tools(input_value):
+        return None
+    json_mode = _requests_json_object_format(payload.get("text"))
+    instruction_parts: list[str] = []
+    base_items: list[JsonValue] = []
+    moved = False
+    for item in input_value:
+        item_mapping = _json_mapping_or_none(item)
+        if (
+            item_mapping is None
+            or item_mapping.get("role") != "developer"
+            or _is_preserved_non_message_directive(item_mapping)
+        ):
+            base_items.append(item)
+            continue
+        instruction_text, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=json_mode)
+        if kept_item is item_mapping or kept_item == item_mapping:
+            base_items.append(item)
+            continue
+        moved = True
+        if instruction_text:
+            instruction_parts.append(instruction_text)
+        if kept_item is not None:
+            base_items.append(kept_item)
+    if not moved:
+        return None
+    existing = payload.get("instructions")
+    payload["instructions"] = _merge_responses_instructions(
+        existing if isinstance(existing, str) else "", instruction_parts
+    )
+    payload["input"] = base_items
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+
+
+def responses_payload_base_hoist(payload: object) -> BaseHoist:
+    """The old hoist's decisions for ``payload`` (recorded at validation for Responses requests)."""
     if isinstance(payload, ResponsesCompactRequest):
-        return False
+        return NO_BASE_HOIST
     if isinstance(payload, ResponsesRequest):
-        return (
-            payload.text is not None and payload.text.format is not None and payload.text.format.type == "json_object"
+        recorded = payload._codex_lb_base_hoist
+        if recorded is not None:
+            return recorded
+        return BaseHoist(
+            json_mode=payload.text is not None
+            and payload.text.format is not None
+            and payload.text.format.type == "json_object"
         )
     if is_json_mapping(payload):
-        return _requests_json_object_format(payload.get("text"))
-    return False
+        return BaseHoist(json_mode=_requests_json_object_format(payload.get("text")))
+    return NO_BASE_HOIST
 
 
 def _developer_message_has_content(content: JsonValue) -> bool:
@@ -808,6 +938,8 @@ def _validate_input_item_discriminators(items: list[JsonValue]) -> None:
 class ResponsesRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     _codex_lb_client_reasoning_effort: str | None = PrivateAttr(default=None)
+    # The old hoist's decisions on the raw body; copies (trimmed inputs) keep them.
+    _codex_lb_base_hoist: BaseHoist | None = PrivateAttr(default=None)
     _codex_lb_provider_reasoning_effort_materialized: bool = PrivateAttr(default=False)
 
     @model_validator(mode="before")
@@ -816,6 +948,16 @@ class ResponsesRequest(BaseModel):
         # Compact requests drop ``text`` before upstream, so only this request
         # type can carry JSON mode.
         return _normalize_responses_input_instructions(data, keep_json_mode_instructions=True)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _record_base_hoist(cls, data: JsonValue, handler: ModelWrapValidatorHandler["ResponsesRequest"]):
+        request = handler(data)
+        if isinstance(data, ResponsesRequest):
+            request._codex_lb_base_hoist = data._codex_lb_base_hoist
+        elif request._codex_lb_base_hoist is None:
+            request._codex_lb_base_hoist = _base_hoist_from_raw(data)
+        return request
 
     model: str = Field(min_length=1)
     instructions: str
@@ -1467,6 +1609,15 @@ def _compact_terminal_required_indices(
         latest_mapping = _json_mapping_or_none(input_value[latest_index])
         latest_type = latest_mapping.get("type") if latest_mapping is not None else None
 
+    # The terminal item is judged on the base-equivalent input: trailing
+    # developer messages the old hoist removed (state anchors kept anyway) do
+    # not hide the tool output or call before them.
+    base_item_indices = {index for index, _ in base_equivalent_input_positions(input_value)}
+    while latest_index > 0 and latest_index not in base_item_indices:
+        latest_index -= 1
+        latest_mapping = _json_mapping_or_none(input_value[latest_index])
+        latest_type = latest_mapping.get("type") if latest_mapping is not None else None
+
     def with_terminal_trigger(indices: set[int]) -> set[int]:
         return indices | terminal_trigger_indices
 
@@ -1947,7 +2098,21 @@ def responses_request_contains_goal_continuation_context(payload: ResponsesReque
         line.lstrip().startswith(_GOAL_CONTINUATION_CONTEXT_PREFIX) for line in instructions.splitlines()
     ):
         return True
-    return responses_input_contains_goal_continuation_context(payload.input)
+    if not is_json_list(payload.input):
+        return responses_input_contains_goal_continuation_context(payload.input)
+    # Judge as before developer messages stayed inline: the text of a developer
+    # message the old hoist moved counts line by line, like ``instructions``.
+    input_items = payload.input
+    base_positions = base_equivalent_input_positions(input_items, hoist=responses_payload_base_hoist(payload))
+    base_indices = {index for index, _ in base_positions}
+    for index, item in enumerate(input_items):
+        item_mapping = _json_mapping_or_none(item)
+        if index in base_indices or item_mapping is None:
+            continue
+        hoisted_text, _ = _split_responses_instruction_item_content(item_mapping)
+        if any(line.lstrip().startswith(_GOAL_CONTINUATION_CONTEXT_PREFIX) for line in hoisted_text.splitlines()):
+            return True
+    return responses_input_contains_goal_continuation_context([item for _, item in base_positions])
 
 
 def _compact_trimmed_input_with_markers(

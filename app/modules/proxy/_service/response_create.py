@@ -40,7 +40,13 @@ from app.core.clients.proxy import (
 )
 from app.core.clock import REAL_SCHEDULER, Scheduler
 from app.core.config.settings import DEFAULT_HOME_DIR, get_settings
-from app.core.openai.requests import ResponsesRequest, base_equivalent_input
+from app.core.openai.requests import (
+    NO_BASE_HOIST,
+    BaseHoist,
+    ResponsesRequest,
+    base_equivalent_input,
+    base_equivalent_input_positions,
+)
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.payload_size import compact_json_dumps_within, utf8_length
@@ -255,15 +261,58 @@ def _fingerprint_input_items(items: Sequence[JsonValue]) -> str:
     return digest.hexdigest()
 
 
-def _input_context(input_items: Sequence[JsonValue], *, json_mode: bool = False) -> tuple[int, str]:
+def _input_context(input_items: Sequence[JsonValue], *, hoist: BaseHoist = NO_BASE_HOIST) -> tuple[int, str]:
     """Return the stored-context ``(count, fingerprint)`` of an ``input`` list.
 
     Stored context is measured on the base-equivalent input (developer messages
     as the old hoist left them), so every continuity decision sees the history
     it saw before developer messages stayed inline on the wire.
     """
-    base_items = base_equivalent_input(list(input_items), json_mode=json_mode)
+    base_items = base_equivalent_input(list(input_items), hoist=hoist)
     return len(base_items), _fingerprint_input_items(base_items)
+
+
+def _input_developer_fingerprints(
+    input_items: Sequence[JsonValue], *, hoist: BaseHoist = NO_BASE_HOIST
+) -> frozenset[str]:
+    """Fingerprints of the developer messages the old hoist would have moved out of ``input``."""
+    items = list(input_items)
+    base_indices = {index for index, _ in base_equivalent_input_positions(items, hoist=hoist)}
+    return frozenset(_fingerprint_input_items([item]) for index, item in enumerate(items) if index not in base_indices)
+
+
+def _wire_remainder_after_stored_prefix(
+    input_items: Sequence[JsonValue],
+    stored_count: int,
+    *,
+    hoist: BaseHoist = NO_BASE_HOIST,
+    stored_developer_fingerprints: frozenset[str] | None,
+) -> list[JsonValue]:
+    """Return what an anchored request sends after the anchor covers a stored prefix.
+
+    The stored prefix is ``stored_count`` base-equivalent items. Its history
+    items, and the developer messages up to the next history item that the
+    stored turn already sent (``stored_developer_fingerprints``), are carried by
+    the anchor and go; a new or changed developer message in that range stays,
+    in order, because the anchor cannot supply it. An unknown set (a stored
+    context recorded without it) keeps every developer message in the range.
+    """
+    items = list(input_items)
+    if stored_count <= 0:
+        return items
+    positions = base_equivalent_input_positions(items, hoist=hoist)
+    range_end = positions[stored_count][0] if stored_count < len(positions) else len(items)
+    base_indices = {index for index, _ in positions}
+    kept = [
+        item
+        for index, item in enumerate(items[:range_end])
+        if index not in base_indices
+        and (
+            stored_developer_fingerprints is None
+            or _fingerprint_input_items([item]) not in stored_developer_fingerprints
+        )
+    ]
+    return [*kept, *items[range_end:]]
 
 
 def _input_prefix_matches_stored_context(
@@ -271,14 +320,14 @@ def _input_prefix_matches_stored_context(
     *,
     stored_count: int,
     stored_fingerprint: str | None,
-    json_mode: bool = False,
+    hoist: BaseHoist = NO_BASE_HOIST,
 ) -> bool:
     """Whether ``input`` extends a stored context, judged on the base-equivalent input."""
     if stored_count <= 0 or stored_fingerprint is None:
         return False
     if not isinstance(input_value, list):
         return False
-    base_items = base_equivalent_input(cast(list[JsonValue], input_value), json_mode=json_mode)
+    base_items = base_equivalent_input(cast(list[JsonValue], input_value), hoist=hoist)
     if len(base_items) <= stored_count:
         return False
     return _fingerprint_input_items(base_items[:stored_count]) == stored_fingerprint

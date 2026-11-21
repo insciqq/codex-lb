@@ -445,6 +445,9 @@ from app.modules.proxy._service.response_create import (
     _input_context as _input_context,
 )
 from app.modules.proxy._service.response_create import (
+    _input_developer_fingerprints as _input_developer_fingerprints,
+)
+from app.modules.proxy._service.response_create import (
     _input_image_request_requires_http_upstream,  # noqa: F401
     _responses_request_contains_input_image,  # noqa: F401
     _responses_request_uses_image_generation,  # noqa: F401
@@ -508,6 +511,9 @@ from app.modules.proxy._service.response_create import (
 )
 from app.modules.proxy._service.response_create import (
     _synthetic_interrupted_function_call_output as _synthetic_interrupted_function_call_output,
+)
+from app.modules.proxy._service.response_create import (
+    _wire_remainder_after_stored_prefix as _wire_remainder_after_stored_prefix,
 )
 from app.modules.proxy._service.response_create import (
     _write_response_create_dump as _write_response_create_dump,

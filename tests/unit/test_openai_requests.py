@@ -29,7 +29,7 @@ from app.core.openai.requests import (
     base_equivalent_wire_prefix_end,
     extract_input_file_ids,
     extract_input_image_file_references,
-    responses_payload_json_mode,
+    responses_payload_base_hoist,
 )
 from app.core.openai.v1_requests import V1ResponsesCompactRequest, V1ResponsesRequest
 from app.core.types import JsonValue
@@ -3835,8 +3835,9 @@ def test_base_equivalent_input_matches_the_old_hoist(json_mode: bool) -> None:
         {"model": "gpt-5.1", "instructions": "", "input": raw_input, "text": text}
     )
 
-    assert responses_payload_json_mode(request) is json_mode
-    assert base_equivalent_input(cast(list[JsonValue], request.input), json_mode=json_mode) == [
+    hoist = responses_payload_base_hoist(request)
+    assert hoist.json_mode is json_mode
+    assert base_equivalent_input(cast(list[JsonValue], request.input), hoist=hoist) == [
         *([{"role": "developer", "content": "Answer in JSON."}] if json_mode else []),
         {"type": "message", "role": "user", "content": [image_part]},
         {"type": "future_directive", "role": "developer", "directive": {}},
@@ -3861,3 +3862,51 @@ def test_base_equivalent_wire_prefix_end_keeps_later_developer_messages_with_the
     assert base_equivalent_wire_prefix_end(wire, 0) == 0
     assert base_equivalent_wire_prefix_end(wire, 1) == 2
     assert base_equivalent_wire_prefix_end(wire, 2) == 4
+
+
+def test_compact_trim_keeps_a_terminal_tool_output_before_a_trailing_developer_message() -> None:
+    """The terminal item is judged as before: a trailing developer message does not hide the output."""
+
+    def message(role: str, text: str, part_type: str = "input_text") -> JsonValue:
+        return {"type": "message", "role": role, "content": [{"type": part_type, "text": text}]}
+
+    filler: list[JsonValue] = [
+        message("user", "x" * 4000) if index % 2 == 0 else message("assistant", "y" * 4000, "output_text")
+        for index in range(240)
+    ]
+    tool_output: JsonValue = {"type": "function_call_output", "call_id": "call_T", "output": "TERMINAL " + "z" * 3000}
+    request = ResponsesCompactRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "base",
+            "previous_response_id": "resp_1",
+            "input": [
+                message("user", "start"),
+                *filler,
+                tool_output,
+                message("developer", "<collaboration_mode>plan</collaboration_mode>"),
+            ],
+        }
+    )
+
+    assert tool_output in cast(list[JsonValue], request.to_payload()["input"])
+
+
+def test_goal_marker_on_a_later_line_of_a_developer_message_is_recognized() -> None:
+    from app.core.openai.requests import (
+        _GOAL_CONTINUATION_CONTEXT_PREFIX,
+        responses_request_contains_goal_continuation_context,
+    )
+
+    request = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "",
+            "input": [
+                {"role": "developer", "content": f"intro\n{_GOAL_CONTINUATION_CONTEXT_PREFIX} restart"},
+                {"role": "user", "content": "hi"},
+            ],
+        }
+    )
+
+    assert responses_request_contains_goal_continuation_context(request) is True

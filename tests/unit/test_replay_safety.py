@@ -2873,20 +2873,23 @@ _PLAIN_HISTORY: list[JsonValue] = [
             False,
             id="account-owned-file",
         ),
-        pytest.param({"role": "developer", "content": "rules", "id": "msg_rules"}, False, id="item-id-not-stripped"),
+        pytest.param(
+            {"role": "developer", "content": "rules", "status": "in_progress", "name": "x"},
+            True,
+            id="extra-keys-the-hoist-dropped",
+        ),
         pytest.param(
             {
                 "role": "developer",
-                "content": "rules",
-                "internal_chat_message_metadata_passthrough": {"turn_id": "t", "account": "acc_owner"},
+                "content": [{"type": "input_text", "text": "see"}, {"type": "input_file", "file_id": "f"}],
             },
             False,
-            id="unknown-metadata",
+            id="account-owned-file-beside-text",
         ),
     ],
 )
 def test_account_neutral_gate_judges_inline_developer_messages(developer: JsonValue, neutral: bool) -> None:
-    """Outside Lite the gate accepts Codex developer metadata, still rejecting account-owned state."""
+    """Outside Lite the gate judges item shapes as the hoist left them, still rejecting account-owned state."""
     payload: dict[str, JsonValue] = {"model": "gpt-5.1", "instructions": "", "input": [developer, *_PLAIN_HISTORY]}
 
     assert responses_payload_is_account_neutral_fresh_replay(payload) is neutral

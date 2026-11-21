@@ -319,7 +319,12 @@ def test_standard_codex_first_turn_after_empty_prewarm_recovers_as_before(app_in
 
     assert terminal["type"] == "response.completed"
     assert connects[0] == 2
-    assert json.loads(replay_upstream.sent_text[0])["input"] == body["input"]
+    # The developer message's client item id is dropped, as the hoist dropped it.
+    expected_input = [
+        {key: value for key, value in item.items() if not (item.get("role") == "developer" and key == "id")}
+        for item in body["input"]
+    ]
+    assert json.loads(replay_upstream.sent_text[0])["input"] == expected_input
 
 
 def test_anchored_tool_continuation_trims_echoed_output_around_a_developer_update(app_instance, monkeypatch):
@@ -371,6 +376,19 @@ def test_anchored_tool_continuation_trims_echoed_output_around_a_developer_updat
             ],
             id="developer-image",
         ),
+        pytest.param(
+            [
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "reasoning", "text": "Use JSON"},
+                        {"type": "input_text", "text": "Use metric measurements."},
+                    ],
+                },
+                _message("user", "List the planets in JSON"),
+            ],
+            id="json-mention-only-in-a-sanitized-part",
+        ),
     ],
 )
 def test_first_turn_after_empty_prewarm_recovers_as_before(app_instance, monkeypatch, first_turn_input):
@@ -421,3 +439,100 @@ def test_full_resend_after_developer_only_turn_is_not_anchored(app_instance, mon
     second = json.loads(upstream.sent_text[1])
     assert "previous_response_id" not in second
     assert second["input"] == frames[1]["input"]
+
+
+def test_trimmed_lite_resend_keeps_developer_boundaries_for_tool_call_dedupe(app_instance, monkeypatch):
+    """A suffix trimmed from a Lite resend keeps its developer messages as dedupe boundaries."""
+    upstream = _SequencedUpstreamWebSocket(
+        [], deferred_message_batches=[_response_batch("resp_ws_first"), _response_batch("resp_ws_second")]
+    )
+    _install_upstreams(monkeypatch, [upstream])
+    prefix = [
+        {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [{"type": "function", "name": "write_stdin", "parameters": {"type": "object"}}],
+        },
+        _message("developer", "base instructions"),
+        _message("user", "poll"),
+    ]
+    call = {"type": "function_call", "name": "write_stdin", "arguments": '{"session_id":7,"chars":""}', "call_id": "c1"}
+    output = {"type": "function_call_output", "call_id": "c1", "output": "waiting"}
+    frames = [
+        {"type": "response.create", "model": "gpt-5.6-sol", "instructions": "", "input": prefix, "stream": True},
+        {
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "instructions": "",
+            "input": [
+                *prefix,
+                call,
+                output,
+                _message("developer", "Poll again"),
+                {**call, "call_id": "c2"},
+                {**output, "call_id": "c2", "output": "done"},
+                _message("user", "summarize"),
+            ],
+            "stream": True,
+        },
+    ]
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"session_id": "thread-ws-lite-dedupe", "openai-beta": "responses_websockets=2026-02-06"},
+        ) as websocket:
+            for frame in frames:
+                websocket.send_text(json.dumps(frame))
+                assert [json.loads(websocket.receive_text())["type"] for _ in range(2)] == [
+                    "response.created",
+                    "response.completed",
+                ]
+
+    second = json.loads(upstream.sent_text[1])
+    assert second["previous_response_id"] == "resp_ws_first"
+    assert [item["call_id"] for item in second["input"] if item.get("type") == "function_call"] == ["c1", "c2"]
+
+
+def test_warm_socket_anchor_forwards_a_changed_developer_message(app_instance, monkeypatch):
+    """The session anchor carries what the stored turn sent; a changed developer message still goes."""
+    upstream = _SequencedUpstreamWebSocket(
+        [], deferred_message_batches=[_response_batch("resp_ws_first"), _response_batch("resp_ws_second")]
+    )
+    _install_upstreams(monkeypatch, [upstream])
+    question = _message("user", "first question")
+    answer = {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "OK"}]}
+    changed = _message("developer", "sandbox=danger-full-access")
+    follow_up = _message("user", "second question")
+    frames = [
+        {
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "instructions": "",
+            "input": [_message("developer", "sandbox=read-only"), question],
+            "stream": True,
+        },
+        {
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "instructions": "",
+            "input": [changed, question, answer, follow_up],
+            "stream": True,
+        },
+    ]
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"session_id": "thread-ws-changed-developer", "openai-beta": "responses_websockets=2026-02-06"},
+        ) as websocket:
+            for frame in frames:
+                websocket.send_text(json.dumps(frame))
+                assert [json.loads(websocket.receive_text())["type"] for _ in range(2)] == [
+                    "response.created",
+                    "response.completed",
+                ]
+
+    second = json.loads(upstream.sent_text[1])
+    assert second["previous_response_id"] == "resp_ws_first"
+    assert second["input"] == [changed, answer, follow_up]

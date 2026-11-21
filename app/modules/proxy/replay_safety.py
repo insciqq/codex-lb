@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import cast
 from urllib.parse import urlsplit
 
-from app.core.openai.requests import extract_input_file_ids, responses_input_uses_lite_tools
+from app.core.openai.requests import base_equivalent_input, extract_input_file_ids, responses_payload_base_hoist
 from app.core.types import JsonValue
 
 _TOOL_CALL_TYPE_BY_OUTPUT_TYPE = {
@@ -328,7 +328,6 @@ def responses_input_items_are_self_contained_fresh_replay(input_items: list[Json
     unsettled_call_ids_by_type: dict[str, set[str]] = {item_type: set() for item_type in _TOOL_CALL_TYPES}
     seen_call_ids: set[str] = set()
     settled_call_ids: set[str] = set()
-    lite_input = responses_input_uses_lite_tools(input_items)
     for item in input_items:
         if not isinstance(item, dict):
             return False
@@ -340,12 +339,7 @@ def responses_input_items_are_self_contained_fresh_replay(input_items: list[Json
             return False
         if item.get("id") not in (None, ""):
             return False
-        metadata = item.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD)
-        if not (
-            _developer_control_metadata_is_account_neutral(metadata)
-            if _is_hoistable_developer_message(item, lite_input=lite_input)
-            else _internal_chat_message_metadata_is_account_neutral(metadata)
-        ):
+        if not _internal_chat_message_metadata_is_account_neutral(item.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD)):
             return False
         item_type_value = item.get("type")
         item_type = item_type_value if isinstance(item_type_value, str) else None
@@ -902,16 +896,20 @@ def responses_payload_is_account_neutral_fresh_replay(payload: Mapping[str, Json
         return False
     if extract_input_file_ids(input_items):
         return False
+    # Item shapes are judged on the base-equivalent input, as before developer
+    # messages stayed inline; file and other account-owned references are
+    # still rejected anywhere in the forwarded input.
+    base_items = base_equivalent_input(input_items, hoist=responses_payload_base_hoist(payload))
     if any(
         isinstance(item, dict)
         and isinstance(item.get("type"), str)
         and item.get("type") not in _ACCOUNT_NEUTRAL_INPUT_ITEM_TYPES
-        for item in input_items
+        for item in base_items
     ):
         return False
-    if not responses_input_items_are_self_contained_fresh_replay(input_items):
+    if not responses_input_items_are_self_contained_fresh_replay(base_items):
         return False
-    if not _input_items_have_valid_account_neutral_shape(input_items):
+    if not _input_items_have_valid_account_neutral_shape(base_items):
         return False
     if _contains_account_scoped_input_state(input_items):
         return False
@@ -1206,14 +1204,9 @@ def _contains_account_scoped_tool_state(value: JsonValue) -> bool:
 
 
 def _input_items_have_valid_account_neutral_shape(input_items: list[JsonValue]) -> bool:
-    lite_input = responses_input_uses_lite_tools(input_items)
     for item in input_items:
         if not isinstance(item, dict):
             return False
-        if _is_hoistable_developer_message(item, lite_input=lite_input):
-            if not _developer_message_content_is_account_neutral(item):
-                return False
-            continue
         item_type = item.get("type")
         if _is_one_of(item_type, {"input_file", "input_image", "input_text"}):
             if not _input_content_part_is_self_contained(item, allow_output=False):
@@ -1228,56 +1221,6 @@ def _input_items_have_valid_account_neutral_shape(input_items: list[JsonValue]) 
         if not _message_has_valid_account_neutral_content(item):
             return False
     return True
-
-
-_DEVELOPER_CONTROL_METADATA_FIELDS = frozenset({"turn_id", "content_item_kinds"})
-
-
-def _is_hoistable_developer_message(item: Mapping[str, JsonValue], *, lite_input: bool) -> bool:
-    """A developer message that stays inline only since the hoist was removed (outside Responses Lite)."""
-    return not lite_input and item.get("role") == "developer" and item.get("type", None) in (None, "message")
-
-
-def _developer_control_metadata_is_account_neutral(value: JsonValue | None) -> bool:
-    """Codex developer metadata: a nonblank ``turn_id`` and nonblank ``content_item_kinds``, nothing else."""
-    if value is None:
-        return True
-    if not isinstance(value, dict) or not value or not set(value) <= _DEVELOPER_CONTROL_METADATA_FIELDS:
-        return False
-    if "turn_id" in value and not _is_nonblank_string(value.get("turn_id")):
-        return False
-    if "content_item_kinds" in value:
-        kinds = value["content_item_kinds"]
-        if not isinstance(kinds, list) or not kinds or not all(_is_nonblank_string(kind) for kind in kinds):
-            return False
-    return True
-
-
-def _developer_message_content_is_account_neutral(item: Mapping[str, JsonValue]) -> bool:
-    """An inline developer message's content is plain instruction text or self-contained parts.
-
-    Blank text parts beside substantive ones are allowed, as the normalizer
-    keeps such a message; account-scoped references still fail.
-    """
-    if item.get("phase") is not None:
-        return False
-    content = item.get("content")
-    if isinstance(content, str):
-        return _is_nonblank_string(content)
-    if not isinstance(content, list) or not content:
-        return False
-    return all(
-        isinstance(part, dict)
-        and (
-            (
-                _is_one_of(part.get("type"), {"input_text", "text"})
-                and isinstance(part.get("text"), str)
-                and not any(key not in _ACCOUNT_NEUTRAL_CONTENT_FIELDS[cast(str, part.get("type"))] for key in part)
-            )
-            or _input_content_part_is_self_contained(part, allow_output=False)
-        )
-        for part in content
-    )
 
 
 def _message_has_valid_account_neutral_content(item: Mapping[str, JsonValue]) -> bool:

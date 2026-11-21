@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, Mock
 import anyio
 import pytest
 
+from app.core.clients.proxy import ProxyResponseError
 from app.core.clients.proxy_websocket import UpstreamWebSocket
 from app.db.models import AccountStatus, HttpBridgeSessionState
 from app.modules.proxy import service as proxy_service
@@ -393,7 +394,10 @@ async def test_developer_only_previous_turn_leaves_no_stored_context(monkeypatch
 
 @pytest.mark.asyncio
 async def test_prepended_developer_message_keeps_the_warm_session_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A developer message placed ahead of the stored history does not break the stored-prefix match."""
+    """A developer message placed ahead of the stored history keeps the stored-prefix match and goes upstream.
+
+    The anchor predates the new instruction, so it cannot supply it.
+    """
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     prefix_items: list[proxy_service.JsonValue] = [
         {"role": "user", "content": [{"type": "input_text", "text": "a"}]},
@@ -434,7 +438,7 @@ async def test_prepended_developer_message_keeps_the_warm_session_anchor(monkeyp
     assert await _drain(service, payload, codex=True) == []
 
     assert prepared[-1].previous_response_id == "resp_session_latest"
-    assert prepared[-1].input == [new_turn]
+    assert prepared[-1].input == [{"role": "developer", "content": "Answer in Spanish"}, new_turn]
 
 
 def test_developer_update_does_not_split_replayed_tool_call_dedupe() -> None:
@@ -564,3 +568,208 @@ async def test_repeated_developer_instruction_is_no_proof_for_cross_transport_fa
     [chunk async for chunk in service.stream_responses(payload, {"session_id": session_id})]
 
     assert [streamed.previous_response_id for streamed in streamed_payloads] == [previous_response_id]
+
+
+@pytest.mark.asyncio
+async def test_developer_item_id_does_not_strand_a_verified_cross_transport_failover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A complete transcript whose only item id sits on a developer message still fails over.
+
+    The hoist dropped that id with the message; it now never reaches upstream,
+    so the replacement body passes the account-neutrality gate as before.
+    """
+    from tests.unit.test_proxy_utils import (
+        AccountSelection,
+        _make_account,
+        _make_proxy_settings,
+        _repo_factory,
+        _RequestLogsRecorder,
+        _SettingsCache,
+    )
+
+    settings = _make_proxy_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    owner_account = _make_account("acc_dev_id_owner")
+    replacement_account = _make_account("acc_dev_id_replacement")
+    session_id = "sid_dev_id_cross_transport"
+    previous_response_id = "resp_dev_id_cross_transport"
+    request_logs.response_owner_by_id[(previous_response_id, None, session_id)] = owner_account.id
+    developer: proxy_service.JsonValue = {
+        "type": "message",
+        "role": "developer",
+        "id": "msg_rules",
+        "content": "Keep rules",
+    }
+    initial_input: list[proxy_service.JsonValue] = [{"role": "user", "content": "first turn"}]
+    service._websocket_continuity_index[(session_id, None)] = proxy_service._WebSocketContinuityState(
+        last_completed_response_id=previous_response_id,
+        last_completed_input_count=len(initial_input),
+        last_completed_input_prefix_fingerprint=proxy_service._fingerprint_input_items(initial_input),
+    )
+    streamed_payloads: list[proxy_service.ResponsesRequest] = []
+
+    async def fake_select_account(**kwargs: Any) -> Any:
+        if kwargs.get("required_account_id") == owner_account.id:
+            return AccountSelection(account=owner_account, error_message=None)
+        return AccountSelection(account=replacement_account, error_message=None)
+
+    async def fake_stream(payload: Any, headers: Any, access_token: Any, account_id: Any, **kwargs: Any):
+        del headers, access_token, kwargs
+        streamed_payloads.append(payload)
+        if account_id == owner_account.chatgpt_account_id:
+            yield (
+                'data: {"type":"response.failed","response":{"id":"resp_owner_quota",'
+                '"status":"failed","error":{"code":"usage_limit_reached",'
+                '"message":"usage limit reached"},"usage":{"input_tokens":0,'
+                '"output_tokens":0,"total_tokens":0}}}\n\n'
+            )
+            return
+        yield (
+            'data: {"type":"response.completed","response":{"id":"resp_replay_ok",'
+            '"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n'
+        )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", AsyncMock(side_effect=fake_select_account))
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock(return_value={"failure_class": "rate_limit"}))
+    monkeypatch.setattr(service, "_resolve_upstream_route_for_account", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=lambda account, **kwargs: account))
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    payload = proxy_service.ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "",
+            "input": [
+                developer,
+                *initial_input,
+                {"role": "assistant", "content": [{"type": "output_text", "text": "Prior answer"}]},
+                {"role": "user", "content": "Continue"},
+            ],
+            "previous_response_id": previous_response_id,
+            "stream": True,
+        }
+    )
+
+    [chunk async for chunk in service.stream_responses(payload, {"session_id": session_id})]
+
+    assert [streamed.previous_response_id for streamed in streamed_payloads] == [previous_response_id, None]
+    replayed_developer = cast(list[dict[str, Any]], streamed_payloads[1].input)[0]
+    assert replayed_developer["role"] == "developer" and "id" not in replayed_developer
+
+
+@pytest.mark.asyncio
+async def test_retry_of_a_pre_upgrade_operation_finds_its_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An operation recorded before developer messages stayed inline still fences its identical retry.
+
+    Its key hashed the frame with the developer text in ``instructions``; the
+    retry must find that row instead of dispatching the turn a second time.
+    """
+    from app.core.openai.requests import base_hoisted_request_text
+    from app.modules.proxy._service.http_bridge import request_submit as request_submit_module
+    from app.modules.proxy.durable_bridge_repository import (
+        durable_bridge_api_key_scope,
+        durable_bridge_operation_fingerprint,
+        durable_bridge_operation_id,
+    )
+    from tests.unit.test_proxy_http_bridge import _make_bridge_session
+
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    send_text = AsyncMock()
+    session = _make_bridge_session(key_value="pre-upgrade-operation")
+    session.upstream = cast(UpstreamWebSocket, SimpleNamespace(send_text=send_text, close=AsyncMock()))
+    session.durable_session_id = "durable-pre-upgrade-operation"
+    session.durable_owner_epoch = 4
+    request_text = json.dumps(
+        {
+            "type": "response.create",
+            "model": "gpt-5.6",
+            "instructions": "",
+            "previous_response_id": "resp-parent",
+            "input": [{"role": "developer", "content": "review only"}, {"role": "user", "content": "continue"}],
+        },
+        separators=(",", ":"),
+    )
+    legacy_text = base_hoisted_request_text(request_submit_module._text_without_account_installation_id(request_text))
+    assert legacy_text is not None and '"instructions":"review only"' in legacy_text
+    legacy_fingerprint = durable_bridge_operation_fingerprint(
+        api_key_scope=durable_bridge_api_key_scope(session.key.api_key_id), request_text=legacy_text
+    )
+    legacy_operation_id = durable_bridge_operation_id(session.durable_session_id, legacy_fingerprint)
+    abandoned = SimpleNamespace(
+        operation_id=legacy_operation_id,
+        session_id=session.durable_session_id,
+        state="abandoned",
+        created=False,
+        event_spool_complete=False,
+        response_id=None,
+    )
+    fresh = SimpleNamespace(
+        operation_id="operation-new-format",
+        session_id=session.durable_session_id,
+        state="submitted",
+        created=True,
+        event_spool_complete=False,
+        response_id=None,
+    )
+
+    async def get_operation_by_fingerprint(*, request_fingerprint: str, **kwargs: Any) -> Any:
+        del kwargs
+        return abandoned if request_fingerprint == legacy_fingerprint else None
+
+    async def get_operation(*, operation_id: str) -> Any:
+        return abandoned if operation_id == legacy_operation_id else None
+
+    async def record_operation(*, request_fingerprint: str, **kwargs: Any) -> Any:
+        del kwargs
+        return abandoned if request_fingerprint == legacy_fingerprint else fresh
+
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-pre-upgrade-operation",
+        model="gpt-5.6",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        hard_continuity_anchor=True,
+        previous_response_id="resp-parent",
+        request_text=request_text,
+        transport="http",
+        skip_request_log=True,
+    )
+    service._durable_bridge = cast(
+        Any,
+        SimpleNamespace(
+            get_operation_by_fingerprint=get_operation_by_fingerprint,
+            get_operation=get_operation,
+            record_operation=record_operation,
+            claim_unknown_operation_for_recovery=AsyncMock(),
+            rollback_recovery_attempt_before_dispatch=AsyncMock(return_value=True),
+        ),
+    )
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings",
+        lambda: _make_app_settings(http_responses_session_bridge_instance_id="instance-pre-upgrade-operation"),
+    )
+    monkeypatch.setattr(service, "_http_bridge_precreated_retry_allowed", AsyncMock(return_value=True))
+    monkeypatch.setattr(service, "_http_bridge_precreated_retry_cooldown_seconds", AsyncMock(return_value=0.0))
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        await service._submit_http_bridge_request_with_handoff(
+            session,
+            request_state=request_state,
+            text_data=request_text,
+            queue_limit=8,
+            request_scope_id="scope-pre-upgrade-operation",
+            owned_unanchored_handoff=False,
+        )
+
+    # The abandoned pre-upgrade row is found: full-history recovery, no send.
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.payload["error"]["code"] == "previous_response_not_found"
+    send_text.assert_not_awaited()

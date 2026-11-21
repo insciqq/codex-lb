@@ -239,6 +239,14 @@ def _input_context(*args: Any, **kwargs: Any) -> Any:
     return _service_global("_input_context")(*args, **kwargs)
 
 
+def _input_developer_fingerprints(*args: Any, **kwargs: Any) -> Any:
+    return _service_global("_input_developer_fingerprints")(*args, **kwargs)
+
+
+def _wire_remainder_after_stored_prefix(*args: Any, **kwargs: Any) -> Any:
+    return _service_global("_wire_remainder_after_stored_prefix")(*args, **kwargs)
+
+
 def _normalize_session_id(*args: Any, **kwargs: Any) -> Any:
     return _service_global("_normalize_session_id")(*args, **kwargs)
 

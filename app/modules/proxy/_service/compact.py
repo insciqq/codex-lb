@@ -36,7 +36,7 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.errors import openai_error
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.models import CompactResponsePayload
-from app.core.openai.requests import ResponsesCompactRequest, base_equivalent_input, responses_input_uses_lite_tools
+from app.core.openai.requests import ResponsesCompactRequest, base_equivalent_input
 from app.core.resilience.network_recovery import ProcessNetworkRecovery
 from app.core.resilience.toggles import bind_resilience_toggles
 from app.core.types import JsonValue
@@ -591,10 +591,6 @@ def _compact_account_neutral_replay_payload(
         return None
     replay_source = payload.model_dump(mode="json", exclude_none=True)
     replay_source.pop("previous_response_id", None)
-    # A developer message stays inline only since the hoist was removed; its
-    # client item id belongs to the owner account, so the replacement does not
-    # get it (the hoist dropped it too).
-    replay_source["input"] = _without_inline_developer_ids(replay_source.get("input"))
     request_input = replay_source.get("input")
     if not isinstance(request_input, list) or len(request_input) <= 1:
         return None
@@ -615,17 +611,6 @@ def _compact_account_neutral_replay_payload(
     if not _compact_replay_history_retains_prior_output(base_items):
         return None
     return replay_payload
-
-
-def _without_inline_developer_ids(input_value: JsonValue) -> JsonValue:
-    if not isinstance(input_value, list) or responses_input_uses_lite_tools(input_value):
-        return input_value
-    return [
-        {key: value for key, value in item.items() if key != "id"}
-        if isinstance(item, dict) and item.get("role") == "developer" and item.get("type", None) in (None, "message")
-        else item
-        for item in input_value
-    ]
 
 
 class _CompactMixin:

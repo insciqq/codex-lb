@@ -85,8 +85,7 @@ from app.core.openai.parsing import (
 )
 from app.core.openai.requests import (
     ResponsesRequest,
-    base_equivalent_wire_prefix_end,
-    responses_payload_json_mode,
+    responses_payload_base_hoist,
 )
 from app.core.resilience.network_recovery import (
     NetworkRecoveryDecision,
@@ -3406,6 +3405,7 @@ class _WebSocketMixin:
             responses_payload = responses_payload.model_copy(update={"client_metadata": client_metadata})
         previous_response_trimmed_input_count: int | None = None
         previous_response_trimmed_input_fingerprint: str | None = None
+        previous_response_trimmed_developer_fingerprints: frozenset[str] | None = None
         # A client-supplied ``previous_response_id`` is never replayed without
         # its anchor: the proxy cannot tell the client's delta from a full
         # history, so a stale anchor surfaces ``previous_response_not_found``
@@ -3413,13 +3413,16 @@ class _WebSocketMixin:
         client_supplied_previous_response_id = responses_payload.previous_response_id is not None
         if responses_payload.previous_response_id is not None and isinstance(responses_payload.input, list):
             previous_response_input_items = cast(list[JsonValue], responses_payload.input)
-            json_mode = responses_payload_json_mode(responses_payload)
+            hoist = responses_payload_base_hoist(responses_payload)
             trimmed_input_items = _trim_websocket_previous_response_input_items(
-                previous_response_input_items, json_mode=json_mode
+                previous_response_input_items, hoist=hoist
             )
             if trimmed_input_items != previous_response_input_items:
                 previous_response_trimmed_input_count, previous_response_trimmed_input_fingerprint = (
-                    _facade()._input_context(previous_response_input_items, json_mode=json_mode)
+                    _facade()._input_context(previous_response_input_items, hoist=hoist)
+                )
+                previous_response_trimmed_developer_fingerprints = _facade()._input_developer_fingerprints(
+                    previous_response_input_items, hoist=hoist
                 )
                 responses_payload = responses_payload.model_copy(update={"input": trimmed_input_items})
         validate_model_access(refreshed_api_key, responses_payload.model)
@@ -3428,6 +3431,7 @@ class _WebSocketMixin:
         original_full_resend_payload: ResponsesRequest | None = None
         original_input_item_count: int | None = None
         original_input_fingerprint: str | None = None
+        original_input_developer_fingerprints: frozenset[str] | None = None
         # Classify restart authority from the complete normalized client body,
         # before ordinary direct-WebSocket continuity injects a
         # ``previous_response_id`` and trims historical input. That injected
@@ -3446,20 +3450,26 @@ class _WebSocketMixin:
             )
         if session_anchor is not None:
             original_input_items = cast(list[JsonValue], responses_payload.input)
-            session_json_mode = responses_payload_json_mode(responses_payload)
+            session_hoist = responses_payload_base_hoist(responses_payload)
             original_input_item_count, original_input_fingerprint = _facade()._input_context(
-                original_input_items, json_mode=session_json_mode
+                original_input_items, hoist=session_hoist
+            )
+            original_input_developer_fingerprints = _facade()._input_developer_fingerprints(
+                original_input_items, hoist=session_hoist
             )
             original_full_resend_payload = responses_payload
-            # The stored count is measured on the base-equivalent input; trim
-            # the wire up to the item behind it.
-            stored_wire_end = base_equivalent_wire_prefix_end(
-                original_input_items, session_anchor.stored_input_item_count, json_mode=session_json_mode
-            )
+            # The anchor carries the stored prefix (measured on the
+            # base-equivalent input) and the developer messages the stored turn
+            # sent; new or changed developer messages in that range still go.
             responses_payload = responses_payload.model_copy(
                 update={
                     "previous_response_id": session_anchor.previous_response_id,
-                    "input": original_input_items[stored_wire_end:],
+                    "input": _facade()._wire_remainder_after_stored_prefix(
+                        original_input_items,
+                        session_anchor.stored_input_item_count,
+                        hoist=session_hoist,
+                        stored_developer_fingerprints=session_anchor.stored_developer_fingerprints,
+                    ),
                 }
             )
         if (
@@ -3549,6 +3559,7 @@ class _WebSocketMixin:
             request_state.proxy_injected_previous_response_id = True
             request_state.input_item_count = original_input_item_count or request_state.input_item_count
             request_state.input_full_fingerprint = original_input_fingerprint
+            request_state.input_developer_fingerprints = original_input_developer_fingerprints
             if original_full_resend_payload is not None:
                 request_state.fresh_upstream_request_text = _facade()._response_create_text_with_size_guard(
                     original_full_resend_payload,
@@ -3594,6 +3605,7 @@ class _WebSocketMixin:
         if previous_response_trimmed_input_count is not None:
             request_state.input_item_count = previous_response_trimmed_input_count
             request_state.input_full_fingerprint = previous_response_trimmed_input_fingerprint
+            request_state.input_developer_fingerprints = previous_response_trimmed_developer_fingerprints
             _facade().logger.info(
                 "websocket_previous_response_input_trimmed request_id=%s original_items=%s trimmed_to=%s "
                 "previous_response_id=%s",

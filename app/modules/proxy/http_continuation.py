@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping
 from hashlib import sha256
 
-from app.core.openai.requests import ResponsesRequest
+from app.core.openai.requests import ResponsesRequest, base_equivalent_input, responses_payload_base_hoist
 from app.modules.proxy.affinity import (
     _prompt_cache_key_from_request_model,
     _sticky_key_from_session_header,
@@ -33,7 +33,8 @@ def http_history_signal(payload: ResponsesRequest) -> str | None:
     if not isinstance(payload.input, list):
         return None
     assistant_seen = False
-    for item in payload.input:
+    # Judge the history the old hoist left in ``input``.
+    for item in base_equivalent_input(payload.input, hoist=responses_payload_base_hoist(payload)):
         if not isinstance(item, dict):
             continue
         item_type = item.get("type")
@@ -58,7 +59,7 @@ def inferred_http_bridge_key(payload: ResponsesRequest) -> str | None:
         kind = "conversation"
     elif http_history_signal(payload) is not None and isinstance(payload.input, list):
         initial_context = []
-        for item in payload.input:
+        for item in base_equivalent_input(payload.input, hoist=responses_payload_base_hoist(payload)):
             if not isinstance(item, dict):
                 continue
             if item.get("role") in ("system", "developer", "user"):

@@ -47,7 +47,7 @@ from app.core.openai.requests import (
     ResponsesRequest,
     base_equivalent_input,
     extract_input_file_ids,
-    responses_payload_json_mode,
+    responses_payload_base_hoist,
 )
 from app.core.resilience.network_recovery import (
     NetworkRecoveryDecision,
@@ -258,7 +258,7 @@ def _verified_cross_transport_fresh_replay(
         input_value,
         stored_count=continuity_state.last_completed_input_count,
         stored_fingerprint=continuity_state.last_completed_input_prefix_fingerprint,
-        json_mode=responses_payload_json_mode(payload),
+        hoist=responses_payload_base_hoist(payload),
     ):
         return None
     fresh_payload = payload.model_copy(update={"previous_response_id": None})
@@ -278,7 +278,7 @@ def _project_unanchored_account_neutral_replay(payload: ResponsesRequest) -> Res
     input_items = cast(list[Any], input_value)
     # Judge the history the old hoist left in ``input``; the wire keeps its
     # developer messages, with the same response-owned bookkeeping removed.
-    base_items = base_equivalent_input(input_items, json_mode=responses_payload_json_mode(payload))
+    base_items = base_equivalent_input(input_items, hoist=responses_payload_base_hoist(payload))
     projection = project_responses_input_retaining_prior_output(base_items)
     if projection is not None and base_items != input_items:
         projection = project_responses_input_for_account_neutral_fresh_replay(
