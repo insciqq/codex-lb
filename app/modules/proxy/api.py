@@ -309,6 +309,7 @@ from app.modules.proxy.images_observability import (
 )
 from app.modules.proxy.rate_limit_events import (
     CodexQuotaView,
+    codex_quota_view_for_client,
     is_codex_rate_limits_block,
     project_codex_rate_limit_event,
     rate_limit_headers_for_client,
@@ -1283,13 +1284,14 @@ async def responses(
         # not reject them.
         if not backend_non_streaming_requested:
             responses_payload.stream = True
-        rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
+        codex_quota_view = await _codex_quota_view_for_request(context, api_key)
         return await _source_responses_response(
             request,
             responses_payload,
             source=source,
             api_key=api_key,
-            rate_limit_headers=rate_limit_headers,
+            rate_limit_headers=dict(codex_quota_view.headers),
+            codex_quota_view=codex_quota_view,
             pre_normalization_effort=pre_normalization_effort,
             enforce_openai_sdk_contract=openai_sdk_request,
             native_codex_heartbeat=native_codex_heartbeat,
@@ -1490,13 +1492,14 @@ async def v1_responses(
         # Opportunistic admission gates subscription *account* capacity;
         # source-routed requests use no account, so a closed/empty pool must
         # not reject them.
-        rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
+        codex_quota_view = await _codex_quota_view_for_request(context, api_key)
         return await _source_responses_response(
             request,
             responses_payload,
             source=source,
             api_key=api_key,
-            rate_limit_headers=rate_limit_headers,
+            rate_limit_headers=dict(codex_quota_view.headers),
+            codex_quota_view=codex_quota_view,
             pre_normalization_effort=pre_normalization_effort,
             context=context,
         )
@@ -2325,6 +2328,14 @@ async def _rate_limit_headers_for_request(
     return await rate_limit_headers_for_client(api_key, context.service.rate_limit_headers)
 
 
+async def _codex_quota_view_for_request(
+    context: ProxyContext,
+    api_key: ApiKeyData | None,
+) -> CodexQuotaView:
+    """One quota-visibility snapshot for both the response headers and the stream events."""
+    return await codex_quota_view_for_client(api_key, context.service.rate_limit_headers)
+
+
 async def _release_reservation_deferring_cancellation(
     reservation: ApiKeyUsageReservationData,
 ) -> None:
@@ -2351,8 +2362,35 @@ async def _rate_limit_headers_with_reservation_cleanup(
     *,
     reservation_cleanup: _ResponsesReservationCleanup | None = None,
 ) -> dict[str, str]:
+    return await _release_reservation_on_lookup_failure(
+        _rate_limit_headers_for_request(context, api_key),
+        owned_reservation,
+        reservation_cleanup=reservation_cleanup,
+    )
+
+
+async def _codex_quota_view_with_reservation_cleanup(
+    context: ProxyContext,
+    api_key: ApiKeyData | None,
+    owned_reservation: ApiKeyUsageReservationData | None,
+    *,
+    reservation_cleanup: _ResponsesReservationCleanup | None = None,
+) -> CodexQuotaView:
+    return await _release_reservation_on_lookup_failure(
+        _codex_quota_view_for_request(context, api_key),
+        owned_reservation,
+        reservation_cleanup=reservation_cleanup,
+    )
+
+
+async def _release_reservation_on_lookup_failure(
+    lookup: Coroutine[Any, Any, _T],
+    owned_reservation: ApiKeyUsageReservationData | None,
+    *,
+    reservation_cleanup: _ResponsesReservationCleanup | None,
+) -> _T:
     try:
-        return await _rate_limit_headers_for_request(context, api_key)
+        return await lookup
     except BaseException:
         if reservation_cleanup is not None:
             await reservation_cleanup.release(action="rate limit headers")
@@ -5237,6 +5275,7 @@ async def _source_responses_response(
     enforce_openai_sdk_contract: bool = True,
     native_codex_heartbeat: bool = False,
     context: ProxyContext | None = None,
+    codex_quota_view: CodexQuotaView | None = None,
 ) -> Response:
     """Serve a Responses request from an OpenAI-compatible model source.
 
@@ -5309,10 +5348,7 @@ async def _source_responses_response(
                     enforce_openai_sdk_contract=enforce_openai_sdk_contract,
                     native_codex_heartbeat=native_codex_heartbeat,
                     preserve_native_failure_lifecycle=preserve_native_failure_lifecycle,
-                    codex_quota_view=CodexQuotaView(
-                        hidden=await _hide_upstream_quota_for_api_key_clients(api_key),
-                        headers=rate_limit_headers,
-                    ),
+                    codex_quota_view=codex_quota_view or CodexQuotaView(hidden=True, headers={}),
                 ),
             )
             return SourceStreamingResponse(
@@ -6573,16 +6609,19 @@ async def _stream_responses(
     responses_owner_forward_dispatched_event = asyncio.Event()
     responses_owner_forward_rejected_event = asyncio.Event()
 
-    rate_limit_headers = (
-        await _rate_limit_headers_with_reservation_cleanup(
+    # One visibility snapshot, read before any startup work begins, serves
+    # both the response headers and the native quota events.
+    codex_quota_view = (
+        await _codex_quota_view_with_reservation_cleanup(
             context,
             api_key,
             reservation if owns_reservation else None,
             reservation_cleanup=reservation_cleanup if owns_reservation else None,
         )
         if include_rate_limit_headers
-        else {}
+        else None
     )
+    rate_limit_headers = dict(codex_quota_view.headers) if codex_quota_view is not None else {}
     effective_headers = forwarded_headers or request.headers
     preserve_native_failure_lifecycle = not enforce_openai_sdk_contract and _is_native_codex_request(effective_headers)
     bridge_active = await _http_bridge_active_for_request(
@@ -6847,11 +6886,7 @@ async def _stream_responses(
         ),
         enforce_openai_sdk_contract=enforce_openai_sdk_contract,
         preserve_native_failure_lifecycle=preserve_native_failure_lifecycle,
-        codex_quota_view=(
-            CodexQuotaView(hidden=await _hide_upstream_quota_for_api_key_clients(api_key), headers=rate_limit_headers)
-            if include_rate_limit_headers
-            else None
-        ),
+        codex_quota_view=codex_quota_view,
     )
     service_stream = stream
     use_codex_keepalive = native_codex_heartbeat or not enforce_openai_sdk_contract
@@ -9448,6 +9483,12 @@ async def _normalize_public_responses_stream(
                     # byte-identically instead of eating upstream data: the pre-wrap
                     # contract was raw passthrough, and merged model-source routing
                     # tests assert source bytes reach the client.
+                    if is_codex_rate_limits_block({}, event_block) and (
+                        enforce_openai_sdk_contract or (codex_quota_view is not None and codex_quota_view.hidden)
+                    ):
+                        # A quota block named only by its SSE event field
+                        # still follows the quota policy without usable JSON.
+                        continue
                     if is_unparseable_data:
                         # Only unparseable *data* suppresses terminal synthesis;
                         # valid non-data control blocks (e.g. ``retry:``) keep the

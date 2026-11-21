@@ -140,6 +140,32 @@ async def test_source_sse_projects_split_quota_events_and_preserves_terminal(vis
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("data", ["[]", '{"rate_limits":{"primary":{"used_percent":97'])
+@pytest.mark.parametrize("view", ["hidden", "public_sdk", "visible"])
+async def test_source_sse_named_quota_block_without_usable_json_follows_policy(data, view):
+    quota_block = f"event: codex.rate_limits\ndata: {data}\n\n"
+    unrelated_block = f"event: vendor.note\ndata: {data}\n\n"
+
+    async def source():
+        yield quota_block.encode()
+        yield unrelated_block.encode()
+        yield b'data: {"type":"response.completed","response":{"id":"resp_source","output":[]}}\n\n'
+
+    chunks = [
+        chunk
+        async for chunk in proxy_api._wrap_source_responses_public_stream(
+            source(),
+            enforce_openai_sdk_contract=view == "public_sdk",
+            codex_quota_view=proxy_api.CodexQuotaView(hidden=view == "hidden", headers={}),
+        )
+    ]
+
+    joined = "".join(chunks)
+    assert (quota_block in joined) is (view == "visible")
+    assert unrelated_block in joined
+
+
+@pytest.mark.asyncio
 async def test_websocket_quota_projection_does_not_swallow_cancellation():
     text = json.dumps({"type": "codex.rate_limits", "rate_limits": {}})
     proxy = SimpleNamespace(

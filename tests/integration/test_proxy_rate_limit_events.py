@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 import app.modules.proxy.api as proxy_api
+import app.modules.proxy.rate_limit_events as rate_limit_events
 import app.modules.proxy.service as proxy_service
 from app.core.clients.proxy_websocket import UpstreamWebSocketMessage
 from app.core.config.dashboard_overrides import with_dashboard_overrides
@@ -244,6 +246,61 @@ async def test_native_sse_projects_pool_and_honors_privacy(
         register_live_usage_publisher(None)
         for session in list(service._http_bridge_sessions.values()):
             await service._close_http_bridge_session(session)
+
+
+async def test_native_sse_reads_quota_visibility_once_before_startup(
+    async_client,
+    monkeypatch,
+    quota_pool,
+):
+    # Headers and quota events share one visibility snapshot taken before the
+    # startup probe; a later settings read could fail after the probe started
+    # and leave it running, or disagree with the headers after a toggle.
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "hideUpstreamQuotaFromApiKeys": False,
+            "apiKeyAuthEnabled": True,
+            "httpDownstreamTransportPolicy": "always_http",
+        },
+    )
+    assert settings.status_code == 200, settings.text
+    real_cache = rate_limit_events.get_settings_cache()
+    reads = 0
+
+    async def get_once():
+        nonlocal reads
+        reads += 1
+        if reads > 1:
+            raise RuntimeError("settings cache refresh failed")
+        return await real_cache.get()
+
+    monkeypatch.setattr(rate_limit_events, "get_settings_cache", lambda: SimpleNamespace(get=get_once))
+
+    async def select_account(self, *args, **kwargs):
+        return AccountSelection(account=quota_pool.account, error_message=None, error_code=None)
+
+    async def fresh(self, account, **kwargs):
+        return account
+
+    async def stream(*args, **kwargs):
+        for event in _upstream_events():
+            yield "data: " + json.dumps(event) + "\n\n"
+
+    monkeypatch.setattr(proxy_service.ProxyService, "_select_account_with_budget", select_account)
+    monkeypatch.setattr(proxy_service.ProxyService, "_ensure_fresh_with_budget", fresh)
+    monkeypatch.setattr(proxy_service, "core_stream_responses", stream)
+
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        headers={"Authorization": f"Bearer {quota_pool.key}", "user-agent": "codex-cli/0.154.0"},
+        json={"model": "gpt-5.6-sol", "instructions": "", "input": "hi", "stream": True},
+    )
+
+    assert response.status_code == 200, response.text
+    assert reads == 1
+    assert float(response.headers["x-codex-secondary-used-percent"]) == 66.5
+    _assert_downstream(_sse_events(response.text), hidden=False, reset_at=quota_pool.reset_at)
 
 
 async def test_owner_forward_hop_relays_upstream_quota_event_to_origin(

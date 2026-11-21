@@ -11801,7 +11801,9 @@ durations, reset timestamps, and credits. HTTP SSE MUST use its response's
 quota-header snapshot; WebSocket egress MUST use the existing aggregate cache.
 Source-routed SSE MUST follow the same rule. An SSE block is a quota event when
 its JSON `type` is `codex.rate_limits` or, when the JSON has no `type`, when its
-SSE `event` field is `codex.rate_limits`. For a client that may see upstream
+SSE `event` field is `codex.rate_limits`, including a block whose data is not a
+JSON object. The response headers and the quota events of one request MUST use a
+single visibility snapshot read before startup work begins. For a client that may see upstream
 quota, an event the pool cannot represent (a model-specific or otherwise
 unrepresented limit family, or no pooled primary or secondary window) MUST pass
 through unchanged; the service MUST NOT substitute a global aggregate for it.
@@ -11829,8 +11831,8 @@ block unchanged, including its SSE event name, so the origin can project it.
 
 #### Scenario: A quota event named only by its SSE event field
 
-- **GIVEN** a source sends `event: codex.rate_limits` with JSON data that has no `type`
-- **WHEN** the client may not see upstream quota
+- **GIVEN** a source sends `event: codex.rate_limits` with JSON data that has no `type`, or with data that is not a JSON object
+- **WHEN** the client may not see upstream quota, or the stream follows the public OpenAI SDK contract
 - **THEN** the downstream stream omits the block
 
 #### Scenario: A quota cache read fails on an established WebSocket
