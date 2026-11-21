@@ -751,6 +751,98 @@ def test_json_suffix_order(app_instance, monkeypatch):
     assert _ws_last_mode(chain) == "Default"
 
 
+def _ws_with_id(item: dict[str, object], item_id: str) -> dict[str, object]:
+    return {**item, "id": item_id}
+
+
+def _ws_with_image(text: str) -> dict[str, object]:
+    item = _message("developer", text)
+    return {
+        **item,
+        "content": [
+            *cast(list[object], item["content"]),
+            {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+        ],
+    }
+
+
+_WS_SKILLS_V1 = _message("developer", "Skills list version 1")
+_WS_SKILLS_V2 = _message("developer", "Skills list version 2")
+_WS_DEFAULT_JSON = {
+    **_ws_mode("Default"),
+    "content": [
+        *cast(list[object], _ws_mode("Default")["content"]),
+        {"type": "input_text", "text": "Reply in JSON."},
+    ],
+}
+_WS_NOTES_ENGLISH = _ws_with_image("Use English")
+_WS_NOTES_FRENCH = _ws_with_image("only use French")
+
+
+@pytest.mark.parametrize(
+    ("stored", "resend_prefix", "expected_developer", "frame_fields"),
+    [
+        # The old hoist kept the JSON-mentioning Default message (and its id)
+        # in ``input``; the skills refresh resends it after Plan.
+        pytest.param(
+            [
+                _ws_with_id(_WS_SKILLS_V1, "msg_skills"),
+                _ws_with_id(_WS_PLAN, "msg_plan"),
+                _ws_with_id(_WS_DEFAULT_JSON, "msg_mode"),
+                _WS_QUESTION,
+            ],
+            [
+                _ws_with_id(_WS_SKILLS_V2, "msg_skills"),
+                _ws_with_id(_WS_PLAN, "msg_plan"),
+                _ws_with_id(_WS_DEFAULT_JSON, "msg_mode"),
+                _WS_QUESTION,
+            ],
+            [_WS_SKILLS_V2, _WS_PLAN, _WS_DEFAULT_JSON],
+            {"text": {"format": {"type": "json_object"}}},
+            id="json-kept-developer",
+        ),
+        # The old hoist kept the image (and the id) as a user item; the
+        # refresh before it resends the whole message.
+        pytest.param(
+            [_ws_with_id(_WS_SKILLS_V1, "msg_skills"), _ws_with_id(_WS_NOTES_ENGLISH, "msg_notes"), _WS_QUESTION],
+            [_ws_with_id(_WS_SKILLS_V2, "msg_skills"), _ws_with_id(_WS_NOTES_ENGLISH, "msg_notes"), _WS_QUESTION],
+            [_WS_SKILLS_V2, _WS_NOTES_ENGLISH],
+            {},
+            id="developer-with-attachment",
+        ),
+        pytest.param(
+            [_ws_with_id(_WS_NOTES_ENGLISH, "msg_notes"), _WS_QUESTION],
+            [_ws_with_id(_WS_NOTES_FRENCH, "msg_notes"), _WS_QUESTION],
+            [_WS_NOTES_FRENCH],
+            {},
+            id="changed-text-beside-an-attachment",
+        ),
+    ],
+)
+def test_warm_socket_resends_developer_messages_without_their_item_ids(
+    app_instance, monkeypatch, stored, resend_prefix, expected_developer, frame_fields
+):
+    """A developer message the session anchor sends again goes without its client item id.
+
+    The anchored chain already holds the stored turn's items with their ids,
+    so the same id again would be a duplicate item. The record keeps the
+    client's items, so the turn after sends no developer message again.
+    """
+    resend = [*resend_prefix, _WS_ANSWER, _WS_FOLLOW_UP]
+
+    frames = _run_socket_turns(
+        app_instance,
+        monkeypatch,
+        "ws_resent_ids",
+        [stored, resend, [*resend, _WS_ANSWER, _WS_THIRD]],
+        **frame_fields,
+    )
+
+    assert any("id" in item for item in cast(list[dict[str, object]], frames[0]["input"]))
+    assert frames[1]["input"] == [*expected_developer, _WS_ANSWER, _WS_FOLLOW_UP]
+    assert frames[2]["input"] == [_WS_ANSWER, _WS_THIRD]
+
+
 _CODEX_BODIES = sorted(
     path for path in Path("tests/fixtures/codex_bodies").glob("*.json") if path.name != "provenance.json"
 )

@@ -51,7 +51,9 @@ question about it):
   sends none again, so an append-only history (the Codex shape) repeats nothing. The client's developer messages thus
   reach the chain in client order and its last one is the last one upstream, except for the removals and JSON-mode
   moves listed under the limitations below. A developer message whose attachment the hoist kept as a `user` item is
-  matched as a whole message.
+  matched as a whole message. A developer message sent again goes without its client item id: one the hoist kept in
+  `input` (for JSON mode, or beside an attachment) already sits in the anchored chain with that id, and upstream can
+  reject a duplicate item id; the record keeps the client's items, so the turn after still matches.
 - Operation keys: durable operation and recovery-attempt records from before the change still match an identical
   retry, through a second lookup of the key rebuilt in the old frame shape (the `instructions` text the old hoist
   produced from the raw request, recorded at validation).

@@ -326,6 +326,75 @@ async def test_json_suffix_order(async_client, app_instance, monkeypatch):
     assert _last_collaboration_mode([*frames[0]["input"], *frames[1]["input"]]) == "Default"
 
 
+def _with_id(item: dict[str, object], item_id: str) -> dict[str, object]:
+    return {**item, "id": item_id}
+
+
+def _without_id(item: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in item.items() if key != "id"}
+
+
+# (stored turn, next full resend, the developer messages the anchored request
+# resends, JSON mode). Codex gives every input item a client id.
+_RESENT_ID_CASES = {
+    # The old hoist kept the JSON-mentioning Default message (and its id) in
+    # ``input``; the skills refresh resends it after Plan.
+    "json-kept-developer": (
+        [_with_id(_SKILLS_V1, "msg_skills"), _with_id(_PLAN, "msg_plan"), _with_id(_DEFAULT_JSON, "msg_mode"), _U1],
+        [_with_id(_SKILLS_V2, "msg_skills"), _with_id(_PLAN, "msg_plan"), _with_id(_DEFAULT_JSON, "msg_mode"), _U1],
+        [_SKILLS_V2, _PLAN, _DEFAULT_JSON],
+        True,
+    ),
+    # The old hoist kept the attachment (and the id) as a user item; the
+    # refresh before it resends the whole message.
+    "developer-with-attachment": (
+        [_with_id(_SKILLS_V1, "msg_skills"), _with_id(_MIXED_ENGLISH, "msg_notes"), _U1],
+        [_with_id(_SKILLS_V2, "msg_skills"), _with_id(_MIXED_ENGLISH, "msg_notes"), _U1],
+        [_SKILLS_V2, _MIXED_ENGLISH],
+        False,
+    ),
+    "changed-text-beside-an-attachment": (
+        [_with_id(_MIXED_ENGLISH, "msg_notes"), _U1],
+        [_with_id(_MIXED_FRENCH, "msg_notes"), _U1],
+        [_MIXED_FRENCH],
+        False,
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", list(_RESENT_ID_CASES))
+async def test_warm_bridge_resends_developer_messages_without_their_item_ids(
+    async_client, app_instance, monkeypatch, case
+):
+    """A developer message the anchored request sends again goes without its client item id.
+
+    The anchored chain already holds the stored turn's items with their ids,
+    so the same id again would be a duplicate item. The record keeps the
+    client's items, so the turn after sends no developer message again.
+    """
+    del app_instance
+    stored, resend_prefix, expected_developer, json_mode = _RESENT_ID_CASES[case]
+    resend = [*resend_prefix, _A1, _U2]
+    body: dict[str, object] = {"model": "gpt-5.1", "instructions": "You are Codex.", "stream": True}
+    if json_mode:
+        body["text"] = {"format": {"type": "json_object"}}
+    upstreams = await _run_bridge_turns(
+        async_client,
+        monkeypatch,
+        f"resent_ids_{case.replace('-', '_')}",
+        [(stored, None), (resend, None), ([*resend, _A1, _U3], None)],
+        body=body,
+    )
+
+    assert len(upstreams) == 1
+    frames = [json.loads(text) for text in upstreams[0].sent_text]
+    assert [frame.get("previous_response_id") for frame in frames] == [None, "resp_conn1_1", "resp_conn1_2"]
+    assert any("id" in item for item in frames[0]["input"])
+    assert frames[1]["input"] == [*(_without_id(item) for item in expected_developer), _A1, _U2]
+    assert frames[2]["input"] == [_A1, _U3]
+
+
 _CODEX_BODIES = sorted(
     path for path in Path("tests/fixtures/codex_bodies").glob("*.json") if path.name != "provenance.json"
 )

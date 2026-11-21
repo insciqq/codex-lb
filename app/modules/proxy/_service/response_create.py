@@ -314,7 +314,10 @@ def _wire_remainder_after_stored_prefix(
     range is sent in client order, including one the old hoist kept inline
     for JSON mode, so a refreshed or reordered message cannot end up behind
     a later one the anchor already carries. An unknown record (``None``)
-    matches nothing.
+    matches nothing. A sent developer message goes without its client item
+    id: the anchored chain can already hold that id (a message the old hoist
+    kept inline, or one with an attachment), and the hoist never sent the id
+    of one it moved. Matching and the record use the client's items as sent.
     """
     items = list(input_items)
     if stored_count <= 0:
@@ -328,15 +331,21 @@ def _wire_remainder_after_stored_prefix(
     for index, item in enumerate(items[:range_end]):
         if sent:
             if is_json_mapping(item) and item.get("role") == "developer" and item.get("type") in (None, "message"):
-                sent.append(item)
+                sent.append(_without_item_id(item))
             continue
         if index not in altered:
             continue
         if matched < len(recorded) and _fingerprint_input_items([item]) == recorded[matched]:
             matched += 1
             continue
-        sent.append(item)
+        sent.append(_without_item_id(item))
     return [*sent, *items[range_end:]]
+
+
+def _without_item_id(item: JsonValue) -> JsonValue:
+    if is_json_mapping(item) and "id" in item:
+        return {key: value for key, value in item.items() if key != "id"}
+    return item
 
 
 def _input_prefix_matches_stored_context(

@@ -61,3 +61,6 @@
   JSON-mode skills refresh also sends the later Default message the hoist kept inline, the round trip sends exactly the
   expected frames, an unknown record resends in client order and leaves Lite history alone, and anchored turns of the
   captured Codex bodies send no developer message again (HTTP bridge and WebSocket).
+- [x] 2.9 A developer message sent again carries no client item id (a JSON-kept message after a skills refresh, a
+  message with an attachment after a refresh, changed text beside an attachment), and the turn after sends none again
+  (HTTP bridge and WebSocket).

@@ -275,7 +275,9 @@ none of them MUST be sent again. The record MUST be used only when the request
 is anchored to the response it was recorded for. When it is unknown (or a
 stored context was hydrated from a durable row that differs from it), nothing
 matches it: the first of those messages and every later developer message of
-the range MUST be sent.
+the range MUST be sent. A developer message sent this way MUST go without its
+client item `id`, because the anchored chain can already hold that id; the
+comparison and the record MUST use the client's items.
 
 Durable operation and recovery-attempt keys hash the serialized request. An
 identical retry of a turn recorded before developer messages stayed inline
@@ -329,6 +331,12 @@ keep the request on its owner.
 - **GIVEN** a warm session whose stored turn sent a Default-mode developer message, then a Plan-mode one
 - **WHEN** the next request sends the Plan-mode message before the Default-mode one, with the same history
 - **THEN** the anchored request sends the Plan-mode message followed by the Default-mode message
+
+#### Scenario: A developer message sent again carries no client item id
+- **GIVEN** a warm JSON-mode session whose stored turn sent a skills list, a Plan-mode message and a Default-mode message that mentions JSON, each with a client item id
+- **WHEN** the next request changes only the skills list
+- **THEN** the anchored request sends the skills list, the Plan-mode message and the Default-mode message without their item ids
+- **AND** the turn after sends none of them again
 
 #### Scenario: A refreshed earlier developer message does not override a later one
 - **GIVEN** a warm session whose stored turn sent a Default-mode developer message with a skills list, history, and a later Plan-mode developer message
