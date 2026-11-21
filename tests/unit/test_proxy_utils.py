@@ -9939,6 +9939,7 @@ async def test_stream_responses_uses_websocket_transport_and_marks_lite_payload(
         "effort": "high",
         "vendor_hint": 7,
     }
+    expected_request_payload["parallel_tool_calls"] = False
     assert request_payload == expected_request_payload
     assert "context" not in cast(Mapping[str, JsonValue], payload.to_payload()["reasoning"])
     upstream_headers = cast(dict[str, str], session.ws_calls[0]["headers"])
