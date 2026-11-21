@@ -80,6 +80,10 @@ class TelemetryConsentStore:
         await self._repository.commit_refresh(row)
         return resolve_consent(self._settings.telemetry_enabled, row.telemetry_consent)
 
+    async def existing_instance_id(self) -> str | None:
+        row = await self._repository.get_or_create()
+        return row.telemetry_instance_id
+
     async def get_or_create_identity(self) -> TelemetryIdentity:
         row = await self._repository.get_or_create()
         if row.telemetry_instance_id is None or row.telemetry_private_key_encrypted is None:

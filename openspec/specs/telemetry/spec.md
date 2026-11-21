@@ -205,13 +205,20 @@ Chat, Responses, Images, or Audio families from upstream `source` or model name.
 
 ### Requirement: Random instance identity
 
-The telemetry instance identifier MUST be a UUID generated randomly on first run, MUST NOT be derived from hardware, network, account, or operating-system identity, and MUST be regenerated if deleted.
+The telemetry instance identifier MUST be a UUID generated randomly on first run, MUST NOT be derived from hardware, network, account, or operating-system identity, and MUST be regenerated if deleted. While telemetry is inactive, building a preview MUST NOT create or persist the identifier or its signing key: the preview shows the persisted identifier when one exists and otherwise a throwaway random UUIDv4.
 
 #### Scenario: Identifier carries no fingerprint
 
 - **WHEN** the instance identifier is created
 - **THEN** it is a random UUIDv4 persisted locally, and deleting it yields a fresh unrelated
   identifier on next start
+
+#### Scenario: Inactive preview mints no identity
+
+- **WHEN** telemetry is inactive, no identity is persisted, and the settings view requests a
+  preview
+- **THEN** the preview carries a throwaway random UUIDv4
+- **AND** `telemetry_instance_id` and `telemetry_private_key_encrypted` stay unset
 
 ### Requirement: Transmission cadence and failure isolation
 
@@ -248,9 +255,9 @@ An unmeasurable database size MUST be reported as `unknown`, not as a plausible 
 Every snapshot payload MUST include a top-level `consent` field whose value is the resolved
 persisted consent state `undecided` or `enabled`; `disabled` MUST NOT appear because snapshots
 are not transmitted while telemetry is inactive. A preview built while telemetry is inactive
-MUST show the value the next snapshot would carry once telemetry is active: `enabled` after a
-persisted `disabled` decision, and `undecided` while only `CODEX_LB_TELEMETRY_ENABLED=false`
-disables telemetry and no decision is persisted.
+MUST show the value the next snapshot would carry once telemetry is active, which is `enabled`:
+a dashboard enable persists `enabled`, and `CODEX_LB_TELEMETRY_ENABLED=true` resolves to
+`enabled`. Only the unset default (`source: default`) transmits `undecided`.
 
 #### Scenario: Undecided snapshot declares consent
 
@@ -262,12 +269,12 @@ disables telemetry and no decision is persisted.
 - **WHEN** telemetry is active under persisted enabled consent
 - **THEN** the transmitted snapshot and exact payload preview contain `consent: "enabled"`
 
-#### Scenario: Preview under the environment kill switch keeps the undecided state
+#### Scenario: Preview while inactive shows the opt-in consent
 
-- **WHEN** no consent decision is persisted, `CODEX_LB_TELEMETRY_ENABLED=false` disables
-  telemetry and the settings view requests a preview
-- **THEN** the preview contains `consent: "undecided"`, the value a snapshot carries once the
-  override is removed
+- **WHEN** no consent decision is persisted, the fork default or `CODEX_LB_TELEMETRY_ENABLED=false`
+  keeps telemetry inactive, and the settings view requests a preview
+- **THEN** the preview contains `consent: "enabled"`, the value a snapshot carries after either
+  opt-in path
 
 ### Requirement: Dashboard opt-out notification
 

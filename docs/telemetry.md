@@ -11,7 +11,8 @@ elected leader builds and sends the snapshot.
 
 ## What is sent
 
-Settings shows the exact JSON envelope the instance would send. The signed snapshot body has
+Settings shows the exact JSON envelope the instance would send. While telemetry is off, that
+preview uses a throwaway `instance_id` and stores nothing. The signed snapshot body has
 three fields:
 
 ```json

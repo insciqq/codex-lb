@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import platform
+from uuid import uuid4
 
 from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -88,10 +89,9 @@ async def _response(
 ) -> TelemetryConsentResponse:
     preview: TelemetrySnapshotEnvelope | None = None
     if include_preview:
-        identity = await store.get_or_create_identity()
         snapshot_consent = _preview_consent(consent)
         snapshot = await TelemetrySnapshotBuilder(session).build(
-            identity.instance_id,
+            await _preview_instance_id(store, consent),
             consent=snapshot_consent,
         )
         preview = build_snapshot_envelope(snapshot)
@@ -103,17 +103,29 @@ async def _response(
     )
 
 
+async def _preview_instance_id(store: TelemetryConsentStore, consent: ResolvedConsent) -> str:
+    """Instance id shown in a preview.
+
+    Active telemetry uses, and if needed mints, the persisted identity it sends
+    with. While telemetry is inactive a preview must not create the identity or
+    its signing key before an opt-in: it shows the persisted id when one exists
+    and otherwise a throwaway random UUID.
+    """
+    if consent.active:
+        return (await store.get_or_create_identity()).instance_id
+    return await store.existing_instance_id() or str(uuid4())
+
+
 def _preview_consent(consent: ResolvedConsent) -> ActiveConsentState:
     """Consent value the next transmitted snapshot would carry once telemetry is active.
 
-    A persisted ``disabled`` decision becomes active only through a dashboard
-    enable, which persists ``enabled``. The environment kill switch disables
-    telemetry while the persisted state is still ``undecided``; lifting it
-    makes snapshots carry ``undecided``.
+    Only the unset default (``undecided``, ``source: default``) transmits
+    ``undecided``. Every opt-in from an inactive state transmits ``enabled``:
+    a dashboard enable persists ``enabled``, and ``CODEX_LB_TELEMETRY_ENABLED=true``
+    resolves to ``enabled``. The fork default (``false``) is never lifted back
+    to the undecided-means-active default.
     """
-    if consent.state != "disabled":
-        return consent.state
-    return "undecided" if consent.source == "env" else "enabled"
+    return "undecided" if consent.state == "undecided" else "enabled"
 
 
 def _handle_opt_out_task_done(task: asyncio.Task[None]) -> None:

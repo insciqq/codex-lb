@@ -176,6 +176,11 @@ seven-day aggregate queries. Settings requests the same endpoint with
 `include_preview=true` to fetch the current envelope on demand. `PUT /api/settings/telemetry`
 persists the decision and returns `preview: null`.
 
+While telemetry is inactive a preview never mints the instance identity or its signing key;
+without a persisted identity it shows a throwaway UUID, so opening "View collected data" on a
+fork instance that never opted in stores nothing. Such a preview shows `consent: "enabled"`,
+the value both opt-in paths transmit.
+
 ## Cadence and replica ownership
 
 The startup and 24-hour ticks run through the shared scheduler leader-election gate. Only the

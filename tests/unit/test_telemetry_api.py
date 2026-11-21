@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from app.core.config.settings import get_settings
+from app.db.models import DashboardSettings
+from app.db.session import SessionLocal
 
 pytestmark = pytest.mark.unit
 
@@ -88,21 +91,37 @@ async def test_consent_api_builds_decided_preview_only_when_requested(
 
 
 @pytest.mark.asyncio
-async def test_consent_api_preview_keeps_undecided_state_under_env_kill_switch(
+@pytest.mark.parametrize("env_value", [None, "false"])
+async def test_inactive_preview_shows_enabled_consent_without_minting_an_identity(
     async_client,
     monkeypatch,
+    env_value: str | None,
 ) -> None:
-    monkeypatch.setenv("CODEX_LB_TELEMETRY_ENABLED", "false")
+    # None is the fork default (telemetry_enabled=False); "false" sets it explicitly.
+    if env_value is None:
+        monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("CODEX_LB_TELEMETRY_ENABLED", env_value)
     get_settings.cache_clear()
 
-    response = await async_client.get("/api/settings/telemetry?include_preview=true")
+    first = await async_client.get("/api/settings/telemetry?include_preview=true")
+    second = await async_client.get("/api/settings/telemetry?include_preview=true")
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["state"] == "disabled"
-    assert payload["source"] == "env"
-    assert payload["active"] is False
-    assert payload["preview"]["metrics"]["consent"] == "undecided"
+    assert first.status_code == 200
+    payload = first.json()
+    assert (payload["state"], payload["source"], payload["active"]) == ("disabled", "env", False)
+    # Both opt-in paths (Settings enable, CODEX_LB_TELEMETRY_ENABLED=true) send "enabled".
+    assert payload["preview"]["metrics"]["consent"] == "enabled"
+    instance_id = payload["preview"]["instance_id"]
+    assert payload["preview"]["metrics"]["instance_id"] == instance_id
+    assert uuid.UUID(instance_id).version == 4
+    # A throwaway id per preview: nothing was stored to reuse.
+    assert second.json()["preview"]["instance_id"] != instance_id
+    async with SessionLocal() as session:
+        row = await session.get(DashboardSettings, 1)
+    assert row is not None
+    assert row.telemetry_instance_id is None
+    assert row.telemetry_private_key_encrypted is None
 
 
 @pytest.mark.asyncio
