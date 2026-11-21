@@ -75,7 +75,7 @@ Callers and outcomes:
   and refresh, HTTP streaming and the WebSocket connect check the account
   once more and fail over to another account without a health penalty;
   requests that cannot move, and the single-shot paths, answer a retryable
-  503 `account_deleted` rather than the proxy-outage error.
+  503 `selected_account_removed` rather than the proxy-outage error.
 - Force Probe and the dashboard reset-credit endpoints answer 404, as when
   the account was gone on arrival, also when the refresh before them or the
   SQLite redeem claim fails because the row is gone (the claim rows

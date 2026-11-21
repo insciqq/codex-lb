@@ -73,8 +73,8 @@ from app.modules.proxy._service.support import (
     _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE,
     _ACCOUNT_SELECTION_RECOVERY_HEARTBEAT_SECONDS,
     _LOCAL_ACCOUNT_CAP_ERROR_CODES,
-    ACCOUNT_DELETED_CODE,
-    ACCOUNT_DELETED_MESSAGE,
+    SELECTED_ACCOUNT_REMOVED_CODE,
+    SELECTED_ACCOUNT_REMOVED_MESSAGE,
     _account_capacity_wait_payload,
     _account_selection_recovery_sleep_seconds,
     _request_log_client_fields,
@@ -2211,7 +2211,9 @@ class _StreamingRetryMixin:
                             current_account_lease = None
                             excluded_account_ids.add(account.id)
                             last_retryable_stream_error = _RetryableStreamError(
-                                ACCOUNT_DELETED_CODE, {"message": ACCOUNT_DELETED_MESSAGE}, exclude_account=True
+                                SELECTED_ACCOUNT_REMOVED_CODE,
+                                {"message": SELECTED_ACCOUNT_REMOVED_MESSAGE},
+                                exclude_account=True,
                             )
                             continue
                         message = route_failure_message(exc)

@@ -143,3 +143,35 @@ async def test_cache_entry_belongs_to_one_row_incarnation(route_cache_ttl, monke
     await helpers._resolve_upstream_route_for_account(proxy, new, operation="responses")
 
     assert calls["count"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("http_status", [None, 503])
+async def test_selected_account_removed_never_writes_account_health(http_status) -> None:
+    # The local code shares nothing with the upstream permanent-failure codes
+    # (``account_deleted`` deactivates an account): a deleted account reached
+    # through the WebSocket connect path must not be marked or penalized.
+    from unittest.mock import AsyncMock
+
+    from app.core.balancer import PERMANENT_FAILURE_CODES
+    from app.modules.proxy._service.support import SELECTED_ACCOUNT_REMOVED_CODE, SELECTED_ACCOUNT_REMOVED_MESSAGE
+
+    assert SELECTED_ACCOUNT_REMOVED_CODE not in PERMANENT_FAILURE_CODES
+    balancer = SimpleNamespace(
+        mark_permanent_failure=AsyncMock(),
+        record_error=AsyncMock(),
+        mark_rate_limit=AsyncMock(),
+        mark_quota_exceeded=AsyncMock(),
+    )
+    account = cast(Account, SimpleNamespace(id="acct-1", codex_installation_id="install-1"))
+
+    await helpers._handle_stream_error(
+        SimpleNamespace(_load_balancer=balancer),
+        account,
+        {"message": SELECTED_ACCOUNT_REMOVED_MESSAGE},
+        SELECTED_ACCOUNT_REMOVED_CODE,
+        http_status,
+    )
+
+    for method in vars(balancer).values():
+        method.assert_not_awaited()

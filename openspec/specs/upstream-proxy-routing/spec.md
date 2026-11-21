@@ -290,7 +290,7 @@ An operation that already loaded an account and dispatches with that account's c
 - **GIVEN** a proxy request selected an account that is deleted before dispatch
 - **WHEN** the request may move to another account
 - **THEN** it MUST fail over to another account without writing a health penalty for the deleted one
-- **AND** a request that cannot move MUST fail with the retryable `account_deleted` error, not the upstream-proxy-unavailable error
+- **AND** a request that cannot move MUST fail with the retryable `selected_account_removed` error, not the upstream-proxy-unavailable error
 - **AND** the route cache MUST NOT keep the `account_not_found` outcome, and its entries MUST belong to one row incarnation
 
 #### Scenario: Deleted account answers like a missing account

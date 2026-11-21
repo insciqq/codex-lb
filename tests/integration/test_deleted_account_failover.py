@@ -138,7 +138,7 @@ async def test_stream_fails_over_when_the_selected_account_is_deleted(async_clie
     stream_error.assert_not_awaited()
 
 
-async def test_compact_for_a_deleted_account_answers_retryable_account_deleted(async_client, monkeypatch):
+async def test_compact_for_a_deleted_account_answers_retryable_selected_account_removed(async_client, monkeypatch):
     account_id = await _import_account(async_client, "acc_gone_compact", "gone-compact@example.test")
     await _bind(account_id)
     ensure_fresh = proxy_module.ProxyService._ensure_fresh_with_budget
@@ -158,7 +158,7 @@ async def test_compact_for_a_deleted_account_answers_retryable_account_deleted(a
     )
 
     assert response.status_code == 503, response.text
-    assert response.json()["error"]["code"] == "account_deleted"
+    assert response.json()["error"]["code"] == "selected_account_removed"
     compact.assert_not_awaited()
 
 

@@ -1977,6 +1977,8 @@ def _is_account_neutral_error_code(code: str | None) -> bool:
         "proxy_unavailable",
         "responses_compact_input_too_large",
         "stream_idle_timeout",
+        # Local: the selected account was deleted before dispatch.
+        SELECTED_ACCOUNT_REMOVED_CODE,
     }
 
 
@@ -2172,10 +2174,10 @@ def upstream_websocket_transport_recently_failed() -> bool:
 # ``account_not_found`` instead of resolving like an unbound account. That is
 # not a proxy outage and not the account's fault: movable requests fail over
 # to another account without a health penalty, and requests that cannot move
-# answer a retryable ``account_deleted`` error.
+# answer a retryable ``selected_account_removed`` error.
 
-ACCOUNT_DELETED_CODE = "account_deleted"
-ACCOUNT_DELETED_MESSAGE = "The selected account was removed; retry the request."
+SELECTED_ACCOUNT_REMOVED_CODE = "selected_account_removed"
+SELECTED_ACCOUNT_REMOVED_MESSAGE = "The selected account was removed; retry the request."
 
 
 def is_account_gone(exc: BaseException) -> bool:
@@ -2183,16 +2185,18 @@ def is_account_gone(exc: BaseException) -> bool:
 
 
 def route_failure_code(exc: UpstreamProxyRouteError) -> str:
-    return ACCOUNT_DELETED_CODE if is_account_gone(exc) else "upstream_proxy_unavailable"
+    return SELECTED_ACCOUNT_REMOVED_CODE if is_account_gone(exc) else "upstream_proxy_unavailable"
 
 
 def route_failure_message(exc: UpstreamProxyRouteError) -> str:
-    return ACCOUNT_DELETED_MESSAGE if is_account_gone(exc) else f"Upstream proxy route unavailable: {exc.reason}"
+    return (
+        SELECTED_ACCOUNT_REMOVED_MESSAGE if is_account_gone(exc) else f"Upstream proxy route unavailable: {exc.reason}"
+    )
 
 
 def route_failure_response(exc: UpstreamProxyRouteError) -> ProxyResponseError:
     if is_account_gone(exc):
-        return ProxyResponseError(503, openai_error(ACCOUNT_DELETED_CODE, ACCOUNT_DELETED_MESSAGE))
+        return ProxyResponseError(503, openai_error(SELECTED_ACCOUNT_REMOVED_CODE, SELECTED_ACCOUNT_REMOVED_MESSAGE))
     return ProxyResponseError(502, openai_error("upstream_proxy_unavailable", route_failure_message(exc)))
 
 
