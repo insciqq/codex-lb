@@ -430,6 +430,45 @@ async def test_v1_reset_credit_duplicate_email_accounts_return_separate_entries(
 
 
 @pytest.mark.asyncio
+async def test_v1_reset_credit_post_account_deleted_before_redeem_claim_returns_403(
+    async_client,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """On SQLite the redeem claim row references the account; a deletion
+    finished after the account was loaded fails that foreign key and must
+    answer like a missing account, not 500."""
+    from app.db.session import SessionLocal
+    from app.modules.accounts.repository import AccountsRepository
+    from app.modules.rate_limit_reset_credits import api as reset_credits_api
+
+    await _enable_api_key_auth(async_client)
+    account_id = await _import_account(async_client, "acc-reset-claim-deleted", "claim-deleted@example.com")
+    _, key = await _create_api_key(async_client, name="reset-credit-claim-deleted")
+    consume_mock = AsyncMock()
+    acquire = reset_credits_api.acquire_redeem_claim
+
+    async def acquire_after_deletion(claim_account_id: str, *args: object, **kwargs: object) -> None:
+        async with SessionLocal() as writer:
+            repo = AccountsRepository(writer)
+            assert await repo.begin_delete(claim_account_id)
+            assert await repo.delete(claim_account_id, only_pending=True)
+        await acquire(claim_account_id, *args, **kwargs)
+
+    monkeypatch.setattr("app.modules.proxy.api.consume_reset_credit", consume_mock)
+    monkeypatch.setattr(reset_credits_api, "acquire_redeem_claim", acquire_after_deletion)
+
+    response = await async_client.post(
+        "/v1/reset-credit",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"account_id": account_id, "redeem_id": "credit-deleted"},
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["type"] == "permission_error"
+    consume_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_v1_reset_credit_post_outside_api_key_scope_returns_403(async_client, monkeypatch: pytest.MonkeyPatch):
     await _enable_api_key_auth(async_client)
     allowed_account_id = await _import_account(async_client, "acc-reset-post-allowed", "allowed@example.com")

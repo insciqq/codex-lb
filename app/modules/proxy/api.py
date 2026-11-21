@@ -184,7 +184,12 @@ from app.core.resilience.overload import is_local_overload_error_code, merge_ret
 from app.core.runtime_logging import log_error_response
 from app.core.socket_peer import raw_socket_peer_host
 from app.core.types import JsonValue
-from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
+from app.core.upstream_proxy import (
+    ACCOUNT_NOT_FOUND_REASON,
+    ResolvedUpstreamRoute,
+    UpstreamProxyRouteError,
+    resolve_upstream_route,
+)
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import ensure_request_id, get_request_id
 from app.core.utils.shared_future import (
@@ -1928,14 +1933,22 @@ async def _serialize_v1_reset_credit_redeem(account_id: str, *, session: AsyncSe
     the ``/v1/*`` handler renders the OpenAI error envelope instead of the
     dashboard one.
     """
+    entered = False
     try:
         async with serialize_reset_credit_redeem(account_id, session=session):
+            entered = True
             yield
     except RedeemClaimTimeoutError as exc:
         raise HTTPException(
             status_code=409,
             detail="Another reset credit redemption is already in progress for this account",
         ) from exc
+    except UpstreamProxyRouteError as exc:
+        # The redeem claim found the account deleted since it was loaded:
+        # answer like an account that was already gone on arrival.
+        if entered or exc.reason != ACCOUNT_NOT_FOUND_REASON:
+            raise
+        raise HTTPException(status_code=403, detail="Account is outside the API key pool") from exc
 
 
 @asynccontextmanager
