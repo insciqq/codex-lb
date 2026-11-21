@@ -264,9 +264,11 @@ def _project_account_neutral_replay_item(
 def responses_input_carries_owner_bound_tool_search_state(input_value: JsonValue) -> bool:
     """Return whether input carries tool-search state only its owner can serve.
 
-    A server-executed tool search, or a discovered tool declaration that is
-    not account-neutral (for example one bound to the owner's vector store),
-    cannot follow the conversation to another account.
+    Uses the replay-safety checks for tool-search calls and outputs: a
+    server-executed search, call arguments holding account-scoped or MCP
+    state, or a discovered tool declaration that is not account-neutral (for
+    example one bound to the owner's vector store) cannot follow the
+    conversation to another account.
     """
     if not isinstance(input_value, list):
         return False
@@ -274,11 +276,9 @@ def responses_input_carries_owner_bound_tool_search_state(input_value: JsonValue
         if not isinstance(item, dict):
             continue
         item_type = item.get("type")
-        if item_type not in ("tool_search_call", "tool_search_output"):
-            continue
-        if item.get("execution") not in (None, "client"):
+        if item_type == "tool_search_call" and not _tool_call_is_self_contained("tool_search_call", item):
             return True
-        if item_type == "tool_search_output" and not _tool_search_output_tools_are_account_neutral(item.get("tools")):
+        if item_type == "tool_search_output" and not _tool_output_is_self_contained("tool_search_output", item):
             return True
     return False
 

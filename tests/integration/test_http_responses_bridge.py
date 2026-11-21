@@ -8948,7 +8948,11 @@ async def test_v1_responses_http_bridge_resumes_a_thread_whose_owner_was_retired
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("owner_bound_tool_search", [False, True], ids=["plain", "owner-bound-tool-search"])
+@pytest.mark.parametrize(
+    "owner_bound_tool_search",
+    [None, "vector-store", "encrypted-arguments"],
+    ids=["plain", "owner-bound-tool-search", "owner-bound-tool-search-arguments"],
+)
 async def test_v1_responses_http_bridge_rebinds_immediately_when_the_owner_cannot_return(
     async_client,
     app_instance,
@@ -9055,6 +9059,7 @@ async def test_v1_responses_http_bridge_rebinds_immediately_when_the_owner_canno
     caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
     second_input: object = "continue"
     if owner_bound_tool_search:
+        vector_store_bound = owner_bound_tool_search == "vector-store"
         second_input = [
             {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
             {
@@ -9062,14 +9067,16 @@ async def test_v1_responses_http_bridge_rebinds_immediately_when_the_owner_canno
                 "call_id": "call_tool_search",
                 "execution": "client",
                 "status": "completed",
-                "arguments": {"query": "docs"},
+                "arguments": {"query": "docs"}
+                if vector_store_bound
+                else {"query": "docs", "state": {"type": "compaction", "encrypted_content": "enc_owner_scoped"}},
             },
             {
                 "type": "tool_search_output",
                 "call_id": "call_tool_search",
                 "execution": "client",
                 "status": "completed",
-                "tools": [{"type": "file_search", "vector_store_ids": ["vs_owner"]}],
+                "tools": [{"type": "file_search", "vector_store_ids": ["vs_owner"]}] if vector_store_bound else [],
             },
             {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
         ]

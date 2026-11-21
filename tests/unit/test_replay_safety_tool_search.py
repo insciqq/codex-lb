@@ -253,6 +253,15 @@ def test_account_neutral_fresh_replay_rejects_malformed_tool_search_tools_field(
         ({"type": "tool_search_call", "call_id": None, "execution": "server", "arguments": {"query": "q"}}, True),
         (
             {
+                "type": "tool_search_call",
+                "call_id": "c",
+                "execution": "client",
+                "arguments": {"query": "q", "state": {"type": "compaction", "encrypted_content": "enc_owner"}},
+            },
+            True,
+        ),
+        (
+            {
                 "type": "tool_search_output",
                 "call_id": "c",
                 "execution": "client",
