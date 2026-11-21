@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -159,12 +159,16 @@ async def _lookup_existing_account_binding(
     )
     if not allow_pending_deletion:
         statement = statement.where(Account.delete_requested_at.is_(None))
-    if installation_id:
+    if installation_id and installation_id.strip():
         # A blank stored id (only out-of-band edits leave one) cannot tell
         # rows apart; the request path then stamps the loaded object with a
-        # fresh id, which must not read as a replacement.
+        # fresh id, which must not read as a replacement. Blank includes
+        # whitespace, as the request path strips the id before using it.
         statement = statement.where(
-            or_(Account.codex_installation_id == installation_id, Account.codex_installation_id == "")
+            or_(
+                Account.codex_installation_id == installation_id,
+                func.trim(Account.codex_installation_id) == "",
+            )
         )
     row = (await session.execute(statement.limit(1))).first()
     if row is None:

@@ -286,3 +286,42 @@ async def test_require_account_reads_binding_with_account_row(
         assert pending_route is not None and pending_route.pool_id == "bound_pool"
         with pytest.raises(UpstreamProxyRouteError):
             await strict("gone", allow_pending_deletion=True)
+
+
+@pytest.mark.parametrize(
+    ("stored", "loaded", "found"),
+    [
+        ("install-row", "install-row", True),
+        ("install-row", "install-other", False),
+        # A blank stored id cannot tell rows apart; the request path stamps
+        # the loaded account with a fresh id, which is not a replacement.
+        ("", "install-stamped", True),
+        ("   ", "install-stamped", True),
+        # A blank loaded id carries no incarnation to compare.
+        ("install-row", "  ", True),
+    ],
+)
+async def test_require_account_compares_the_installation_id(
+    session_factory: async_sessionmaker[AsyncSession], stored: str, loaded: str, found: bool
+) -> None:
+    encryptor = _encryptor()
+    async with session_factory() as session:
+        account = _account(encryptor, "acc")
+        account.codex_installation_id = stored
+        session.add_all([account, DashboardSettings(id=1, upstream_proxy_routing_enabled=False)])
+        await session.commit()
+
+    async with session_factory() as session:
+        if found:
+            assert (
+                await resolve_upstream_route(
+                    session, account_id="acc", operation="test", require_account=True, installation_id=loaded
+                )
+                is None
+            )
+        else:
+            with pytest.raises(UpstreamProxyRouteError) as exc_info:
+                await resolve_upstream_route(
+                    session, account_id="acc", operation="test", require_account=True, installation_id=loaded
+                )
+            assert exc_info.value.reason == "account_not_found"
