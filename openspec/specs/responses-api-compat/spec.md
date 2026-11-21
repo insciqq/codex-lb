@@ -597,8 +597,9 @@ unchanged episode after its cooldown elapsed MUST keep the worker's local
 deadline instead, so a cooldown the worker saw running (or the transition
 marker a handed-back probe restored) still admits exactly one probe, and a
 transition a probe already consumed is not re-armed by the next reload; a
-mapping that adopts an already elapsed replacement episode MUST drop both
-the ended episode's deadline and its lease. Probe admission is process-local:
+mapping that adopts a replacement episode MUST drop the ended episode's
+lease — even when the replacement's own short cooldown runs out during the
+mapping — and, when the replacement's cooldown already ended, its deadline. Probe admission is process-local:
 the half-open lease is not persisted, and replicas do not coordinate probe
 admission (an accepted residual recorded in this change's `design.md`). When the circuit opens on an eventless
 poison-class failure (`stream_incomplete` or `stream_idle_timeout` with no

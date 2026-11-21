@@ -45993,6 +45993,80 @@ async def test_a_twice_missed_settle_reconciles_the_surviving_row(survivor_prese
 
 
 @pytest.mark.asyncio
+async def test_a_twice_missed_settle_drops_the_old_lease_for_a_replacement_that_just_expired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The survivor is a replacement episode whose short cooldown runs out
+    # between the deadline mapping and the lease check. Its probe lease must
+    # not be the ended episode's: that lease would suppress the key for the
+    # rest of its window although no probe of the new episode exists.
+    class _ShiftedClock:
+        offset = 0.0
+
+        def monotonic(self) -> float:
+            return time.monotonic() + self.offset
+
+        def time(self) -> float:
+            return time.time() + self.offset
+
+    clock = _ShiftedClock()
+    monkeypatch.setattr(http_bridge_retry_circuit_module, "clock_for", lambda _owner: clock)
+    map_deadline = http_bridge_retry_circuit_module._http_bridge_retry_circuit_cooldown_deadline
+
+    def map_then_expire(now_monotonic: float, remaining_seconds: float) -> float:
+        deadline = map_deadline(now_monotonic, remaining_seconds)
+        if remaining_seconds > 0:
+            clock.offset += remaining_seconds + 0.01
+        return deadline
+
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session(key_value="bridge-twice-missed-replacement-expiring")
+    epoch_a = time.time() - 90.0
+    epoch_b = time.time() - 60.0
+    epoch_c = time.time() - 30.0
+    state = http_bridge_retry_circuit_module._HTTPBridgeRetryCircuitState(last_touched_monotonic=time.monotonic())
+    state.consecutive_failures = 2
+    state.last_detail = "stream_incomplete"
+    state.persisted_updated_at_epoch = epoch_a
+    state.half_open_until = time.monotonic() + 120.0
+    cast(Any, service)._http_bridge_retry_circuits[session.key] = state
+    cast(Any, service)._http_bridge_retry_circuit_persisted_keys.add(session.key)
+
+    def row(epoch: float, count: int, cooldown_until_epoch: float) -> Any:
+        return SimpleNamespace(
+            consecutive_failures=count,
+            cooldown_until_epoch=cooldown_until_epoch,
+            last_detail="stream_incomplete",
+            updated_at_epoch=epoch,
+            admission_generation=7,
+        )
+
+    survivor = row(epoch_c, 3, time.time() + 1.0)
+    service._durable_bridge = SimpleNamespace(
+        lookup_retry_circuit=AsyncMock(
+            side_effect=[row(epoch_a, 2, epoch_a - 1.0), row(epoch_b, 2, epoch_b - 1.0), survivor]
+        ),
+        persist_retry_circuit=AsyncMock(return_value=None),
+        clear_retry_circuit=AsyncMock(side_effect=[False, False]),
+    )
+
+    monkeypatch.setattr(
+        http_bridge_retry_circuit_module, "_http_bridge_retry_circuit_cooldown_deadline", map_then_expire
+    )
+    settled = await service._clear_http_bridge_retry_circuit(session)
+    monkeypatch.setattr(http_bridge_retry_circuit_module, "_http_bridge_retry_circuit_cooldown_deadline", map_deadline)
+
+    assert settled is False
+    assert cast(Any, service)._http_bridge_retry_circuits.get(session.key) is state
+    assert state.persisted_updated_at_epoch == epoch_c
+    service._durable_bridge.lookup_retry_circuit = AsyncMock(return_value=survivor)
+    admissions = [await service._http_bridge_precreated_retry_allowed(session) for _ in range(2)]
+    assert admissions == [True, False], (
+        "the replacement's own expiry admits exactly one probe; the ended episode's lease must not suppress it"
+    )
+
+
+@pytest.mark.asyncio
 async def test_terminal_settle_is_blocked_by_a_surviving_safe_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

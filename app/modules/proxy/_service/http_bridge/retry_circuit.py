@@ -2408,15 +2408,14 @@ class _HTTPBridgeRetryCircuitMixin:
                                 state.consecutive_failures = max(0, surviving.consecutive_failures)
                                 # Same rule as the load: an ended cooldown is
                                 # no cooldown, and only the unchanged episode
-                                # keeps its local deadline. An already elapsed
-                                # replacement also drops the ended episode's
-                                # lease, which is no probe of the new one.
+                                # keeps its local deadline. A replacement always
+                                # drops the ended episode's lease, which is no
+                                # probe of the new one, even when its own short
+                                # cooldown runs out before the check below.
                                 if surviving_cooldown_until > 0.0 or surviving_episode_replaced:
                                     state.cooldown_until = surviving_cooldown_until
                                 state.last_detail = surviving.last_detail
-                                if state.cooldown_until > clock_for(self).monotonic() or (
-                                    surviving_episode_replaced and surviving_cooldown_until <= 0.0
-                                ):
+                                if surviving_episode_replaced or state.cooldown_until > clock_for(self).monotonic():
                                     state.half_open_until = 0.0
                                 state.persisted_updated_at_epoch = surviving.updated_at_epoch
                                 state.persisted_admission_generation = getattr(surviving, "admission_generation", 0)
