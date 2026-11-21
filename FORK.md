@@ -120,6 +120,11 @@ floating tags. Images are built by GitHub Actions, never locally.
   the README, `docs/` and the chart README name the fork image and release
   tag (`git grep -n 'fork\.[0-9]'`). Bump them with the version; the fork
   publishes no Helm chart or Python package.
+* Both READMEs open with the upstream triage result: a snapshot date and
+  counts. At each release, after `python3 scripts/fork_registry.py check
+  --strict`, refresh them from the "Summary" of `fork/REGISTRY.md`: the
+  registry's upstream-state date, pull requests ported (`taken` plus `taken
+  with changes`), `own-fix` pull requests, and `fixed` and `partial` issues.
 * When a run fails in the attest or tag job, finish that run with
   `gh run rerun <run-id> --failed`: it signs or tags the digest already
   built and keeps the earlier verify result. Start a new run with

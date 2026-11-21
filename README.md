@@ -14,11 +14,15 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 [![Release](https://img.shields.io/github/v/release/insciqq/codex-lb?display_name=tag)](https://github.com/insciqq/codex-lb/releases)
 [![License: MIT](https://img.shields.io/github/license/insciqq/codex-lb)](LICENSE)
 
-> **This is a maintained fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb), maintained by
-> [@insciqq](https://github.com/insciqq).** codex-lb was created by Soju06 and built by the
-> [contributors](#contributors-) listed below; all credit for it is theirs. Upstream has had no new commits
-> since 2026-10-16. This fork keeps codex-lb working with current Codex clients and the OpenAI backend.
+> **As of 2026-11-21, this maintained fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb) has reviewed and
+> decided every open upstream pull request and issue,** plus the pull requests closed without merge since 2026-10-16:
+> 68 pull requests ported, 8 more whose problem the fork fixes with its own commits, 36 issues fixed and 14 partly
+> fixed. The rest are declined, deferred or out of scope, each with a reason in the [registry](fork/REGISTRY.md).
 >
+> - What happened to each upstream PR and issue: [fork/REGISTRY.md](fork/REGISTRY.md). Policy: [FORK.md](FORK.md).
+> - **Credit:** codex-lb was created by Soju06 and built by the [contributors](#contributors-) listed below; all
+>   credit for it is theirs. Maintained by [@insciqq](https://github.com/insciqq) to keep it working with current
+>   Codex clients and the OpenAI backend; upstream has had no new commits since 2026-10-16.
 > - **Scope:** bug fixes, security, compatibility with current Codex clients and the OpenAI backend, and
 >   dependency updates. New features are on hold until the fork has settled with a few stable releases.
 > - **Releases:** `v<upstream base>-fork.<n>` tags with images at `ghcr.io/insciqq/codex-lb` (no `latest`).
@@ -27,7 +31,6 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 > - **Telemetry is off by default** since the `fork.2` release ([details](docs/telemetry.md)).
 > - **Problems:** [open an issue here](https://github.com/insciqq/codex-lb/issues/new/choose), not upstream.
 >   Security reports go through a [private advisory](https://github.com/insciqq/codex-lb/security/advisories/new).
-> - What happened to each upstream PR and issue: [fork/REGISTRY.md](fork/REGISTRY.md). Policy: [FORK.md](FORK.md).
 
 **English** | [简体中文](./README.zh-CN.md)
 
