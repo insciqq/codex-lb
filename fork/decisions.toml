@@ -58,12 +58,15 @@ status = "pending"
 [pr.2048]
 title = "fix(proxy): preserve exhausted sticky failover"
 state = "open"
-status = "pending"
+status = "rejected"
+reason = "The sticky failover bug it targets is already fixed on main by PR 2078; what remains relaxes early recovery of rate-limited accounts through a large rewrite of the balancer recovery helpers that was not re-reviewed."
 
 [pr.2069]
 title = "fix(proxy): recover unanchored quota replay"
 state = "open"
 status = "pending"
+issues = [2068]
+rework = "Rebased on PR 2001: ciphertext-only bodies fail over unchanged there, and the spec delta is reconciled with that requirement."
 
 [pr.2075]
 title = "fix(proxy): keep frameless bridge drops account neutral"
@@ -769,6 +772,7 @@ rework = "Only the reset_at expiry fix is taken; the bundled pool rate limits an
 title = "fix(proxy): preserve quota reset evidence in retry health"
 state = "closed"
 status = "pending"
+rework = "Only the direct WebSocket call sites, using the rejection-time deadline normalizer from PR 2728; the HTTP bridge part is covered by PR 2728."
 
 [pr.2627]
 title = "fix(proxy): recover owned HTTP sessions during transient backoff"
@@ -1077,7 +1081,9 @@ reason = "PR 2690 carries the same or newer versions."
 [pr.2686]
 title = "fix(api-keys): accrue and enforce credit limits"
 state = "open"
-status = "pending"
+status = "rejected"
+issues = [2556]
+reason = "Adds a counter-rescaling Alembic revision and its own token-to-credit pricing policy, which upstream has not agreed on; the fork keeps the upstream schema and no schema-neutral accrual is correct."
 
 [pr.2687]
 title = "chore(deps): bump dnspython from 2.8.0 to 2.9.0"
@@ -1147,7 +1153,9 @@ reason = "PR 2690 carries the same or newer versions."
 [pr.2700]
 title = "fix(proxy): recover stateless quota failover"
 state = "open"
-status = "pending"
+status = "superseded"
+by = 2069
+reason = "PRs 2001 and 2069 recover the same pre-visible quota failover behind verified ownership fences; this draft replays unknown account-scoped state unchanged."
 
 [pr.2701]
 title = "fix(egress): enable TCP and HTTP/2 keepalive in native client pool"
@@ -1920,7 +1928,9 @@ status = "pending"
 [issue.2556]
 title = "bug(api-keys): `credits` limits never accrue usage, so they are never enforced. Bug, or manual override by design?"
 state = "open"
-status = "pending"
+status = "not-fixed"
+prs = [2686]
+reason = "Credit limits have no agreed accounting upstream; a correct accrual needs a pricing policy and fractional counters, which require a schema change."
 
 [issue.2557]
 title = "bug(accounts): plan capacity constants are unmeasured; every weekly value is 5h × 33.6"
@@ -2048,7 +2058,8 @@ status = "pending"
 [issue.2693]
 title = "bug(accounts): overview reports 0 reset credits while the dashboard shows the live count (per-replica snapshot vs live fetch)"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "Redeem no longer refuses with 409 when the replica has no cached snapshot; the overview still reports 0 reset credits until that replica refreshes the account."
 
 [issue.2703]
 title = "Automatically route Daybreak requests to Trusted Cyber accounts"
