@@ -6152,6 +6152,14 @@ For standard and compact Responses requests, the proxy MUST omit `namespace` fro
 - **THEN** the classifier input retains the namespace metadata
 - **AND** the request fails closed rather than becoming account-neutral because of wire normalization
 
+#### Scenario: WebSocket model rejection keeps an unanchored namespaced history
+
+- **GIVEN** a direct Responses WebSocket request without `previous_response_id` carries a namespaced tool call and its output in its own input
+- **WHEN** its account rejects the model before acceptance (`account_model_unsupported` or `model_not_found`)
+- **THEN** the request may move only when its wire text is account-neutral and the portability decided from the client's request, with the namespace metadata intact, is not account-bound
+- **AND** an account-bound history receives that account's original rejection instead of being re-sent elsewhere without its namespaces
+- **AND** fields the WebSocket frame never carries, such as `stream` and `background`, do not make a body account-bound
+
 #### Scenario: Malformed replay item type does not fail serialization
 
 - **WHEN** a permissively parsed input item has a non-string `type` and a `namespace`

@@ -534,11 +534,27 @@ def _websocket_fresh_replay_payload_is_account_neutral(
     Judged on the client's request with its replay-relevant metadata intact.
     A body that replaces an anchored one goes out without tool-search ids, so
     those ids are left out of the judgement; an unanchored body keeps them.
+    ``stream`` and ``background`` are left out as well: the WebSocket
+    ``response.create`` frame never carries them.
     """
+    replay_payload = dict(payload.to_replay_safety_payload())
+    replay_payload.pop("stream", None)
+    replay_payload.pop("background", None)
     return anchor_free_replay_payload_is_account_neutral(
-        payload.to_replay_safety_payload(),
+        replay_payload,
         strip_tool_search_ids=replaces_anchored_body,
     )
+
+
+def _websocket_recorded_portability_vetoes_account_switch(request_state: "_WebSocketRequestState") -> bool:
+    """Return whether the decision recorded for an unanchored body keeps it on its account.
+
+    The wire text drops tool-call namespaces, so a namespaced history can look
+    account-neutral on the text alone. The decision recorded from the client's
+    request only ever vetoes a move: a body that may move must also be
+    account-neutral as written, so a recorded ``True`` loosens nothing.
+    """
+    return request_state.previous_response_id is None and request_state.fresh_upstream_request_account_neutral is False
 
 
 def _websocket_fresh_replay_text_is_account_neutral(request_state: "_WebSocketRequestState") -> bool:

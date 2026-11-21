@@ -515,6 +515,26 @@ keep explicitly, so the request state marks native history:
   anchored attempt never settles once its session is gone, and it used to
   refuse every identical retry until the body changed.
 
+## WebSocket model rejections of unanchored bodies
+
+Upstream rejects a replayed tool call's `namespace`, so the wire text drops it
+while the local request keeps it. On the text alone a namespaced history looks
+account-neutral, although it belongs to the account that produced it. The
+direct WebSocket path records the decision from the client's request while the
+namespace is still present (leaving out `stream` and `background`, which the
+`response.create` frame never carries). A pre-acceptance model rejection may
+move an unanchored request only when the wire text is account-neutral and that
+recorded decision is not account-bound: the recorded value only vetoes, so it
+never makes a body portable that its text would keep. Other owner-switch paths
+(selection and dispatch binding, the authentication retry) still judge the
+text.
+
+For example: a Codex WebSocket session without a turn-state owner sends its
+full history with a `collaboration` `spawn_agent` call and its output, and
+account A answers `model_not_found` before `response.created`. The client
+receives A's rejection; the history is not re-sent to B with the namespace
+stripped. The same history without the namespace still moves once to B.
+
 ## Reasoning policy for configuration_update items
 
 Mid-conversation effort changes arrive as `configuration_update` input items, so a policy that reads only the request-level `reasoning.effort` and model aliases lets an item select any effort. Clients persist the items in the history they resend, so a policy that rejects a thread for one historical item would break it for good: a user who toggles effort under a pinned key, or a thread that recorded an item before this policy existed, would fail on every later turn, and compaction could not recover it. See the configuration_update policy requirement in [spec.md](spec.md).

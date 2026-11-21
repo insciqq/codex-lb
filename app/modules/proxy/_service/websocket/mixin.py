@@ -462,6 +462,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_precreated_replay_fallback_error,
     _websocket_precreated_retry_error_code,
     _websocket_receive_timeout_for_pending_requests,
+    _websocket_recorded_portability_vetoes_account_switch,
     _websocket_request_requires_preferred_account,
     _websocket_response_id,
     _wrapped_websocket_error_event,
@@ -6169,7 +6170,12 @@ class _WebSocketMixin:
                 request_state.request_text = safe_request_text
         if retry_error_code in _WEBSOCKET_MODEL_REJECTION_REPLAY_CODES:
             retry_text = None
-            if not request_state.file_required_preferred_account:
+            # A namespaced history recorded as account-bound stays with its
+            # account even though its wire text looks account-neutral.
+            if not (
+                request_state.file_required_preferred_account
+                or _websocket_recorded_portability_vetoes_account_switch(request_state)
+            ):
                 retry_text = _prepare_websocket_request_state_for_account_switch(request_state)
             if retry_text is not None and not _websocket_accepted_replay_can_switch_account(request_state):
                 # Decide ownership only after the body prep: a proxy-injected

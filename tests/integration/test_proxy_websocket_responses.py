@@ -15193,6 +15193,77 @@ def test_backend_responses_websocket_retries_anchored_precreated_model_rejection
     )
 
 
+_NAMESPACED_SPAWN_CALL: dict[str, Any] = {
+    "type": "function_call",
+    "namespace": "collaboration",
+    "name": "spawn_agent",
+    "arguments": "{}",
+    "call_id": "call_ws_spawn",
+}
+_NAMESPACED_SPAWN_OUTPUT: dict[str, Any] = {
+    "type": "function_call_output",
+    "call_id": "call_ws_spawn",
+    "output": "agent thread",
+}
+
+
+@pytest.mark.parametrize("namespaced", [True, False], ids=["namespaced", "plain"])
+@pytest.mark.parametrize(("status", "error"), _PRECREATED_MODEL_REJECTIONS)
+def test_backend_responses_websocket_precreated_model_rejection_keeps_unanchored_namespaced_history(
+    app_instance,
+    monkeypatch,
+    status,
+    error,
+    namespaced,
+):
+    """An unanchored history is judged with its tool-call namespaces.
+
+    A Codex session without a turn-state owner sends its full history, which
+    contains a namespaced tool call and its output. The wire text drops the
+    namespace, so judging it alone made the history look account-neutral and
+    a pre-created model rejection re-sent it, namespace stripped, to another
+    account. The decision recorded from the client's request keeps it on the
+    rejecting account, which surfaces its own rejection; the same history
+    without a namespace still takes the bounded move."""
+    first_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[[_ws_event({"type": "error", "status": status, "error": error})]],
+    )
+    recovered_upstream = _recovered_upstream("resp_ws_unanchored_history_moved")
+    failover = _TwoAccountWebSocketFailover(first_upstream, recovered_upstream)
+    failover.install(monkeypatch)
+    tool_call = dict(_NAMESPACED_SPAWN_CALL)
+    if not namespaced:
+        tool_call.pop("namespace")
+    request = failover.response_create(
+        [failover.HISTORICAL_INPUT, tool_call, _NAMESPACED_SPAWN_OUTPUT, failover.FOLLOW_UP_INPUT]
+    )
+    # The WebSocket frame drops ``background``; it must not bind a plain turn.
+    request["background"] = False
+
+    events, disconnect = failover.run(
+        app_instance,
+        requests=[request],
+        headers={
+            "Authorization": "Bearer external-token",
+            "session_id": "sid-ws-unanchored-namespaced-history",
+            "originator": "codex_cli_rs",
+            "user-agent": "codex_cli_rs/0.154.0",
+        },
+    )
+
+    assert disconnect is None
+    if namespaced:
+        assert failover.connect_accounts == [failover.FIRST_ACCOUNT_ID], failover.connect_accounts
+        assert recovered_upstream.sent_text == []
+        assert events[-1]["type"] == "error"
+        assert events[-1]["status"] == status
+        assert events[-1]["error"]["code"] == error["code"]
+    else:
+        assert failover.connect_accounts == [failover.FIRST_ACCOUNT_ID, failover.SECOND_ACCOUNT_ID]
+        assert events[-1]["type"] == "response.completed"
+
+
 @pytest.mark.parametrize(("status", "error"), _PRECREATED_MODEL_REJECTIONS)
 def test_backend_responses_websocket_preserves_exhausted_precreated_model_rejection(
     app_instance,
