@@ -3327,34 +3327,47 @@ _HTTP_BRIDGE_AFFINITY_KEY_BASE64URL: Final = "base64url"
 
 
 def _encode_bridge_affinity_key(key: str) -> tuple[str, str | None]:
-    """Return the header value and encoding that carry ``key`` verbatim.
+    """Return the one canonical header value and encoding that carry ``key`` verbatim.
 
     Codex selection keys start with a line feed on purpose (no client header
     can spell them), and header parsing strips surrounding whitespace, so such
     keys travel base64url-encoded. Printable ASCII keys (an inner tab is
     legal in a header) stay unchanged, which keeps them readable by owners
-    that predate the encoding.
+    that predate the encoding. Raise ``ValueError`` for a key that is not
+    valid UTF-8 (a lone surrogate).
     """
 
     if key == key.strip() and all(char == "\t" or " " <= char <= "~" for char in key):
         return key, None
-    encoded = base64.urlsafe_b64encode(key.encode("utf-8", "surrogatepass")).decode("ascii")
-    return encoded, _HTTP_BRIDGE_AFFINITY_KEY_BASE64URL
+    try:
+        raw = key.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("bridge affinity key is not valid UTF-8") from exc
+    return base64.urlsafe_b64encode(raw).decode("ascii"), _HTTP_BRIDGE_AFFINITY_KEY_BASE64URL
 
 
 def _decode_bridge_affinity_key(value: str | None, encoding: str | None) -> str | None:
-    """Invert ``_encode_bridge_affinity_key``; raise ``ValueError`` on bad input."""
+    """Invert ``_encode_bridge_affinity_key``; raise ``ValueError`` on bad input.
+
+    ``encoding`` is ``None`` only when the header is absent; a present empty
+    marker is invalid. The received pair must be the canonical wire form of
+    the decoded key, so a key has exactly one accepted encoding and a
+    printable key is never accepted base64-encoded.
+    """
 
     if encoding is None:
-        return value
-    if encoding != _HTTP_BRIDGE_AFFINITY_KEY_BASE64URL or value is None or not value.isascii():
-        raise ValueError("unsupported bridge affinity key encoding")
-    try:
-        decoded = base64.b64decode(value, altchars=b"-_", validate=True).decode("utf-8", "surrogatepass")
-    except (binascii.Error, UnicodeDecodeError) as exc:
-        raise ValueError("invalid bridge affinity key encoding") from exc
-    if not decoded:
-        raise ValueError("empty bridge affinity key")
+        decoded = value
+    else:
+        if encoding != _HTTP_BRIDGE_AFFINITY_KEY_BASE64URL or value is None or not value.isascii():
+            raise ValueError("unsupported bridge affinity key encoding")
+        try:
+            decoded = base64.b64decode(value, altchars=b"-_", validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            raise ValueError("invalid bridge affinity key encoding") from exc
+    if decoded is None:
+        return None
+    if not decoded or _encode_bridge_affinity_key(decoded) != (value, encoding):
+        raise ValueError("non-canonical bridge affinity key encoding")
     return decoded
 
 

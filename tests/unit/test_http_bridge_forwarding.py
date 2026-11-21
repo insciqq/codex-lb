@@ -700,12 +700,26 @@ def test_owner_forward_round_trips_affinity_keys_headers_cannot_carry(key: str, 
 
 
 @pytest.mark.parametrize(
-    ("wire_value", "encoding"),
-    [("not base64!", "base64url"), ("", "base64url"), ("c2lkLTEyMw==", "gzip")],
+    ("key", "wire_value", "encoding"),
+    [
+        ("\nkey", "not base64!", "base64url"),
+        ("\nkey", "", "base64url"),
+        ("\nkey", "c2lkLTEyMw==", "gzip"),
+        # Not UTF-8 once decoded.
+        ("\nkey", "_w==", "base64url"),
+        # A printable key has only its raw wire form.
+        ("sid-123", "c2lkLTEyMw==", "base64url"),
+        # The standard alphabet is not the canonical base64url form.
+        ("\n>?>", "Cj4/Pg==", "base64url"),
+        # A present but empty marker is not an absent one.
+        ("sid-123", "sid-123", ""),
+    ],
 )
-def test_parse_forwarded_request_rejects_malformed_affinity_key_encoding(wire_value: str, encoding: str) -> None:
+def test_parse_forwarded_request_rejects_malformed_affinity_key_encoding(
+    key: str, wire_value: str, encoding: str
+) -> None:
     payload = _payload()
-    headers = build_owner_forward_headers(headers={}, payload=payload, context=_affinity_context("\nkey"))
+    headers = build_owner_forward_headers(headers={}, payload=payload, context=_affinity_context(key))
     headers[HTTP_BRIDGE_AFFINITY_KEY_HEADER] = wire_value
     headers[HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER] = encoding
 
@@ -1900,3 +1914,47 @@ def test_parse_forwarded_request_non_ascii_v2_signature_falls_through_to_primary
     assert error is None
     assert forwarded is not None
     assert forwarded.context == context
+
+
+def test_build_owner_forward_headers_rejects_affinity_key_that_is_not_utf8() -> None:
+    with pytest.raises(ProxyResponseError) as exc_info:
+        build_owner_forward_headers(headers={}, payload=_payload(), context=_affinity_context("\ud800key"))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.payload["error"]["code"] == "bridge_forward_invalid"
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"x-codex-bridge-affinity-kind": "thread_header", "x-codex-bridge-affinity-key": "sid-123"}, "sid-123"),
+        (
+            {
+                "x-codex-bridge-affinity-kind": "thread_header",
+                "x-codex-bridge-affinity-key": "CmtleQ==",
+                "x-codex-bridge-affinity-key-encoding": "base64url",
+            },
+            "\nkey",
+        ),
+        (
+            {
+                "x-codex-bridge-affinity-kind": "thread_header",
+                "x-codex-bridge-affinity-key": "c2lkLTEyMw==",
+                "x-codex-bridge-affinity-key-encoding": "base64url",
+            },
+            None,
+        ),
+    ],
+)
+def test_forwarded_session_key_header_fallback_decodes_strictly(headers: dict[str, str], expected: str | None) -> None:
+    from app.modules.proxy._service.http_bridge.helpers import _forwarded_http_bridge_session_key
+
+    if expected is None:
+        with pytest.raises(ProxyResponseError) as exc_info:
+            _forwarded_http_bridge_session_key(headers, None)
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.payload["error"]["code"] == "bridge_forward_invalid"
+        return
+    key = _forwarded_http_bridge_session_key(headers, None)
+    assert key is not None
+    assert key.affinity_key == expected

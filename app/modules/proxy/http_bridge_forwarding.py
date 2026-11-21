@@ -150,10 +150,8 @@ def _bridge_header_has_illegal_control_char(name: str, value: str) -> bool:
     return _bridge_header_name_has_illegal_control_char(name) or _bridge_header_value_has_illegal_control_char(value)
 
 
-def _reject_illegal_bridge_header_value(name: str, value: str | None) -> None:
-    if value is None or not _bridge_header_has_illegal_control_char(name, value):
-        return
-    raise ProxyResponseError(
+def _unsafe_bridge_forward_metadata_error() -> ProxyResponseError:
+    return ProxyResponseError(
         400,
         openai_error(
             "bridge_forward_invalid",
@@ -163,16 +161,25 @@ def _reject_illegal_bridge_header_value(name: str, value: str | None) -> None:
     )
 
 
+def _reject_illegal_bridge_header_value(name: str, value: str | None) -> None:
+    if value is None or not _bridge_header_has_illegal_control_char(name, value):
+        return
+    raise _unsafe_bridge_forward_metadata_error()
+
+
 def _validate_bridge_forward_context_headers(context: HTTPBridgeForwardContext) -> None:
+    try:
+        wire_affinity_key = (
+            _encode_bridge_affinity_key(context.original_affinity_key)[0] if context.original_affinity_key else None
+        )
+    except ValueError as exc:
+        raise _unsafe_bridge_forward_metadata_error() from exc
     for name, value in (
         (HTTP_BRIDGE_ORIGIN_INSTANCE_HEADER, context.origin_instance),
         (HTTP_BRIDGE_TARGET_INSTANCE_HEADER, context.target_instance),
         ("x-codex-turn-state", context.downstream_turn_state),
         (HTTP_BRIDGE_AFFINITY_KIND_HEADER, context.original_affinity_kind),
-        (
-            HTTP_BRIDGE_AFFINITY_KEY_HEADER,
-            _encode_bridge_affinity_key(context.original_affinity_key)[0] if context.original_affinity_key else None,
-        ),
+        (HTTP_BRIDGE_AFFINITY_KEY_HEADER, wire_affinity_key),
         (HTTP_BRIDGE_FILE_OWNER_HEADER, context.file_owner_account_id),
         (HTTP_BRIDGE_CLIENT_IP_HEADER, context.client_ip),
     ):
@@ -442,7 +449,8 @@ def parse_forwarded_request(
     try:
         original_affinity_key = _decode_bridge_affinity_key(
             _optional_header(headers.get(HTTP_BRIDGE_AFFINITY_KEY_HEADER)),
-            _optional_header(headers.get(HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER)),
+            # Absent and present-but-empty markers differ: only absence means raw.
+            headers.get(HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER),
         )
     except ValueError:
         return None, _invalid_bridge_forward_signature_error()
