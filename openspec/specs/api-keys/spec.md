@@ -993,7 +993,9 @@ An enforced reasoning effort, or an enforced model alias that carries an
 effort, MUST govern the whole request: the proxy replaces the request-level
 `reasoning.effort` and also sets the effort of every `configuration_update`
 input item to the same outgoing wire value, as specified in the
-`responses-api-compat` configuration_update policy requirement.
+`responses-api-compat` configuration_update policy requirement. Items already
+held upstream behind a client-supplied `previous_response_id` are not part of
+the request and are not rewritten.
 
 #### Scenario: API key accepts extended enforced reasoning effort on create
 

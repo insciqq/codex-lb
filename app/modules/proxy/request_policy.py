@@ -14,6 +14,7 @@ from app.core.openai.requests import (
     ResponsesCompactRequest,
     ResponsesReasoning,
     ResponsesRequest,
+    effective_configuration_update_index,
     extract_input_file_ids,
     normalize_reasoning_aliases,
     responses_input_uses_lite_tools,
@@ -181,32 +182,28 @@ def api_key_pins_reasoning_effort(api_key: ApiKeyData | None) -> bool:
 
 
 def _effective_configuration_update_effort(input_value: JsonValue) -> tuple[int, str] | None:
-    """Return the index and normalized effort of the last effort-bearing ``configuration_update`` item.
+    """Return the index and normalized effort of the effective ``configuration_update`` item.
 
     Clients change reasoning effort mid-conversation with
     ``{"type": "configuration_update", "reasoning": {"effort": ...}}`` input
     items and keep the request-level ``reasoning.effort`` at the starting
-    value. An item applies until a later item overrides it, so the last one
-    selects the effort of the current turn. Compact trimming keeps every such
-    item (see ``_compact_state_anchor_indices``), so trimming cannot drop the
-    last item and bring an earlier one back into effect.
+    value. The last effort-bearing item selects the effort of the current
+    turn. Compact trimming keeps that item (see
+    ``_compact_state_anchor_indices``), so trimming cannot drop it and bring an
+    earlier one back into effect.
     """
-    if not is_json_list(input_value):
+    index = effective_configuration_update_index(input_value)
+    if index is None or not is_json_list(input_value):
         return None
-    effective: tuple[int, str] | None = None
-    for index, item in enumerate(input_value):
-        if not is_json_mapping(item) or item.get("type") != "configuration_update":
-            continue
-        item_reasoning = item.get("reasoning")
-        if not is_json_mapping(item_reasoning):
-            continue
-        item_effort = item_reasoning.get("effort")
-        if isinstance(item_effort, str) and item_effort.strip():
-            effective = (index, item_effort.strip().lower())
-    return effective
+    item = input_value[index]
+    item_reasoning = item.get("reasoning") if is_json_mapping(item) else None
+    item_effort = item_reasoning.get("effort") if is_json_mapping(item_reasoning) else None
+    if not isinstance(item_effort, str):
+        return None
+    return index, item_effort.strip().lower()
 
 
-def pin_configuration_update_efforts(input_value: JsonValue, request_effort: JsonValue) -> JsonValue:
+def pin_configuration_update_efforts(input_value: JsonValue, request_effort: str | None) -> JsonValue:
     """Set every ``configuration_update`` item's effort to the body's request-level effort.
 
     Used only when the API key pins the effort. Callers pass the request-level
@@ -217,8 +214,10 @@ def pin_configuration_update_efforts(input_value: JsonValue, request_effort: Jso
     prefix stays identical across turns. An item whose ``reasoning`` is not an
     object is replaced by ``{"effort": <pin>}``; an item without ``reasoning``
     selects no effort and is left alone. Other item fields are untouched.
+    ``None`` mirrors a request-level ``effort: null`` (a source override that
+    clears the effort): every item's effort becomes null as well.
     """
-    if not is_json_list(input_value) or not isinstance(request_effort, str) or not request_effort.strip():
+    if not is_json_list(input_value) or (request_effort is not None and not request_effort.strip()):
         return input_value
     pinned_items: list[JsonValue] = []
     changed = False
@@ -437,7 +436,7 @@ def apply_api_key_enforcement(
                 configuration_update_index=effective_update[0],
             )
     pre_normalization_effort = normalize_unsupported_reasoning_effort(payload, registry=registry)
-    if effort_pinned and payload.reasoning is not None:
+    if effort_pinned and payload.reasoning is not None and isinstance(payload.reasoning.effort, str):
         # The pin replaces item efforts exactly as it replaces the request-level
         # one. Model-source egress re-pins them to its own final effort.
         payload.input = pin_configuration_update_efforts(payload.input, payload.reasoning.effort)

@@ -3676,15 +3676,28 @@ async def test_source_responses_preserves_client_plane_reasoning_effort(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("policy", "source_effort"),
+    ("policy", "pinned_effort"),
     [
         ({"enforcedModel": "gpt-5.1-xhigh"}, "xhigh"),
         ({"enforcedReasoningEffort": "minimal"}, "minimal"),
     ],
 )
+@pytest.mark.parametrize(
+    ("reasoning_override", "expected_reasoning"),
+    [
+        (None, {}),
+        # An override of sibling fields keeps the pinned effort.
+        ({"summary": "auto"}, {"summary": "auto"}),
+        # An explicit source effort override is the operator's choice.
+        ({"effort": "medium", "summary": "auto"}, {"effort": "medium", "summary": "auto"}),
+        # An explicit null clears the effort in the request and every item.
+        pytest.param({"summary": "auto", "effort": None}, {"summary": "auto", "effort": None}, id="nullable_override"),
+    ],
+)
 async def test_source_responses_pins_configuration_update_items_to_the_source_effort(
-    async_client, source_upstream, policy, source_effort
+    async_client, source_upstream, policy, pinned_effort, reasoning_override, expected_reasoning
 ):
+    source_effort = expected_reasoning["effort"] if "effort" in expected_reasoning else pinned_effort
     await _enable_api_key_auth(async_client)
     captured: list[dict[str, object]] = []
 
@@ -3701,6 +3714,11 @@ async def test_source_responses_pins_configuration_update_items_to_the_source_ef
         model="gpt-5.1",
         base_url=base_url,
         supports_responses=True,
+        raw_metadata_json=(
+            json.dumps({"source_request_overrides": {"reasoning": reasoning_override}})
+            if reasoning_override is not None
+            else None
+        ),
     )
     created = await async_client.post(
         "/api/api-keys/",
@@ -3708,7 +3726,7 @@ async def test_source_responses_pins_configuration_update_items_to_the_source_ef
     )
     assert created.status_code == 200
 
-    def update(effort: str) -> dict[str, object]:
+    def update(effort: str | None) -> dict[str, object]:
         return {"type": "configuration_update", "reasoning": {"effort": effort}}
 
     response = await async_client.post(
@@ -3721,7 +3739,7 @@ async def test_source_responses_pins_configuration_update_items_to_the_source_ef
                 {"role": "user", "content": "start"},
                 update("high"),
                 {"role": "user", "content": "continue"},
-                update(source_effort),
+                update(pinned_effort),
             ],
             "reasoning": {"effort": "low"},
         },
@@ -3729,7 +3747,7 @@ async def test_source_responses_pins_configuration_update_items_to_the_source_ef
 
     assert response.status_code == 200
     assert len(captured) == 1
-    assert captured[0]["reasoning"] == {"effort": source_effort}
+    assert captured[0]["reasoning"] == {"effort": source_effort, **expected_reasoning}
     assert captured[0]["input"] == [
         {"role": "user", "content": "start"},
         update(source_effort),

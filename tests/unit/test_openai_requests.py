@@ -1593,20 +1593,20 @@ def test_compact_trim_rejects_generated_oversized_latest_item(size):
     assert raised.value.code == "responses_compact_input_too_large"
 
 
-def test_compact_trimming_keeps_every_configuration_update_item():
+def test_compact_trimming_keeps_the_effective_configuration_update_item():
     # Dropping the later update would put the earlier effort back into effect.
-    updates = [
-        {"type": "configuration_update", "reasoning": {"effort": "max"}},
-        {"type": "configuration_update", "reasoning": {"effort": "low"}},
-    ]
     chunk = "x" * 40_000
     turns = (_MAX_COMPACT_UPSTREAM_ESTIMATED_TOKENS * 4) // len(chunk) + 20
-    input_items: list[JsonValue] = [{"role": "user", "content": "start"}, updates[0]]
+    effective_update = {"type": "configuration_update", "reasoning": {"effort": "low"}}
+    input_items: list[JsonValue] = [
+        {"role": "user", "content": "start"},
+        {"type": "configuration_update", "reasoning": {"effort": "max"}},
+    ]
     for turn in range(turns):
         input_items.append({"role": "user", "content": chunk})
         input_items.append({"role": "assistant", "content": chunk})
         if turn == turns // 2:
-            input_items.append(updates[1])
+            input_items.append(effective_update)
     input_items.append({"role": "user", "content": "latest request"})
     request = ResponsesCompactRequest.model_validate({"model": "gpt-5.1", "instructions": "hi", "input": input_items})
 
@@ -1614,9 +1614,8 @@ def test_compact_trimming_keeps_every_configuration_update_item():
 
     assert isinstance(dumped_input, list)
     assert len(dumped_input) < len(input_items)
-    assert [item for item in dumped_input if isinstance(item, dict) and item.get("type") == "configuration_update"] == (
-        updates
-    )
+    updates = [item for item in dumped_input if isinstance(item, dict) and item.get("type") == "configuration_update"]
+    assert updates[-1] == effective_update
     assert _estimated_json_tokens(dumped_input) <= _MAX_COMPACT_UPSTREAM_ESTIMATED_TOKENS
 
 

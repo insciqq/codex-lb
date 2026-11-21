@@ -4554,8 +4554,9 @@ async def v1_chat_completions(
         return _logged_error_json_response(request, 400, error, headers=rate_limit_headers)
     # The replaced effort is discarded: the enforced Responses payload built
     # here is only ever forwarded to a subscription. This endpoint does
-    # source-route, but that branch forwards the untouched original chat
-    # payload, so there is nothing for a restore to undo.
+    # source-route, but that branch forwards the original chat payload (minus
+    # the ``input`` that ``messages`` overrides, with chat-level enforcement
+    # applied), so there is nothing for a restore to undo.
     prohibit_fast_mode, service_tier_was_enforced, _ = await _apply_api_key_enforcement_with_fast_mode_policy(
         responses_payload, api_key
     )
@@ -5375,20 +5376,56 @@ def _shape_source_responses_payload(
             source_payload["reasoning"] = {"effort": source_reasoning_effort}
     strip_replayed_tool_call_namespaces_from_payload(source_payload)
     source_payload["stream"] = bool(payload.stream)
+    effort_pinned = api_key_pins_reasoning_effort(api_key)
+    resolved_reasoning = source_payload.get("reasoning")
     _apply_source_response_request_overrides(source_payload, source_model_request_overrides(source, payload.model))
+    if effort_pinned:
+        _keep_pinned_source_reasoning_effort(source_payload, resolved_reasoning)
     _drop_unsupported_source_response_tools(
         source_payload,
         supported_tool_types=source_model_supported_tool_types(source, payload.model),
     )
-    source_reasoning = source_payload.get("reasoning")
-    if api_key_pins_reasoning_effort(api_key) and is_json_mapping(source_reasoning) and "input" in source_payload:
+    if effort_pinned and "input" in source_payload:
         # The source's final effort can differ from the subscription wire value
         # the items were pinned to (restored ``minimal``, an alias's ``xhigh``,
         # operator overrides), so re-pin them to this body's effort.
-        source_payload["input"] = pin_configuration_update_efforts(
-            source_payload["input"], source_reasoning.get("effort")
-        )
+        item_effort = _pinned_source_reasoning_effort(source_payload, resolved_reasoning)
+        if item_effort is None or isinstance(item_effort, str):
+            source_payload["input"] = pin_configuration_update_efforts(source_payload["input"], item_effort)
     return source_payload
+
+
+def _keep_pinned_source_reasoning_effort(
+    source_payload: dict[str, JsonValue],
+    resolved_reasoning: JsonValue,
+) -> None:
+    """Keep the pinned effort when a source ``reasoning`` override sets only sibling fields.
+
+    Overrides replace top-level fields. A ``reasoning`` override without an
+    ``effort`` (``{"summary": "auto"}``) would otherwise drop the effort an
+    API key pins; an override that sets ``effort`` is the operator's explicit
+    choice for that source and wins.
+    """
+    reasoning = source_payload.get("reasoning")
+    resolved_effort = resolved_reasoning.get("effort") if is_json_mapping(resolved_reasoning) else None
+    if reasoning is resolved_reasoning or not isinstance(resolved_effort, str):
+        return
+    if is_json_mapping(reasoning) and "effort" not in reasoning:
+        source_payload["reasoning"] = {**reasoning, "effort": resolved_effort}
+
+
+def _pinned_source_reasoning_effort(source_payload: dict[str, JsonValue], resolved_reasoning: JsonValue) -> JsonValue:
+    """Return the effort the pinned items take.
+
+    That is this body's request-level effort, including an explicit ``null``
+    from a source override that clears it, else the resolved pin when the
+    override removed ``reasoning`` altogether. A non-string, non-null result
+    leaves the items as the subscription path pinned them.
+    """
+    reasoning = source_payload.get("reasoning")
+    if is_json_mapping(reasoning) and "effort" in reasoning:
+        return reasoning.get("effort")
+    return resolved_reasoning.get("effort") if is_json_mapping(resolved_reasoning) else False
 
 
 async def _finish_non_stream_source_dispatch(

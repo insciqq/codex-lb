@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
 
+import httpx
 import pytest
 from fastapi.responses import JSONResponse
 from sqlalchemy import exc as sqlalchemy_exc
@@ -2768,7 +2769,7 @@ _CONFIGURATION_UPDATE_ENDPOINTS = [
 
 async def _post_configuration_update_request(
     async_client, monkeypatch, endpoint: str, key: str, request_payload: dict
-) -> tuple[object, list[str]]:
+) -> tuple[httpx.Response, list[str]]:
     """Send one request through ``endpoint`` and return the response and the serialized upstream bodies."""
     seen: list[str] = []
 
@@ -2898,6 +2899,63 @@ async def test_api_key_pin_rewrites_configuration_update_items_to_the_wire_effor
     assert json.dumps(upstream_body["input"]) == json.dumps(expected_input)
     # Deterministic rewrite: the next turn sends the same bytes.
     assert json.dumps(json.loads(bodies[1])["input"]) == json.dumps(upstream_body["input"])
+
+
+def _many_configuration_update_toggles() -> list[dict]:
+    small = {"role": "user", "content": "ok"}
+    history: list[dict] = [{"role": "user", "content": "x" * 400_000}]
+    for turn in range(1_100):
+        history.append({"type": "configuration_update", "reasoning": {"effort": "high" if turn % 2 else "low"}})
+        history.append(small)
+    history.append(small)
+    return history
+
+
+def _overridden_configuration_update_history() -> list[dict]:
+    chunk = "x" * 40_000
+    history: list[dict] = [
+        {"role": "user", "content": "start"},
+        {"type": "configuration_update", "reasoning": {"effort": "max"}},
+    ]
+    for turn in range(70):
+        history.append({"role": "user", "content": chunk})
+        history.append({"role": "assistant", "content": chunk})
+        if turn == 35:
+            history.append({"type": "configuration_update", "reasoning": {"effort": "low"}})
+    history.append({"role": "user", "content": "latest request"})
+    return history
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "history_factory",
+    [_many_configuration_update_toggles, _overridden_configuration_update_history],
+)
+async def test_compact_trimming_keeps_the_effective_configuration_update(async_client, monkeypatch, history_factory):
+    await _populate_test_registry()
+    await _import_account(async_client, "acc_compact_configuration_update", "compact-configuration-update@example.com")
+    history = history_factory()
+    effective_update = [item for item in history if item.get("type") == "configuration_update"][-1]
+    seen: list[list] = []
+
+    async def fake_compact(payload, _headers, _access_token, _account_id):
+        seen.append(payload.to_payload()["input"])
+        return OpenAIResponsePayload.model_validate(
+            {"id": "resp_compact_toggles", "model": payload.model, "status": "completed", "output": []}
+        )
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    response = await async_client.post(
+        "/v1/responses/compact",
+        json={"model": _TEST_MODELS[0], "instructions": "hi", "input": history},
+    )
+
+    assert response.status_code == 200
+    assert len(seen) == 1
+    assert len(seen[0]) < len(history) or seen[0][0] != history[0]
+    updates = [item for item in seen[0] if isinstance(item, dict) and item.get("type") == "configuration_update"]
+    assert updates[-1] == effective_update
 
 
 @pytest.mark.asyncio

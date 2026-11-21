@@ -10557,13 +10557,19 @@ the proxy MUST set `reasoning.effort` of every `configuration_update` input
 item to the effort the outgoing request-level `reasoning.effort` carries for
 that destination, after model-alias normalization, the unsupported-effort
 fallback, the `ultra` to `max` wire alias, and, for model-source routing, the
-source's own effort shaping. Items and the request-level field MUST be pinned
+source's own effort shaping and request overrides. A source `reasoning`
+override that sets only sibling fields MUST keep the pinned effort; an override
+that sets `effort` is honored, and an explicit `null` effort clears the effort
+of every item to `null` as well. Items and the request-level field MUST be pinned
 from the same outgoing body so they cannot diverge. A pinned key MUST NOT
 reject a request because of an item effort. An item whose `reasoning` is
 present but is not an object, or whose effort is null, blank or not a string,
 MUST be pinned the same way; an item without `reasoning` and all other item
-fields MUST be left unchanged. The rewrite MUST be deterministic so the same
-history serializes to the same bytes on every turn.
+fields MUST be left unchanged. For an unchanged key policy, model catalog and
+source configuration, the rewrite MUST be deterministic so the same history
+serializes to the same bytes on every turn. Items already held upstream behind
+a client-supplied `previous_response_id` are not part of the request and are
+not rewritten.
 
 When the key has an `allowedReasoningEfforts` policy and does not pin the
 effort, the proxy MUST judge the request-level effort as before and the
@@ -10577,9 +10583,10 @@ or source selection, and upstream dispatch with HTTP 403, OpenAI error type
 message stating that a `configuration_update` input item set the effort.
 Accepted items MUST be forwarded unchanged.
 
-Compact trimming MUST retain every `configuration_update` item, with or
-without an API key, so that dropping a later item cannot bring an earlier
-effort back into effect. The policy MUST apply to Responses, compact Responses,
+Compact trimming MUST retain the effective `configuration_update` item, with
+or without an API key, so that dropping it cannot bring an earlier effort back
+into effect. Earlier, overridden items remain ordinary droppable context, so a
+history with many updates is trimmed like any other history. The policy MUST apply to Responses, compact Responses,
 Responses-shaped chat completions, and every WebSocket `response.create` frame.
 When a chat completions request carries non-empty `messages`, the `input` that
 the Responses conversion discards MUST NOT be forwarded to a model source
@@ -10639,11 +10646,20 @@ keep their existing behavior.
   with status `403` and parameter `input[<index>].reasoning.effort`
 - **AND** the second turn reserves no quota and sends nothing upstream
 
-#### Scenario: Compact trimming keeps every item
+#### Scenario: Compact trimming keeps the effective item
 
 - **WHEN** an oversized compact input carries a `configuration_update` item
   selecting `max` and a later one selecting `low`
-- **THEN** the trimmed upstream input still contains both items in order
+- **THEN** the trimmed upstream input still contains the `low` item as its last
+  `configuration_update` item
+
+#### Scenario: Many updates do not block compact trimming
+
+- **WHEN** an oversized compact input alternates 1,100 `configuration_update`
+  items with short messages
+- **THEN** the request is trimmed and forwarded instead of failing with
+  `responses_compact_input_too_large`
+- **AND** the last update is retained
 
 ### Requirement: Verified full resend can recover from selection-time owner loss
 

@@ -1604,12 +1604,34 @@ def _compact_state_anchor_indices(input_value: list[JsonValue]) -> set[int]:
             preserved_indices.add(index)
         if _compact_item_is_state_anchor(item_mapping):
             preserved_indices.add(index)
-        if item_mapping.get("type") == "configuration_update":
-            # A configuration_update applies until a later one overrides it.
-            # Dropping a later item would bring an earlier effort back into
-            # effect, so every one is kept.
-            preserved_indices.add(index)
+    # The last effort-bearing configuration_update decides the effort after
+    # trimming: dropping it would bring an earlier item's effort back into
+    # effect. Earlier updates are overridden context and stay droppable.
+    effective_update_index = effective_configuration_update_index(input_value)
+    if effective_update_index is not None:
+        preserved_indices.add(effective_update_index)
     return preserved_indices
+
+
+def effective_configuration_update_index(input_value: JsonValue) -> int | None:
+    """Return the index of the last ``configuration_update`` item with a usable ``reasoning.effort``.
+
+    An item applies until a later item overrides it, so this item selects the
+    effort of the current turn. A usable effort is a non-blank string.
+    """
+    if not is_json_list(input_value):
+        return None
+    effective_index: int | None = None
+    for index, item in enumerate(input_value):
+        if not is_json_mapping(item) or item.get("type") != "configuration_update":
+            continue
+        item_reasoning = item.get("reasoning")
+        if not is_json_mapping(item_reasoning):
+            continue
+        item_effort = item_reasoning.get("effort")
+        if isinstance(item_effort, str) and item_effort.strip():
+            effective_index = index
+    return effective_index
 
 
 def _compact_side_effect_anchor_indices(input_value: list[JsonValue]) -> set[int]:
