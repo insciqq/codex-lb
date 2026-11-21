@@ -32102,11 +32102,12 @@ async def test_http_bridge_abrupt_eventless_drop_stays_account_neutral_and_recor
 
 
 @pytest.mark.asyncio
-async def test_http_bridge_abrupt_drop_after_response_events_still_penalizes_account(
+async def test_http_bridge_abrupt_drop_after_response_events_stays_account_neutral(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A drop after the upstream already streamed response events remains
-    account-attributable: only the eventless no-close-frame case is neutral."""
+    """A frame-less drop after the upstream already streamed response events
+    is transport evidence, not an account failure (issue 2074). It is not
+    eventless, so it does not feed the windowed eventless drain signal."""
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     request_state = proxy_service._WebSocketRequestState(
         request_id="req-mid-stream-drop",
@@ -32154,7 +32155,8 @@ async def test_http_bridge_abrupt_drop_after_response_events_still_penalizes_acc
     await service._relay_http_bridge_upstream_messages(session)
 
     assert fail_pending.await_args is not None
-    assert fail_pending.await_args.kwargs["penalize_account"] is True
+    assert fail_pending.await_args.kwargs["error_code"] == "stream_incomplete"
+    assert fail_pending.await_args.kwargs["penalize_account"] is False
     assert drop_signals == []
 
 
@@ -32245,12 +32247,13 @@ async def test_http_bridge_synthetic_1006_close_stays_account_neutral(
 
 
 @pytest.mark.asyncio
-async def test_http_bridge_abrupt_drop_after_buffered_reasoning_prelude_still_penalizes_account(
+async def test_http_bridge_abrupt_drop_after_buffered_reasoning_prelude_stays_account_neutral(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A buffered reasoning prelude is deliberately excluded from
     response_event_count, but it is application-layer output: a following
-    frame-less drop is not eventless and keeps the account penalty."""
+    frame-less drop is account-neutral yet not eventless, so it does not feed
+    the windowed eventless drain signal."""
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     request_state = proxy_service._WebSocketRequestState(
         request_id="req-reasoning-prelude-drop",
@@ -32299,7 +32302,8 @@ async def test_http_bridge_abrupt_drop_after_buffered_reasoning_prelude_still_pe
     await service._relay_http_bridge_upstream_messages(session)
 
     assert fail_pending.await_args is not None
-    assert fail_pending.await_args.kwargs["penalize_account"] is True
+    assert fail_pending.await_args.kwargs["error_code"] == "stream_incomplete"
+    assert fail_pending.await_args.kwargs["penalize_account"] is False
     assert drop_signals == []
 
 

@@ -8834,9 +8834,9 @@ the remaining eligible accounts with fallback enabled.
 - **THEN** the request fails with `previous_response_owner_unavailable`
 - **AND** the proxy does not treat the missing owner as a selector result or replay on another account
 
-### Requirement: Abrupt eventless upstream websocket drops remain account-neutral
+### Requirement: Abrupt frame-less upstream websocket drops remain account-neutral
 
-When an HTTP bridge upstream websocket ends with a terminal transport message (a close or receive error) that carries no upstream-authored close frame, no established account-neutral transport classification (process-network, liveness-timeout, keepalive-timeout), and no application-layer output was observed for the pending requests (zero response events and no buffered reasoning prelude), the proxy MUST NOT write per-drop account error-health (`record_error`) for that unclassified `stream_incomplete` drop. The synthetic abnormal-closure code 1006, which RFC 6455 reserves and which adapters synthesize locally when the socket dies without a close frame, MUST be treated as frame-less. When such a drop settles its pending requests as failures, the proxy MUST record it into the windowed eventless account failure signal so that repeated eventless drops on the same account within the window still apply the drain penalty; drops recovered by the bounded pre-created replay keep their existing behavior, and drops already covered by an established account-neutral transport classification keep their existing contract and are not added to the signal. A failure that carries an upstream-authored close frame (including non-clean codes), occurs after application-layer output was observed, or arrives as a non-terminal protocol-invalid frame (for example a binary message) MUST keep the existing account penalty semantics. The per-bridge retry circuit MUST still record the failure at bridge scope.
+When an HTTP bridge upstream websocket ends with a terminal transport message (a close or receive error) that carries no upstream-authored close frame and no established account-neutral transport classification (process-network, liveness-timeout, keepalive-timeout), the proxy MUST NOT write per-drop account error-health (`record_error`) for that unclassified `stream_incomplete` drop, whatever the response progress. The synthetic abnormal-closure code 1006, which RFC 6455 reserves and which adapters synthesize locally when the socket dies without a close frame, MUST be treated as frame-less, as MUST an end of stream without a close frame that the native helper reports as a lost connection; a close frame without a status code (reported as 1005), a close frame that carries the reserved 1006 on the wire, and a protocol failure a local reader reports about what upstream sent (the native helper's protocol phase, or an aiohttp protocol or decompression error) MUST NOT. When such a drop observed no application-layer output for the pending requests (zero response events and no buffered reasoning prelude) and settles them as failures, the proxy MUST record it into the windowed eventless account failure signal so that repeated eventless drops on the same account within the window still apply the drain penalty; a frame-less drop after output MUST NOT be added to that signal. Drops recovered by the bounded pre-created replay keep their existing behavior, drops already covered by an established account-neutral transport classification keep their existing contract and are not added to the signal, and a drop after output MUST NOT be replayed. A failure that carries an upstream-authored close frame (including non-clean codes) or arrives as a non-terminal protocol-invalid frame (for example a binary message) MUST keep the existing account penalty semantics. The per-bridge retry circuit MUST still record the failure at bridge scope.
 
 #### Scenario: Sporadic frame-less drops do not strand a continuity-bound conversation
 
@@ -8852,11 +8852,19 @@ When an HTTP bridge upstream websocket ends with a terminal transport message (a
 - **WHEN** the third drop is recorded
 - **THEN** the windowed eventless failure signal applies the minimum drain penalty so new turns avoid the account until its health probe succeeds
 
-#### Scenario: Close frames and observed-output drops keep the account penalty
+#### Scenario: Frame-less drop after output fails closed without a penalty
 
-- **GIVEN** an upstream websocket ending that carries an upstream-authored close frame (for example 1008 or 1011) before any response event, or a frame-less drop after application-layer output was observed (streamed response events or a buffered reasoning prelude), or a non-terminal protocol-invalid binary frame
+- **GIVEN** an HTTP bridge request whose upstream already streamed response events or a buffered reasoning prelude
+- **WHEN** the upstream websocket ends with no close frame
+- **THEN** the request fails with `stream_incomplete` after the delivered output and is not replayed
+- **AND** the account receives no per-drop failure-health write
+- **AND** the drop is not recorded into the windowed eventless account failure signal
+
+#### Scenario: Close frames and protocol-invalid frames keep the account penalty
+
+- **GIVEN** an upstream websocket ending that carries an upstream-authored close frame (for example 1008 or 1011), before or after response events, or a non-terminal protocol-invalid binary frame
 - **WHEN** the reader failure path settles the pending requests
-- **THEN** the account penalty semantics are unchanged from before this change
+- **THEN** the account penalty semantics are unchanged
 
 ### Requirement: Ambiguous HTTP bridge operations converge after owner loss
 

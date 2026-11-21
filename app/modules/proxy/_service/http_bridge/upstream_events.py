@@ -36,6 +36,7 @@ from app.core.clients.proxy_websocket import (
     UpstreamWebSocketMessage,
     UpstreamWebSocketTransportError,
     is_account_neutral_websocket_error_code,
+    is_frameless_websocket_ending,
 )
 from app.core.clock import REAL_CLOCK, REAL_SCHEDULER, Clock, Scheduler, clock_for, scheduler_for
 from app.core.errors import response_failed_event
@@ -2373,17 +2374,17 @@ class _HTTPBridgeUpstreamEventsMixin:
                     if message.close_code is not None
                     else None
                 )
-                # An abrupt drop with no close frame and no response events is
-                # weaker account-health evidence than a graceful pre-created
-                # close, which is already exempted below. Keep the individual
-                # drop account-neutral; repeated eventless drops still feed
-                # the windowed account drain signal inside the failure path.
-                # Only terminal transport messages qualify: a protocol-invalid
+                # An ending with no upstream close frame is transport evidence,
+                # not evidence against the account, at any response progress;
+                # progress decides only replay safety (issue 2074). Only
+                # terminal transport messages qualify: a protocol-invalid
                 # binary frame also carries no close code but did not end the
                 # socket, so it keeps the existing penalty semantics.
+                frameless_transport_end = is_frameless_websocket_ending(message)
+                # Repeated eventless frame-less drops still feed the windowed
+                # account drain signal inside the failure path.
                 account_neutral_transport_drop = (
-                    message.kind in ("close", "error")
-                    and not account_neutral
+                    frameless_transport_end
                     and not upstream_output_observed
                     and _is_account_neutral_transport_drop(
                         message.close_code, response_events_seen=response_events_seen
@@ -2413,7 +2414,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                         retry_circuit_attempt_selection=reader_failure_retry_circuit_attempt_selection,
                         penalize_account=(
                             not account_neutral
-                            and not account_neutral_transport_drop
+                            and not frameless_transport_end
                             and not (message.kind == "close" and close_classification == "clean")
                         ),
                         account_neutral_transport_drop=account_neutral_transport_drop,
