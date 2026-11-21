@@ -30,12 +30,17 @@ OpenSpec remains the normative source of truth. Every docs page that documents s
 
 ### Requirement: README stays a quickstart
 
-`README.md` SHALL remain a slim quickstart: hero screenshots, feature summary, Quick Start, a single in-README client configuration path (Codex CLI) with a table linking other clients to the docs site, configuration and data pointers, documentation links, and development notes. Detailed operational content (auth modes, routing guide, database runbooks, Kubernetes, remote setup, per-client walkthroughs) SHALL live on the documentation site instead. The README SHALL carry a prominent link to the documentation site and SHALL keep the all-contributors generated block between its `ALL-CONTRIBUTORS-LIST` markers. `README.zh-CN.md` SHALL carry a banner identifying the English documentation site as canonical.
+`README.md` SHALL remain a slim quickstart: hero screenshots, feature summary, Quick Start, a single in-README client configuration path (Codex CLI) with a table linking other clients to their `docs/*.md` pages, configuration and data pointers, documentation links, and development notes. Detailed operational content (auth modes, routing guide, database runbooks, Kubernetes, remote setup, per-client walkthroughs) SHALL live in the `docs/` pages instead. In this fork the README SHALL link those pages in the repository rather than the published documentation site, because the published site documents upstream's releases, images and Helm chart; the README SHALL say so where it mentions the site. The README SHALL carry a prominent link to `docs/` and SHALL keep the all-contributors generated block between its `ALL-CONTRIBUTORS-LIST` markers. `README.zh-CN.md` SHALL carry a banner identifying the English `docs/` pages as canonical.
 
 #### Scenario: Moved content is reachable from the README
 
 - **WHEN** a reader looks for content removed from the README (e.g. the Postgres 16→18 upgrade runbook)
-- **THEN** the README links to the documentation site where that content now lives
+- **THEN** the README links to the in-repository `docs/*.md` page where that content now lives
+
+#### Scenario: The published site is not the fork's install guide
+
+- **WHEN** the README mentions the published documentation site
+- **THEN** it states that the site documents upstream's releases, images and Helm chart
 
 #### Scenario: Contributors block survives the diet
 
