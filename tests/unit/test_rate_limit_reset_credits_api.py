@@ -332,17 +332,20 @@ async def test_redeem_returns_409_when_cached_count_is_zero() -> None:
 
 
 @pytest.mark.asyncio
-async def test_redeem_returns_409_when_snapshot_missing() -> None:
+async def test_redeem_without_snapshot_lets_the_fresh_fetch_decide() -> None:
     store = RateLimitResetCreditsStore()
-    with pytest.raises(DashboardConflictError):
+    with pytest.raises(DashboardConflictError) as excinfo:
         await _redeem_soonest_reset_credit(
             account=_account(),
             store=store,
             encryptor=StubEncryptor(),
-            fetch_fn=_raise_not_called,  # type: ignore[arg-type]
+            fetch_fn=_static_fetch_fn(_response([], available_count=0)),
             consume_fn=_raise_not_called,  # type: ignore[arg-type]
         )
-    assert store.get("acc_1") is None
+    assert excinfo.value.code == "no_available_reset_credit"
+    cached = store.get("acc_1")
+    assert cached is not None
+    assert cached.available_count == 0
 
 
 @pytest.mark.asyncio

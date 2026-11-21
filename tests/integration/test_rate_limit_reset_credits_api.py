@@ -161,21 +161,75 @@ async def test_consume_active_account_returns_success_with_mocked_upstream(async
 
 
 @pytest.mark.asyncio
-async def test_consume_without_cached_snapshot_returns_409_without_fetch(async_client, monkeypatch) -> None:
-    async def _should_not_fetch(*args: Any, **kwargs: Any) -> ResetCreditsResponse:
-        raise AssertionError("uncached consume should not invoke upstream fetch")
+async def test_consume_without_cached_snapshot_redeems_the_fetched_credit(async_client, monkeypatch) -> None:
+    """A replica that has not refreshed the account yet must not refuse a real credit."""
+    consumed: list[str] = []
 
-    monkeypatch.setattr(reset_credits_api, "fetch_reset_credits", _should_not_fetch)
+    async def _fake_fetch(access_token: str, account_id: str | None, **kwargs: Any) -> ResetCreditsResponse:
+        return _upstream_response([_credit("credit-after-restart")])
+
+    async def _fake_consume(
+        access_token: str,
+        account_id: str | None,
+        credit_id: str,
+        redeem_request_id: str | None = None,
+        **kwargs: Any,
+    ) -> ConsumeResetCreditResponse:
+        consumed.append(credit_id)
+        return ConsumeResetCreditResponse.model_validate(
+            {
+                "code": "reset",
+                "credit": {"id": credit_id, "status": "redeemed", "redeemed_at": "2026-06-13T13:12:31Z"},
+                "windows_reset": 1,
+            }
+        )
+
+    async def _noop_refresh(account, reset_credit_redemption=None) -> None:  # noqa: ANN001
+        del reset_credit_redemption
+        return None
+
+    monkeypatch.setattr(reset_credits_api, "fetch_reset_credits", _fake_fetch)
+    monkeypatch.setattr(reset_credits_api, "consume_reset_credit", _fake_consume)
+    monkeypatch.setattr(reset_credits_api, "_build_refresh_usage_callback", lambda _context: _noop_refresh)
 
     account_id = await _import_test_account(
         async_client,
         email="reset-no-cache@example.com",
         account_id="acc_reset_no_cache",
     )
+    assert get_rate_limit_reset_credits_store().get(account_id) is None
 
     response = await async_client.post(f"/api/accounts/{account_id}/rate-limit-reset-credits/consume")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["code"] == "reset"
+    assert consumed == ["credit-after-restart"]
+
+
+@pytest.mark.asyncio
+async def test_consume_without_cached_snapshot_returns_409_when_fetch_is_empty(async_client, monkeypatch) -> None:
+    async def _fake_fetch(access_token: str, account_id: str | None, **kwargs: Any) -> ResetCreditsResponse:
+        return _upstream_response([], available_count=0)
+
+    async def _should_not_consume(*args: Any, **kwargs: Any) -> ConsumeResetCreditResponse:
+        raise AssertionError("an empty fresh fetch must not consume")
+
+    monkeypatch.setattr(reset_credits_api, "fetch_reset_credits", _fake_fetch)
+    monkeypatch.setattr(reset_credits_api, "consume_reset_credit", _should_not_consume)
+
+    account_id = await _import_test_account(
+        async_client,
+        email="reset-no-cache-empty@example.com",
+        account_id="acc_reset_no_cache_empty",
+    )
+
+    response = await async_client.post(f"/api/accounts/{account_id}/rate-limit-reset-credits/consume")
+
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "no_available_reset_credit"
+    cached = get_rate_limit_reset_credits_store().get(account_id)
+    assert cached is not None
+    assert cached.available_count == 0
 
 
 @pytest.mark.asyncio

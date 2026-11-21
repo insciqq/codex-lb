@@ -355,7 +355,12 @@ async def _redeem_soonest_reset_credit_locked(
             redeem_request_id=redeem_request_id,
             credit_id=pending_credit_id,
         )
-    if cached_credit is None and pending_credit_id is None:
+    # A snapshot that is present and empty is local evidence of no credit. A
+    # missing one only means this replica has not refreshed the account yet
+    # (snapshots are process-local and rebuilt by each replica's loop, so a
+    # restart or a failed refresh leaves none) and proves nothing: let the
+    # authoritative fetch below decide instead of refusing a real credit.
+    if cached_snapshot is not None and cached_credit is None and pending_credit_id is None:
         raise DashboardConflictError("No available reset credit", code="no_available_reset_credit")
 
     access_token = encryptor.decrypt(redeem_account.access_token_encrypted)
