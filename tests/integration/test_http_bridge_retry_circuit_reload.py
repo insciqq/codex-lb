@@ -60,6 +60,19 @@ class _HeldUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
         return await super().receive()
 
 
+class _OffsetClock:
+    """The real clock shifted forward, so a cooldown can expire without waiting."""
+
+    def __init__(self) -> None:
+        self.offset = 0.0
+
+    def monotonic(self) -> float:
+        return time.monotonic() + self.offset
+
+    def time(self) -> float:
+        return time.time() + self.offset
+
+
 async def _install_upstream(async_client, monkeypatch, slug: str) -> _HeldUpstreamWebSocket:
     _install_bridge_settings(monkeypatch, enabled=True)
     account_id = await _import_account(async_client, f"acc_{slug}", f"{slug}@example.com")
@@ -184,14 +197,17 @@ async def test_observed_cooldown_expiry_still_admits_exactly_one_probe(
     upstream = await _install_upstream(async_client, monkeypatch, "circuit-reload-real")
     service = get_proxy_service_for_app(app_instance)
     turn_state = "turn-state-circuit-reload-real"
-    cooldown_seconds = 0.5
+    cooldown_seconds = 60.0
     await _seed_circuit(service, turn_state, cooldown_until_epoch=time.time() + cooldown_seconds)
     admissions = _record_admissions(monkeypatch)
+    clock = _OffsetClock()
+    monkeypatch.setattr(retry_circuit_module, "clock_for", lambda _owner: clock)
 
     cooling = await _post(async_client, turn_state, "cooling")
     assert cooling.status_code == 503, cooling.text
     assert not upstream.sent_text
-    await asyncio.sleep(cooldown_seconds + 0.1)
+    # Expire the cooldown on the circuit's own clock, wall and monotonic alike.
+    clock.offset = cooldown_seconds + 1.0
     admissions.clear()
 
     with caplog.at_level(logging.INFO, logger=retry_circuit_module.logger.name):
