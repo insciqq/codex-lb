@@ -17,8 +17,14 @@ from app.modules.proxy import service as proxy_service
 from app.modules.proxy.load_balancer import AccountSelection
 from app.modules.proxy.repo_bundle import ProxyRepoFactory, ProxyRepositories
 from app.modules.proxy.service import ProxyService
+from tests.unit._proxy_test_helpers import use_rowless_request_path_routes
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _rowless_request_path_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    use_rowless_request_path_routes(monkeypatch)
 
 
 class _SettingsCache:
