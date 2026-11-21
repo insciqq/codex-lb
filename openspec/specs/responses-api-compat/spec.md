@@ -1212,8 +1212,10 @@ are pending and have not reached a terminal event, the proxy MUST record a
 transient upstream error for the account before signaling failure for those
 pending requests, except when the close carries a classified process-wide
 network failure or upstream WebSocket liveness timeout, is a clean close
-(`close_code = 1000`) before any `response.*` event, or carries the classified
-per-socket `upstream_keepalive_timeout` transport error. Clean pre-response
+(`close_code = 1000`) before any `response.*` event, carries the classified
+per-socket `upstream_keepalive_timeout` transport error, or is a frame-less
+direct Responses WebSocket ending after a response event as defined in
+"Frame-less direct WebSocket endings remain account-neutral". Clean pre-response
 closes, keepalive timeouts, process-wide network failures, and liveness
 timeouts MUST remain account-neutral and use their classified error and bounded
 retry or retry-circuit handling. For other closes, the proxy MUST surface
@@ -1231,6 +1233,7 @@ never mixes numeric response sequences" and its one-shot replay succeeds.
 - **AND** the direct downstream response has not emitted a numeric sequence, or the request uses another transport
 - **WHEN** the websocket closes before a terminal response event is observed
 - **AND** the close does not carry a classified process-wide network failure or upstream WebSocket liveness timeout
+- **AND** the ending carries an upstream-authored close frame
 - **THEN** the pending request fails with `stream_incomplete`
 - **AND** the account receives a transient upstream failure signal for routing
 
@@ -1239,6 +1242,7 @@ never mixes numeric response sequences" and its one-shot replay succeeds.
 - **AND** the request does not satisfy the verified no-generation prewarm recovery contract
 - **WHEN** the upstream websocket closes before a terminal response event is observed
 - **AND** the close does not carry a classified process-wide network failure or upstream WebSocket liveness timeout
+- **AND** the ending carries an upstream-authored close frame
 - **THEN** the request is recorded as failed with `stream_incomplete`
 - **AND** no synthetic terminal frame is emitted under the active response id
 - **AND** the downstream WebSocket closes with code 1011
@@ -1268,6 +1272,51 @@ never mixes numeric response sequences" and its one-shot replay succeeds.
 - **AND** it suppresses the replayed `response.created`
 - **AND** it forwards only replay numeric sequences that advance beyond `0`
 - **AND** the recovered request is finalized and logged exactly once
+
+### Requirement: Frame-less direct WebSocket endings remain account-neutral
+
+When a direct Responses WebSocket upstream ends with a terminal transport
+message (a close or a receive error) that carries no upstream-authored close
+frame and no adapter error classification, after at least one response event
+was received for an affected request, the proxy MUST NOT write account
+error-health for it. A missing close code and the synthetic abnormal-closure
+code 1006, which RFC 6455 reserves and adapters synthesize locally, MUST count
+as frame-less, as MUST an end of stream without a close frame that the native
+helper reports as a lost connection. A close frame without a status code
+(reported as 1005), a close frame that carries the reserved 1006 on the wire,
+and a protocol failure a local reader reports about what upstream sent (the
+native helper's protocol phase, or an aiohttp protocol or decompression
+error) MUST NOT count as frame-less. A
+frame-less ending before any response event MUST keep the account penalty,
+because the direct path has no windowed drain signal. The affected requests
+MUST still fail closed with `stream_incomplete` (a request that already
+emitted a numeric `sequence_number` follows the sequenced-close contract),
+MUST NOT be replayed after visible output or a sequenced downstream frame, and
+the bounded pre-created replay MUST keep its existing behavior. An ending that
+carries an upstream-authored close frame other than a clean pre-response close
+(for example 1002 or 1011) MUST keep the account penalty.
+
+#### Scenario: Frame-less drop after output fails closed without a penalty
+
+- **GIVEN** a direct Responses WebSocket request has received `response.created` and output text
+- **WHEN** the upstream connection is lost with no close frame received or sent
+- **THEN** the client receives a `stream_incomplete` terminal error after the delivered output
+- **AND** the request is not replayed
+- **AND** the account receives no failure-health signal
+
+#### Scenario: Upstream-authored close after output keeps the penalty
+
+- **GIVEN** a direct Responses WebSocket request has received output
+- **WHEN** the upstream closes with an authored close frame such as 1002 or 1011, a close frame without a status code, or a local reader reports a protocol failure about what upstream sent
+- **THEN** the request fails with `stream_incomplete`
+- **AND** the account receives a transient upstream failure signal for routing
+
+#### Scenario: Eventless frame-less drop keeps the penalty
+
+- **GIVEN** a direct Responses WebSocket request has received no response event
+- **WHEN** the upstream connection is lost with no close frame and the request cannot be replayed
+- **THEN** the request fails with `stream_incomplete`
+- **AND** the account receives a transient upstream failure signal for routing
 
 ### Requirement: HTTP SSE stream idle timeouts remain account-neutral
 

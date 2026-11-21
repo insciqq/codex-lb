@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -15,7 +16,7 @@ import pytest
 from websockets.asyncio.server import serve
 
 from app.core.clients.native_egress import NativeWebSocketRequest, SubprocessNativeEgressClient
-from app.core.clients.proxy_websocket import NativeUpstreamWebSocket
+from app.core.clients.proxy_websocket import NativeUpstreamWebSocket, is_frameless_websocket_ending
 from app.core.clock import REAL_CLOCK, REAL_SCHEDULER
 from app.core.openai.parsing import (
     _LIFECYCLE_EVENT_TYPES,
@@ -400,3 +401,51 @@ async def test_native_websocket_buffers_burst_while_send_acknowledgements_progre
             await socket.close()
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ending", "expected_error_code"),
+    [("bare-eof", None), ("malformed-frame", "stream_incomplete")],
+)
+async def test_native_bare_eof(ending: str, expected_error_code: str | None) -> None:
+    binary = os.environ.get("CODEX_LB_NATIVE_EGRESS_TEST_BINARY")
+    if not binary:
+        pytest.skip("set CODEX_LB_NATIVE_EGRESS_TEST_BINARY to run the native wire probe")
+
+    async def end_after_first_message(websocket: Any) -> None:
+        await websocket.recv()
+        if ending == "bare-eof":
+            # Close TCP without a WebSocket close frame.
+            websocket.transport.close()
+        else:
+            # A control frame with a reserved opcode is a protocol violation.
+            websocket.transport.write(bytes([0x8F, 0x00]))
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(websocket.wait_closed(), timeout=5)
+
+    client = SubprocessNativeEgressClient(Path(binary))
+    try:
+        async with serve(end_after_first_message, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            socket = NativeUpstreamWebSocket(
+                await client.websocket(
+                    NativeWebSocketRequest(
+                        url=f"ws://127.0.0.1:{port}/responses",
+                        headers={},
+                        connect_timeout_seconds=5,
+                        max_message_bytes=1024 * 1024,
+                        interpret_responses=True,
+                    )
+                )
+            )
+            await socket.send_text('{"type":"response.create"}')
+            message = await asyncio.wait_for(socket.receive(), timeout=5)
+    finally:
+        await client.aclose()
+
+    assert message.kind == "error"
+    assert message.error_code == expected_error_code
+    # Only the lost connection is a frame-less ending; the malformed frame is
+    # upstream evidence and keeps the account penalty.
+    assert is_frameless_websocket_ending(message) is (expected_error_code is None)

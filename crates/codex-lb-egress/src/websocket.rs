@@ -14,6 +14,7 @@ use tokio_tungstenite::Connector;
 use tokio_tungstenite::client_async_tls_with_config;
 use tokio_tungstenite::proxy::connect_via_proxy;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::error::TlsError;
 use tokio_tungstenite::tungstenite::handshake::client::Response as WebSocketResponse;
 use tokio_tungstenite::tungstenite::http::HeaderName as WebSocketHeaderName;
@@ -512,6 +513,17 @@ pub(crate) async fn emit_websocket_error(
             Vec::new(),
             None,
         ),
+        // Upstream ended the TCP stream without a close frame: a lost
+        // connection, not a frame the helper rejected.
+        NativeWebSocketFailure::WebSocket(error) if websocket_reset_without_close(error) => (
+            "native websocket transport failed",
+            "transport",
+            false,
+            false,
+            None,
+            Vec::new(),
+            None,
+        ),
         NativeWebSocketFailure::WebSocket(_) => (
             "native websocket protocol failed",
             "protocol",
@@ -546,6 +558,10 @@ pub(crate) async fn emit_websocket_error(
         },
     )
     .await
+}
+
+fn websocket_reset_without_close(error: &WebSocketError) -> bool {
+    matches!(error, WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake))
 }
 
 fn websocket_tls_verification_failure(failure: &NativeWebSocketFailure) -> bool {

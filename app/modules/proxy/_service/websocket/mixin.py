@@ -63,6 +63,7 @@ from app.core.clients.proxy_websocket import (
     UpstreamWebSocketTransportError,
     filter_inbound_websocket_headers,
     is_account_neutral_websocket_error_code,
+    is_frameless_websocket_ending,
 )
 from app.core.clock import Clock, Scheduler, clock_for, scheduler_for
 from app.core.errors import (
@@ -1498,6 +1499,14 @@ async def _process_upstream_websocket_transport_end(
         return True
 
     sequenced_downstream_replay_refused = "sequenced_downstream_frame" in replay_refusal_reasons
+    # An ending without an upstream close frame after the response started is
+    # transport evidence, not evidence against the account; the request still
+    # fails closed below and is never replayed after output. An eventless one
+    # keeps the penalty: this path has no windowed drain signal, so an account
+    # whose streams always drop before answering must still be charged.
+    frameless_drop_after_output = is_frameless_websocket_ending(message) and any(
+        state.response_event_count > 0 for state in reader_owned
+    )
     await proxy._fail_pending_websocket_requests(
         account=account,
         account_id_value=account_id_value,
@@ -1510,7 +1519,7 @@ async def _process_upstream_websocket_transport_end(
         client_send_lock=client_send_lock,
         response_create_gate=response_create_gate,
         downstream_activity=downstream_activity,
-        penalize_account=not account_neutral,
+        penalize_account=not account_neutral and not frameless_drop_after_output,
         suppress_sequenced_downstream_errors=sequenced_downstream_replay_refused,
     )
     # A terminal receive can race the outer session cleanup, especially when

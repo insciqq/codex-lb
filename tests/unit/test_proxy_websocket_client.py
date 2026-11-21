@@ -43,6 +43,7 @@ from app.core.clients.proxy_websocket import (
     WebsocketsUpstreamWebSocket,
     connect_live_websocket,
     connect_responses_websocket,
+    is_frameless_websocket_ending,
 )
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
 from tests.unit._proxy_test_helpers import runtime_basic_auth_url
@@ -2375,3 +2376,39 @@ async def test_live_connector_preserves_version_specific_alpha_without_synthesis
     assert lowered.get("openai-alpha") == supplied_alpha
     assert "openai-beta" not in lowered
     assert "sec-websocket-protocol" not in lowered
+
+
+@pytest.mark.asyncio
+async def test_routed_adapter_treats_a_1006_close_frame_as_a_protocol_failure() -> None:
+    async def send_1006_close_frame(websocket: Any) -> None:
+        # RFC 6455 forbids sending 1006; write the frame below the library.
+        websocket.transport.write(bytes([0x88, 0x02, 0x03, 0xEE]))
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(websocket.wait_closed(), timeout=5)
+
+    async with websocket_serve(send_1006_close_frame, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(f"ws://127.0.0.1:{port}") as websocket:
+                message = await asyncio.wait_for(CodexUpstreamWebSocket(websocket).receive(), timeout=5)
+
+    assert message.kind == "close"
+    assert message.close_code == 1006
+    assert message.error_code == "stream_incomplete"
+    assert not is_frameless_websocket_ending(message)
+
+
+@pytest.mark.asyncio
+async def test_routed_adapter_keeps_a_stored_abnormal_closure_frameless() -> None:
+    class ClosedWebSocket(_FakeCodexWebSocket):
+        close_code = 1006
+
+        async def receive(self) -> aiohttp.WSMessage:
+            return aiohttp.WSMessage(aiohttp.WSMsgType.CLOSED, None, None)
+
+    message = await CodexUpstreamWebSocket(ClosedWebSocket()).receive()
+
+    assert message.kind == "close"
+    assert message.close_code == 1006
+    assert message.error_code is None
+    assert is_frameless_websocket_ending(message)

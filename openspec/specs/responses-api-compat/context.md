@@ -44,6 +44,39 @@ the proxy injected itself are different: the client's own unanchored body is
 complete by definition, so a stale injected anchor is still recovered by
 replaying that body.
 
+## Frame-less upstream WebSocket endings
+
+An upstream WebSocket that vanishes without a close frame (no close code, or
+the 1006 an adapter synthesizes for an abnormal closure) is transport
+evidence: the connection, a proxy or a load balancer between this service and
+upstream ended it, not the account. Request progress decides only whether
+replay is safe; it says nothing about the account, and response events are
+positive evidence that authentication, admission and processing worked. A
+direct WebSocket turn that streamed text and then lost its connection
+therefore still fails as `stream_incomplete` and is never replayed, but the
+account is not put into error backoff. Charging such drops let routine
+reconnect churn push healthy continuity owners into backoff and on into
+`previous_response_owner_unavailable`. An upstream-authored close frame, such
+as 1002 or 1011, is the upstream speaking and keeps the penalty; so does an
+empty close frame (1005) and a protocol or decompression failure the native
+helper or the aiohttp reader reports, because that reader rejected what
+upstream sent. A
+failure of the native helper's own IPC (`NativeEgressProtocolError`) is a
+local helper fault, not upstream evidence: it carries no code and reads as a
+frame-less ending.
+
+Which side of that line an ending falls on depends on what the reader saw,
+not on the close code alone. A close frame that carries 1006 is itself a
+protocol violation, while the 1006 aiohttp stores after a lost connection
+arrives as a CLOSED notification and stays frame-less. The native helper
+reports an end of stream without a close frame as a lost connection, not as a
+protocol failure.
+
+On the direct path a frame-less drop before any response event keeps the
+penalty. Without it an account whose handshake succeeds but whose streams
+always drop before answering would get no health signal at all: unlike the
+HTTP bridge, the direct path has no windowed eventless drain signal.
+
 ## Rationale and Decisions
 
 - **Responses as canonical wire format:** Internally we treat Responses as the source of truth to avoid divergent streaming semantics.

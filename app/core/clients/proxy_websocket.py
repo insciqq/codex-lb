@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import ssl
+import zlib
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Mapping, NoReturn, Protocol, Sequence, cast
@@ -95,6 +96,9 @@ REALTIME_LIVE_CALL_ID_ROUTE_REGEX = (
 )
 _LIVE_CALL_ID_PATTERN = re.compile(rf"{REALTIME_LIVE_CALL_ID_ROUTE_REGEX}\Z")
 UPSTREAM_WEBSOCKET_LIVENESS_TIMEOUT_CODE = "upstream_websocket_liveness_timeout"
+# A local reader rejected what upstream sent: not a lost connection, so relay
+# owners get their attributable code instead of a frame-less ending.
+_UPSTREAM_PROTOCOL_FAILURE_ERROR_CODE = "stream_incomplete"
 _WEBSOCKETS_KEEPALIVE_TIMEOUT_REASON = "keepalive ping timeout"
 _AIOHTTP_HEARTBEAT_TIMEOUT_PREFIX = "No PONG received after "
 
@@ -219,6 +223,19 @@ def _websocket_transport_error_code(exc: BaseException, *, uses_proxy: bool) -> 
         fallback="upstream_unavailable",
         include_permanent_dns=not uses_proxy,
     )
+
+
+def is_frameless_websocket_ending(message: UpstreamWebSocketMessage) -> bool:
+    """Return whether a terminal upstream ending carried no upstream close frame.
+
+    Adapters report such an ending as a close or receive error with no close
+    code and no classified error code; a protocol failure keeps a code.
+    Close code 1006 (abnormal closure) is reserved by RFC 6455 and can never
+    appear in an actual close frame: adapters synthesize it locally when the
+    socket dies without one (aiohttp stores 1006 on ``close_code`` for an
+    abnormal CLOSED), so it counts as frame-less here.
+    """
+    return message.kind in ("close", "error") and message.close_code in (None, 1006) and message.error_code is None
 
 
 def is_account_neutral_websocket_error_code(error_code: str | None) -> bool:
@@ -446,13 +463,19 @@ class NativeUpstreamWebSocket:
             return UpstreamWebSocketMessage(
                 kind="error",
                 error=str(error),
-                error_code=_relay_receive_error_code(error.error_code),
+                error_code=(
+                    _UPSTREAM_PROTOCOL_FAILURE_ERROR_CODE
+                    if isinstance(exc, NativeEgressTransportError) and exc.failure_phase == "protocol"
+                    else _relay_receive_error_code(error.error_code)
+                ),
             )
         return UpstreamWebSocketMessage(
             kind=message.kind,
             text=message.text,
             data=message.data,
-            close_code=message.close_code,
+            # A close frame without a status code is reported as 1005 (RFC
+            # 6455), as the websockets library does: upstream authored it.
+            close_code=1005 if message.kind == "close" and message.close_code is None else message.close_code,
             close_reason=message.close_reason,
             responses_interpreted=message.responses_interpreted,
             event_type=message.event_type,
@@ -555,6 +578,14 @@ class CodexUpstreamWebSocket:
                 kind="close",
                 close_code=_aiohttp_ws_close_code(self._websocket, msg),
                 close_reason=_aiohttp_ws_close_reason(msg),
+                # RFC 6455 forbids sending 1006, so a close frame carrying it
+                # is a protocol violation; the 1006 aiohttp stores for a lost
+                # connection arrives as CLOSED and stays frame-less.
+                error_code=(
+                    _UPSTREAM_PROTOCOL_FAILURE_ERROR_CODE
+                    if msg.type == aiohttp.WSMsgType.CLOSE and msg.data == 1006
+                    else None
+                ),
             )
         if msg.type == aiohttp.WSMsgType.ERROR:
             exception = (
@@ -573,7 +604,13 @@ class CodexUpstreamWebSocket:
                     if exception is not None
                     else "Upstream websocket error"
                 ),
-                error_code=_relay_receive_error_code(error_code),
+                error_code=(
+                    # aiohttp's reader rejected a frame, or could not inflate
+                    # a compressed one (``compress=15``).
+                    _UPSTREAM_PROTOCOL_FAILURE_ERROR_CODE
+                    if isinstance(exception, (aiohttp.WebSocketError, zlib.error))
+                    else _relay_receive_error_code(error_code)
+                ),
             )
         if msg.type == aiohttp.WSMsgType.TEXT:
             text = msg.data if isinstance(msg.data, str) else str(msg.data)
