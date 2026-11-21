@@ -509,3 +509,4 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | refactor(proxy): tie bridge quarantine clears to the registered session | [2268](https://github.com/Soju06/codex-lb/issues/2268) | - |
 | fix(proxy): drop the old lease whenever a missed settle adopts a replacement | [2272](https://github.com/Soju06/codex-lb/issues/2272) | - |
 | refactor(proxy): move the required continuity owner check out of load\_balancer.py | - | line ratchet room for the upstream PR 2627 port |
+| fix(proxy): never await a failed bridge reconnect's lease release | - | fail-closed proxy route for accounts deleted mid-operation |
