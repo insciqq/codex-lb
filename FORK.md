@@ -102,8 +102,10 @@ floating tags. Images are built by GitHub Actions, never locally.
   also gets a GitHub Release with release notes: see the fork's
   [Releases](https://github.com/insciqq/codex-lb/releases) and
   [tags](https://github.com/insciqq/codex-lb/tags).
-* Images carry `org.opencontainers.image.revision`, `.version` and `.source`.
-  The job summary prints the digest.
+* Images carry `org.opencontainers.image.revision`, `.version`, `.source`, `.title`,
+  `.description`, `.licenses`, `.url` and `.documentation`. The job summary prints the digest.
+* The package page also lists a `sha256-<digest>` tag per release: it holds the signed build
+  provenance for that digest, not an image to run.
 * Deploy by the `sha-<full>` tag or by digest, not by the version tag, and
   verify the digest first:
 

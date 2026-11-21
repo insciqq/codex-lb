@@ -8,16 +8,16 @@ codex-lb runs with zero configuration — every setting has a working default, a
 # Docker (recommended)
 docker volume create codex-lb-data
 docker run -d --name codex-lb \
+  --stop-timeout 65 \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
   ghcr.io/insciqq/codex-lb:1.25.0-fork.1
 
-# or uvx (upstream's PyPI release; the fork publishes no Python package)
-uvx codex-lb
-
 # or Nix
 nix run github:insciqq/codex-lb/v1.25.0-fork.1
 ```
+
+`uvx codex-lb` installs upstream's PyPI release, not this fork: the fork publishes container images only.
 
 The image tags are `<version>` and `sha-<full commit SHA>`; there is no `latest`.
 Pin the `sha-` tag or the digest in production, see [Docker](deployment/docker.md#images).

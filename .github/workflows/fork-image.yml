@@ -251,10 +251,20 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.verify.outputs.sha }}
             org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+            org.opencontainers.image.title=codex-lb
+            org.opencontainers.image.description=Maintained fork of Soju06/codex-lb: load balancer and proxy that pools ChatGPT accounts for Codex and OpenAI-compatible clients
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.documentation=https://insciqq.github.io/codex-lb/
           annotations: |
             index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
             index:org.opencontainers.image.revision=${{ needs.verify.outputs.sha }}
             index:org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+            index:org.opencontainers.image.title=codex-lb
+            index:org.opencontainers.image.description=Maintained fork of Soju06/codex-lb: load balancer and proxy that pools ChatGPT accounts for Codex and OpenAI-compatible clients
+            index:org.opencontainers.image.licenses=MIT
+            index:org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.documentation=https://insciqq.github.io/codex-lb/
 
       - name: Require a digest
         env:

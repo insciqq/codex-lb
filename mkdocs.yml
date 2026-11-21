@@ -3,6 +3,7 @@ site_description: Codex load balancer and proxy for ChatGPT accounts with usage 
 site_url: https://insciqq.github.io/codex-lb/
 repo_url: https://github.com/insciqq/codex-lb
 repo_name: insciqq/codex-lb
+copyright: "codex-lb &copy; 2025 Soju06 &middot; fork &copy; 2026 insciqq &middot; MIT License"
 edit_uri: edit/main/docs/
 docs_dir: docs
 

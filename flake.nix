@@ -51,7 +51,7 @@
 
       codexLbMeta = {
         inherit (projectMetadata) description;
-        homepage = "https://github.com/Soju06/codex-lb";
+        homepage = "https://github.com/insciqq/codex-lb";
         license = lib.licenses.mit;
         mainProgram = "codex-lb";
         maintainers = [ lib.maintainers.aaravrav ];

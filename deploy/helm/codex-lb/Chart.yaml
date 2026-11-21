@@ -19,6 +19,8 @@ keywords:
 maintainers:
   - name: Soju06
     email: qlskssk@gmail.com
+  - name: insciqq
+    url: https://github.com/insciqq
 dependencies:
   - name: postgresql
     version: 18.12.16

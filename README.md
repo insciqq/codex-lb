@@ -10,11 +10,24 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 
 ![codex-lb](docs/screenshots/banner.jpg)
 
-> **Maintained fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb).** Scope for now: bug fixes, security,
-> compatibility with current Codex clients and the OpenAI backend, and dependency updates. New features are on
-> hold until the fork has settled with a few stable releases; feature work may be considered after that.
-> The database schema stays identical to upstream, so switching between upstream and the fork is an image swap.
-> What happened to each upstream PR and issue: [fork/REGISTRY.md](fork/REGISTRY.md). Policy: [FORK.md](FORK.md).
+[![Main CI guard](https://github.com/insciqq/codex-lb/actions/workflows/main-ci-guard.yml/badge.svg?branch=main)](https://github.com/insciqq/codex-lb/actions/workflows/main-ci-guard.yml)
+[![Release](https://img.shields.io/github/v/release/insciqq/codex-lb?display_name=tag)](https://github.com/insciqq/codex-lb/releases)
+[![License: MIT](https://img.shields.io/github/license/insciqq/codex-lb)](LICENSE)
+
+> **This is a maintained fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb), maintained by
+> [@insciqq](https://github.com/insciqq).** codex-lb was created by Soju06 and built by the
+> [contributors](#contributors-) listed below; all credit for it is theirs. Upstream has had no new commits
+> since 2026-10-16. This fork keeps codex-lb working with current Codex clients and the OpenAI backend.
+>
+> - **Scope:** bug fixes, security, compatibility with current Codex clients and the OpenAI backend, and
+>   dependency updates. New features are on hold until the fork has settled with a few stable releases.
+> - **Releases:** `v<upstream base>-fork.<n>` tags with images at `ghcr.io/insciqq/codex-lb` (no `latest`).
+>   Release notes are on [Releases](https://github.com/insciqq/codex-lb/releases); `CHANGELOG.md` is upstream's.
+> - **Coming from upstream:** see [Migrating from upstream](#migrating-from-upstream).
+> - **Telemetry is off by default** since the `fork.2` release ([details](docs/telemetry.md)).
+> - **Problems:** [open an issue here](https://github.com/insciqq/codex-lb/issues/new/choose), not upstream.
+>   Security reports go through a [private advisory](https://github.com/insciqq/codex-lb/security/advisories/new).
+> - What happened to each upstream PR and issue: [fork/REGISTRY.md](fork/REGISTRY.md). Policy: [FORK.md](FORK.md).
 
 **English** | [简体中文](./README.zh-CN.md)
 
@@ -48,17 +61,17 @@ Published at <https://insciqq.github.io/codex-lb/>. Upstream's own site, <https:
 docker volume create codex-lb-data
 docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
 docker run -d --name codex-lb \
+  --stop-timeout 65 \
   --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
   ghcr.io/insciqq/codex-lb:1.25.0-fork.1
 
-# or uvx (upstream's PyPI release; the fork publishes no Python package)
-uvx codex-lb
-
 # or nix
 nix run github:insciqq/codex-lb/v1.25.0-fork.1
 ```
+
+`uvx codex-lb` installs upstream's PyPI release, not this fork: the fork publishes container images only.
 
 The fork publishes `ghcr.io/insciqq/codex-lb:<version>` and
 `ghcr.io/insciqq/codex-lb:sha-<full commit SHA>`; there is no `latest` tag.
@@ -111,6 +124,24 @@ PostgreSQL is optional via `CODEX_LB_DATABASE_URL`.
 | Docker | `/var/lib/codex-lb/` |
 
 Backup this directory to preserve your data.
+
+## Migrating from upstream
+
+The fork uses the same database and data directory as upstream, so moving is an image change:
+
+1. Back up first: the data directory (`/var/lib/codex-lb` in Docker, `~/.codex-lb` locally — it holds
+   the SQLite database and `encryption.key`), or a `pg_dump` when you use PostgreSQL.
+2. Stop the old container with time to drain (`docker stop -t 65 codex-lb`). With several replicas,
+   stop all old replicas before the new ones serve.
+3. Start the same volume and environment with `ghcr.io/insciqq/codex-lb:<version>` (pin
+   `sha-<commit>` or the digest in production). Pending migrations run on startup.
+4. Check Settings → Anonymous telemetry. A decision saved under upstream carries over and wins over
+   `CODEX_LB_TELEMETRY_ENABLED`; turn the toggle off there to stop sending. The fork's default (off)
+   applies only when no decision was saved.
+
+Going back: an upstream build of the same base or newer runs on the same database. Going back to
+an older upstream release (for example 1.24.0) after the fork migrated the database needs the
+backup from step 1. Upgrade notes for each release are on [Releases](https://github.com/insciqq/codex-lb/releases).
 
 ## Documentation
 

@@ -10,6 +10,20 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 
 ![codex-lb](docs/screenshots/banner.jpg)
 
+> **这是 [Soju06/codex-lb](https://github.com/Soju06/codex-lb) 的维护分支（fork），由
+> [@insciqq](https://github.com/insciqq) 维护。** codex-lb 由 Soju06 创建，并由下方英文 README 中列出的
+> 贡献者共同完成，功劳归于他们。上游自 2026-10-16 起没有新的提交；本 fork 让 codex-lb 继续兼容当前的
+> Codex 客户端和 OpenAI 后端。
+>
+> - **范围：** 缺陷修复、安全、对当前 Codex 客户端与 OpenAI 后端的兼容性，以及依赖更新。在 fork 经过几个稳定
+>   版本之前不添加新功能。
+> - **版本：** 标签为 `v<上游基线>-fork.<n>`，镜像为 `ghcr.io/insciqq/codex-lb`（没有 `latest`）。发布说明见
+>   [Releases](https://github.com/insciqq/codex-lb/releases)；`CHANGELOG.md` 是上游的。
+> - **从上游迁移：** 见英文 README 的 [Migrating from upstream](./README.md#migrating-from-upstream)。
+> - **自 `fork.2` 版本起默认关闭遥测**（[说明](docs/telemetry.md)）。
+> - **问题反馈：** 请在[本仓库提交 issue](https://github.com/insciqq/codex-lb/issues/new/choose)，不要提交到上游。
+>   安全问题请通过[私密安全通告](https://github.com/insciqq/codex-lb/security/advisories/new)报告。
+
 [English](./README.md) | **简体中文**
 
 > **文档（英文，权威版本）**: [docs/](docs/index.md) — 本页内容可能滞后，最新使用说明以英文文档为准。站点发布于 <https://insciqq.github.io/codex-lb/>；上游自己的站点 <https://soju06.github.io/codex-lb/> 对应上游的版本、镜像和 Helm chart。
@@ -43,17 +57,17 @@ ChatGPT 账户负载均衡器。聚合多个账户、追踪用量、管理 API K
 docker volume create codex-lb-data
 docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
 docker run -d --name codex-lb \
+  --stop-timeout 65 \
   --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
   ghcr.io/insciqq/codex-lb:1.25.0-fork.1
 
-# 或者使用 uvx（上游的 PyPI 版本；本 fork 不发布 Python 包）
-uvx codex-lb
-
 # 或者使用 nix
 nix run github:insciqq/codex-lb/v1.25.0-fork.1
 ```
+
+`uvx codex-lb` 安装的是上游的 PyPI 版本，而不是本 fork；本 fork 只发布容器镜像。
 
 本 fork 发布 `ghcr.io/insciqq/codex-lb:<version>` 和
 `ghcr.io/insciqq/codex-lb:sha-<完整 commit SHA>`，没有 `latest` 标签。
