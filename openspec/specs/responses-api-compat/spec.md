@@ -4181,9 +4181,21 @@ The service MUST classify an upstream `invalid_request_error` with `param=input`
 ### Requirement: Non-message system and developer input items are preserved
 
 When normalizing Responses or compact request `input`, the service MUST only
-hoist items that are instruction messages — `system`/`developer`-role items
-whose `type` is omitted or `"message"` — into the top-level `instructions`
-field. Any `system`/`developer`-role input item carrying any other `type`
+hoist items that are system instruction messages — `system`-role items whose
+`type` is omitted or `"message"` — into the top-level `instructions` field.
+`developer`-role messages MUST remain in `input`, in their original position,
+because `previous_response_id` carries `input` but not `instructions` into
+chained responses. They receive the same input sanitization as other message
+items: interleaved-reasoning keys (`reasoning_content`, `reasoning_details`,
+`tool_calls`, `function_call`) and reasoning content parts are removed, because
+upstream rejects them on every message role. A `developer` message with no
+content left after part sanitization (`content` omitted or `null`, blank text,
+no parts, or only parts the reasoning sanitizer removes) carries no
+instruction and MUST be dropped rather than forwarded, including after the
+`messages` alias turns empty content into a blank text part. `system` messages
+are still hoisted, because upstream rejects them in `input`, so a `system`
+message on a request chained through `previous_response_id` applies to that
+request only. Any `system`/`developer`-role input item carrying any other `type`
 value, including item types the service does not model, MUST be forwarded
 upstream unchanged and in its original input position. This preservation MUST
 hold both when the request is validated and when the request is serialized for
@@ -4197,7 +4209,8 @@ rather than replaced by the trim marker. When a non-message
 `system`/`developer` item is preserved and the request carries no top-level
 `instructions` and no hoistable instruction messages, the service MUST default
 `instructions` to the empty string so the request still validates and
-forwards. Requests whose input contains an `additional_tools` item remain
+forwards. The service MUST apply the same default when the request carries no top-level
+`instructions` and its `input` holds a `developer` message. Requests whose input contains an `additional_tools` item remain
 governed by the Responses Lite rule that leaves the entire input array and
 top-level `instructions` unchanged.
 
@@ -4206,7 +4219,7 @@ top-level `instructions` unchanged.
 - **WHEN** a Responses or compact request `input` contains a typed, non-message
   item such as `{"type": "future_directive", "role": "developer", ...}`
   alongside developer instruction messages and user messages
-- **THEN** the developer instruction messages are hoisted into `instructions`
+- **THEN** the developer instruction messages remain in `input`
 - **AND** the `future_directive` item remains in `input` unchanged, in its
   original position
 - **AND** the upstream-serialized payload retains the item unchanged
@@ -4244,6 +4257,31 @@ top-level `instructions` unchanged.
 - **WHEN** an OpenAI-compatible client sends `input` containing
   `{"role": "system", "content": "sys"}` without a `type` field
 - **THEN** that item is hoisted into `instructions` as before
+
+#### Scenario: developer messages stay in input
+
+- **WHEN** a Responses or compact request `input` contains
+  `{"type": "message", "role": "developer", ...}` and user messages, with or
+  without top-level `instructions`
+- **THEN** the developer message remains in `input` unchanged, in its
+  original position, including in the upstream-serialized payload
+- **AND** `instructions` keeps its value, or defaults to `""` when absent
+
+#### Scenario: developer messages without content are dropped
+
+- **WHEN** a Responses or compact request `input` contains
+  `{"role": "developer"}`, `{"role": "developer", "content": null}`, a developer
+  message whose only text is blank, or one whose only part is a `reasoning` part
+- **THEN** that item is not forwarded upstream
+- **AND** the other input items keep their order
+
+#### Scenario: developer messages are sanitized like other messages
+
+- **WHEN** a Responses or compact request `input` contains a developer
+  message carrying `reasoning_content`, `reasoning_details`, `tool_calls`,
+  `function_call`, or a `reasoning` content part
+- **THEN** the developer message remains in `input`, in its original position
+- **AND** those keys and content parts are removed from it before forwarding
 
 ### Requirement: Responses Lite follow-up transformations fail closed
 
@@ -6242,10 +6280,10 @@ disappear before validation. A canonical Lite-prefix developer instruction MAY
 appear immediately after the `additional_tools` bundle when it passes the same
 account-neutral item checks as historical interleaving and has no response-owned
 ID. A developer message in the stored prefix outside that canonical position or
-the verified pending-call/matching-output interleave MUST fail closed. The same
-fail-closed rule covers `developer` messages that non-Lite `input` keeps inline;
-`system` messages normalized into top-level `instructions` remain outside this
-requirement.
+the verified pending-call/matching-output interleave MUST fail closed. Outside
+Responses Lite, developer messages stay inline, and the replay proofs MUST
+judge such `input` without its account-neutral developer messages, as when
+those were hoisted into `instructions`.
 
 #### Scenario: Canonical Responses-Lite prefix remains transparent
 

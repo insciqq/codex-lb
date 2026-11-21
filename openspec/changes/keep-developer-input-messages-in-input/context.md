@@ -30,3 +30,21 @@ question about it):
 - Direct: `input_tokens` 12830, answers from the reference data.
 - Hoisting proxy: `input_tokens` 34, "I don't have reference data".
 - This change: `input_tokens` 12830, answers from the reference data.
+
+## Consequences
+
+- Prompt prefix: a thread that existed before this change sees its developer text move from `instructions` back
+  into `input` once, so its next request misses the prompt cache once. The derived prompt-cache anchor (its domain
+  includes `instructions`) and the inferred HTTP bridge key are re-derived once for the same reason. No compatibility
+  switch is kept.
+- Replay heuristics: outside Responses Lite, they judge `input` as they did while developer messages were hoisted
+  (see the `responses-api-compat` requirement "Replay heuristics judge history without inline developer messages").
+  The delta-or-full-resend classifiers ignore every developer message, because they fail safe by calling an input a
+  delta; the retained-output proofs ignore only account-neutral ones, because they fail safe by rejecting. Lite
+  input keeps its own developer rules. Replay behaviour is otherwise unchanged.
+- Compact budget: developer messages now count toward the compact input budget and are trim anchors, so a compact
+  request with a single very large developer message can now fail with `responses_compact_input_too_large`, where the
+  same text in `instructions` was not counted.
+- Developer messages without content are dropped, as the hoist used to drop them.
+- Limitation: `system` messages are still hoisted, because upstream rejects them in `input`. A `system` message on a
+  request chained through `previous_response_id` therefore applies to that request only.

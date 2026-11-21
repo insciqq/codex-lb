@@ -41,3 +41,9 @@ None.
   the upstream in `input` as that requirement states, instead of being hoisted afterwards; `system` messages are still
   hoisted.
 - Requests with `additional_tools` are unchanged (Responses Lite rule).
+- Replay heuristics that decided delta versus full resend, or proved retained output, on input without developer
+  messages now judge two explicit views of `input` (classifier and proof), so replay behaviour stays as it was. See
+  the ADDED requirement.
+- One prompt-cache miss per existing thread after the change, replay classification outside Responses Lite that
+  ignores inline developer messages, a compact budget that now counts developer text, and `system` messages that
+  are still hoisted: see `context.md`.
