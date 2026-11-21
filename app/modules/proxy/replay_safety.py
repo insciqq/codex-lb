@@ -261,6 +261,37 @@ def _project_account_neutral_replay_item(
     return projected_item
 
 
+_REPLAYED_TOOL_SEARCH_ITEM_TYPES = frozenset({"tool_search_call", "tool_search_output"})
+
+
+def anchor_free_replay_payload_is_account_neutral(
+    replay_payload: Mapping[str, JsonValue],
+    *,
+    strip_tool_search_ids: bool,
+) -> bool:
+    """Return whether a retained anchor-free replay body may move accounts.
+
+    ``replay_payload`` is the client's request as ``to_replay_safety_payload``
+    renders it, so replay-relevant metadata the wire text drops (tool-call
+    namespaces that mark owner-bound history) still counts. With
+    ``strip_tool_search_ids`` the tool-search ids that the wire text of a body
+    replacing an anchored one omits are left out of the judgement.
+    """
+    payload = dict(replay_payload)
+    # The direct WebSocket frame discriminator is not part of the request.
+    if payload.pop("type", "response.create") != "response.create":
+        return False
+    input_items = payload.get("input")
+    if strip_tool_search_ids and isinstance(input_items, list):
+        payload["input"] = [
+            {key: value for key, value in item.items() if key != "id"}
+            if isinstance(item, dict) and item.get("type") in _REPLAYED_TOOL_SEARCH_ITEM_TYPES
+            else item
+            for item in cast(list[JsonValue], input_items)
+        ]
+    return responses_payload_is_account_neutral_fresh_replay(payload)
+
+
 def responses_input_carries_owner_bound_tool_search_state(input_value: JsonValue) -> bool:
     """Return whether input carries tool-search state only its owner can serve.
 

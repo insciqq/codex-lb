@@ -27223,6 +27223,63 @@ async def test_prepare_websocket_response_create_request_sanitizes_injected_anch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("owner_bound", [False, True], ids=["plain", "namespaced-call"])
+async def test_prepare_websocket_unanchored_fresh_body_portability_comes_from_the_request(monkeypatch, owner_bound):
+    # An unanchored request is its own fresh body. Whether it may move
+    # accounts is decided from the request, where a namespaced call still
+    # marks owner-bound history that the wire text no longer shows.
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    api_key = ApiKeyData(
+        id="key_ws_unanchored_portability",
+        name="ws-unanchored-portability",
+        key_prefix="sk-ws-unanchored",
+        allowed_models=["gpt-5.1"],
+        enforced_model=None,
+        enforced_reasoning_effort=None,
+        enforced_service_tier=None,
+        expires_at=None,
+        is_active=True,
+        created_at=utcnow(),
+        last_used_at=None,
+    )
+
+    class Settings:
+        trace_channels = frozenset()
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: Settings())
+    monkeypatch.setattr(service, "_reserve_websocket_api_key_usage", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_refresh_websocket_api_key_policy", AsyncMock(return_value=api_key))
+    history: list[JsonValue] = [{"role": "user", "content": [{"type": "input_text", "text": "run it"}]}]
+    if owner_bound:
+        history += [
+            {
+                "type": "function_call",
+                "namespace": "collaboration",
+                "name": "spawn_agent",
+                "arguments": "{}",
+                "call_id": "call_owner_bound",
+            },
+            {"type": "function_call_output", "call_id": "call_owner_bound", "output": "ok"},
+        ]
+    history.append({"role": "user", "content": [{"type": "input_text", "text": "next"}]})
+
+    prepared = await service._prepare_websocket_response_create_request(
+        {"type": "response.create", "model": "gpt-5.1", "input": history},
+        headers={},
+        codex_session_affinity=False,
+        openai_cache_affinity=True,
+        sticky_threads_enabled=False,
+        openai_cache_affinity_max_age_seconds=300,
+        api_key=api_key,
+        continuity_state=proxy_service._WebSocketContinuityState(),
+    )
+
+    assert prepared.request_state.fresh_upstream_request_text == prepared.text_data
+    assert "namespace" not in prepared.text_data
+    assert prepared.request_state.fresh_upstream_request_account_neutral is (not owner_bound)
+
+
+@pytest.mark.asyncio
 async def test_prepare_websocket_goal_restart_keeps_full_resend_without_injected_anchor(monkeypatch):
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))

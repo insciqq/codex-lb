@@ -358,7 +358,10 @@ from app.modules.proxy.http_bridge_forwarding import (
 from app.modules.proxy.http_bridge_forwarding import (
     OwnerForwardRelayFailure as OwnerForwardRelayFailure,
 )
-from app.modules.proxy.replay_safety import responses_payload_is_account_neutral_fresh_replay
+from app.modules.proxy.replay_safety import (
+    anchor_free_replay_payload_is_account_neutral,
+    responses_payload_is_account_neutral_fresh_replay,
+)
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
 
 
@@ -477,11 +480,7 @@ def _prepare_websocket_request_state_for_visible_output_replay(
         _install_fresh_replay_body(
             request_state,
             fresh_request_text,
-            account_neutral=(
-                _websocket_fresh_replay_text_is_account_neutral(request_state)
-                if request_state.previous_response_id is not None
-                else _websocket_request_text_is_account_neutral_fresh_replay(fresh_request_text)
-            ),
+            account_neutral=_websocket_fresh_replay_text_is_account_neutral(request_state),
             release_owner_pin=(
                 request_state.previous_response_id is None or request_state.proxy_injected_previous_response_id
             ),
@@ -523,21 +522,21 @@ def _websocket_request_text_is_account_neutral_fresh_replay(request_text: str | 
     return responses_payload_is_account_neutral_fresh_replay(cast(dict[str, JsonValue], payload))
 
 
-def _websocket_fresh_replay_payload_is_account_neutral(payload: ResponsesRequest) -> bool:
-    """Return whether a retained anchor-free replay body may move accounts.
+def _websocket_fresh_replay_payload_is_account_neutral(
+    payload: ResponsesRequest,
+    *,
+    replaces_anchored_body: bool = True,
+) -> bool:
+    """Return whether the retained replay body built from ``payload`` may move accounts.
 
-    Judged on the client's request with its replay-relevant metadata intact
-    (tool-call namespaces, which the wire text drops, mark owner-bound
-    history), minus only the tool-search ids the wire text omits.
+    Judged on the client's request with its replay-relevant metadata intact.
+    A body that replaces an anchored one goes out without tool-search ids, so
+    those ids are left out of the judgement; an unanchored body keeps them.
     """
-    replay_payload = dict(payload.to_replay_safety_payload())
-    # The direct WebSocket frame discriminator is not part of the request.
-    if replay_payload.pop("type", "response.create") != "response.create":
-        return False
-    input_items = replay_payload.get("input")
-    if isinstance(input_items, list):
-        replay_payload["input"] = [_strip_websocket_replayed_tool_search_id(item) for item in input_items]
-    return responses_payload_is_account_neutral_fresh_replay(replay_payload)
+    return anchor_free_replay_payload_is_account_neutral(
+        payload.to_replay_safety_payload(),
+        strip_tool_search_ids=replaces_anchored_body,
+    )
 
 
 def _websocket_fresh_replay_text_is_account_neutral(request_state: "_WebSocketRequestState") -> bool:

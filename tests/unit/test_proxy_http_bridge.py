@@ -6116,6 +6116,72 @@ async def test_retry_http_bridge_precreated_request_replays_an_accepted_anchored
 
 
 @pytest.mark.asyncio
+async def test_retry_http_bridge_precreated_request_moves_a_portable_tool_search_fresh_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The retained fresh body still carries the client's tool-search ids; the
+    # portability recorded from the client's request when it was retained
+    # lets the owner-switch prep install it for a replacement account.
+    fresh_payload = proxy_service.ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "first"}]},
+                {
+                    "type": "tool_search_call",
+                    "id": "tsc_owned",
+                    "call_id": "call_search",
+                    "execution": "client",
+                    "status": "completed",
+                    "arguments": {"query": "docs"},
+                },
+                {
+                    "type": "tool_search_output",
+                    "id": "tso_owned",
+                    "call_id": "call_search",
+                    "execution": "client",
+                    "status": "completed",
+                    "tools": [],
+                },
+                {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+        }
+    )
+    fresh_text = json.dumps({**fresh_payload.to_payload(), "type": "response.create"}, separators=(",", ":"))
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    request_state = _accepted_anchored_bridge_request_state(
+        request_id="req-accepted-anchored-tool-search",
+        account_response_create_lease=cast(Any, object()),
+        fresh_upstream_request_text=fresh_text,
+        fresh_upstream_request_account_neutral=http_bridge_streaming_module._http_bridge_anchor_free_replay_is_account_neutral(
+            fresh_payload
+        ),
+    )
+    session = _make_bridge_session(
+        key=proxy_service._HTTPBridgeSessionKey("request", "bridge-accepted-tool-search", None),
+        key_value="bridge-accepted-tool-search",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+    send_text = AsyncMock()
+    session.upstream = cast(UpstreamWebSocket, SimpleNamespace(send_text=send_text, close=AsyncMock()))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(service, "_reconnect_http_bridge_session", AsyncMock())
+
+    assert await service._retry_http_bridge_precreated_request(session) is True
+
+    assert request_state.previous_response_id is None
+    assert request_state.replay_required_account_id is None
+    assert request_state.excluded_account_ids == {session.account.id}
+    sent_payload = json.loads(send_text.await_args.args[0]) if send_text.await_args is not None else None
+    assert isinstance(sent_payload, dict)
+    tool_search_items = [item for item in sent_payload["input"] if str(item.get("type", "")).startswith("tool_search")]
+    assert len(tool_search_items) == 2
+    assert all("id" not in item for item in tool_search_items)
+
+
+@pytest.mark.asyncio
 async def test_retry_http_bridge_precreated_request_refuses_accepted_replay_while_gate_is_held(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -14949,6 +15015,8 @@ async def _run_session_anchor_owner_stream(
     *,
     account_id: str,
     anchor_owner_account_id: str | None,
+    extra_prefix_items: list[proxy_service.JsonValue] | None = None,
+    prepared_states: list[proxy_service._WebSocketRequestState] | None = None,
 ) -> list[proxy_service.ResponsesRequest]:
     """Drive _stream_via_http_bridge for a trimmable session-anchor turn.
 
@@ -14960,6 +15028,7 @@ async def _run_session_anchor_owner_stream(
     prefix_items: list[proxy_service.JsonValue] = [
         {"role": "user", "content": [{"type": "input_text", "text": "a"}]},
         {"role": "assistant", "content": [{"type": "output_text", "text": "b"}]},
+        *(extra_prefix_items or []),
         {"role": "user", "content": [{"type": "input_text", "text": "c"}]},
     ]
     payload = proxy_service.ResponsesRequest.model_validate(
@@ -15017,7 +15086,7 @@ async def _run_session_anchor_owner_stream(
         codex_session=True,
         last_completed_response_id="resp_session_latest",
         last_completed_response_account_id=anchor_owner_account_id,
-        last_completed_input_count=3,
+        last_completed_input_count=len(prefix_items),
         last_completed_input_prefix_fingerprint=proxy_service._fingerprint_input_items(prefix_items),
     )
 
@@ -15061,6 +15130,8 @@ async def _run_session_anchor_owner_stream(
         queue_limit=4,
     ):
         pass
+    if prepared_states is not None:
+        prepared_states.append(request_state)
     return prepared_payloads
 
 
@@ -15072,6 +15143,58 @@ async def test_stream_via_http_bridge_injects_session_anchor_when_account_owns_i
     prepared = await _run_session_anchor_owner_stream(monkeypatch, account_id="acc-1", anchor_owner_account_id="acc-1")
     # Injection re-prepares the payload, so the final (sent) request carries the anchor.
     assert prepared[-1].previous_response_id == "resp_session_latest"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_bound", [False, True], ids=["portable-tool-search", "namespaced-call"])
+async def test_stream_via_http_bridge_records_fresh_body_portability_from_the_client_request(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_bound: bool,
+) -> None:
+    # The retained anchor-free body is judged on the client's request: a
+    # client-executed tool-search pair is portable although the retained text
+    # still carries its ids, and a namespaced call stays owner-bound although
+    # the wire text drops the namespace.
+    history: list[proxy_service.JsonValue] = [
+        {
+            "type": "tool_search_call",
+            "id": "tsc_owned",
+            "call_id": "call_search",
+            "execution": "client",
+            "status": "completed",
+            "arguments": {"query": "docs"},
+        },
+        {
+            "type": "tool_search_output",
+            "id": "tso_owned",
+            "call_id": "call_search",
+            "execution": "client",
+            "status": "completed",
+            "tools": [],
+        },
+    ]
+    if owner_bound:
+        history += [
+            {
+                "type": "function_call",
+                "namespace": "collaboration",
+                "name": "spawn_agent",
+                "arguments": "{}",
+                "call_id": "call_owner_bound",
+            },
+            {"type": "function_call_output", "call_id": "call_owner_bound", "output": "ok"},
+        ]
+    prepared_states: list[proxy_service._WebSocketRequestState] = []
+    await _run_session_anchor_owner_stream(
+        monkeypatch,
+        account_id="acc-1",
+        anchor_owner_account_id="acc-1",
+        extra_prefix_items=history,
+        prepared_states=prepared_states,
+    )
+    request_state = prepared_states[0]
+    assert request_state.fresh_upstream_request_text is not None
+    assert request_state.fresh_upstream_request_account_neutral is (not owner_bound)
 
 
 @pytest.mark.asyncio

@@ -270,6 +270,7 @@ from app.modules.proxy.helpers import (
 )
 from app.modules.proxy.replay_safety import (
     AccountNeutralReplayProjection,
+    anchor_free_replay_payload_is_account_neutral,
     project_responses_input_for_account_neutral_fresh_replay,
     responses_input_carries_owner_bound_tool_search_state,
     responses_input_suffix_matches_pending_tool_calls,
@@ -566,6 +567,18 @@ def _http_bridge_durable_owner_is_dead(
     owner_instance_is_dead = lookup.owner_instance_id is not None and lookup.owner_instance_id != current_instance
     process_epoch_is_dead = previous_process_epoch is not None and previous_process_epoch != current_process_epoch
     return owner_instance_is_dead or process_epoch_is_dead or not lookup.lease_is_active(now=utcnow())
+
+
+def _http_bridge_anchor_free_replay_is_account_neutral(payload: ResponsesRequest) -> bool:
+    """Portability of the anchor-free body retained from ``payload``.
+
+    Decided on the namespace-preserving request; the tool-search ids the wire
+    text of an anchor-free replay omits do not count.
+    """
+    return anchor_free_replay_payload_is_account_neutral(
+        payload.to_replay_safety_payload(),
+        strip_tool_search_ids=True,
+    )
 
 
 def _http_bridge_payload_is_account_neutral_fresh_replay(payload: ResponsesRequest) -> bool:
@@ -1558,6 +1571,10 @@ class _HTTPBridgeStreamingMixin:
         proxy_injected_previous_response_id = False
         fresh_upstream_request_text: str | None = None
         client_full_resend_fresh_upstream_request_text: str | None = None
+        # Portability of each retained anchor-free body, decided from the
+        # client's request before the wire text drops replay metadata.
+        fresh_upstream_request_account_neutral: bool | None = None
+        client_full_resend_fresh_upstream_request_account_neutral: bool | None = None
         previous_response_trimmed_input_count: int | None = None
         previous_response_trimmed_input_fingerprint: str | None = None
         durable_full_resend_anchor_count: int | None = None
@@ -1835,6 +1852,7 @@ class _HTTPBridgeStreamingMixin:
                     proxy_injected_previous_response_id = True
                     _fresh_request_state, fresh_upstream_request_text = prepare_bridge_request(payload)
                     del _fresh_request_state
+                    fresh_upstream_request_account_neutral = _http_bridge_anchor_free_replay_is_account_neutral(payload)
                     _log_http_bridge_event(
                         "fresh_reattach_anchor_injected",
                         bridge_session_key,
@@ -1851,6 +1869,7 @@ class _HTTPBridgeStreamingMixin:
                 proxy_injected_previous_response_id = True
                 _fresh_request_state, fresh_upstream_request_text = prepare_bridge_request(payload)
                 del _fresh_request_state
+                fresh_upstream_request_account_neutral = _http_bridge_anchor_free_replay_is_account_neutral(payload)
                 _log_http_bridge_event(
                     "fresh_reattach_anchor_injected",
                     bridge_session_key,
@@ -2054,6 +2073,9 @@ class _HTTPBridgeStreamingMixin:
             request_state.proxy_injected_previous_response_id = True
             request_state.proxy_injected_anchor_had_full_resend_payload = payload_looks_like_full_resend
             request_state.fresh_upstream_request_text = fresh_upstream_request_text or text_data
+            request_state.fresh_upstream_request_account_neutral = (
+                fresh_upstream_request_account_neutral if fresh_upstream_request_text else None
+            )
             # Durable-anchor injection runs when the incoming payload is
             # *not* a full resend, or when a full resend failed the sealed
             # owner-bound proof (missing owner metadata or fingerprint), so
@@ -2078,7 +2100,13 @@ class _HTTPBridgeStreamingMixin:
                 client_full_resend_payload
             )
             del _fresh_state
+            client_full_resend_fresh_upstream_request_account_neutral = (
+                _http_bridge_anchor_free_replay_is_account_neutral(client_full_resend_payload)
+            )
             request_state.fresh_upstream_request_text = client_full_resend_fresh_upstream_request_text
+            request_state.fresh_upstream_request_account_neutral = (
+                client_full_resend_fresh_upstream_request_account_neutral
+            )
             request_state.fresh_upstream_request_is_retry_safe = True
         settings = _service_get_settings()
         request_deadline = request_state.started_at + _http_bridge_request_budget_seconds(settings)
@@ -2356,7 +2384,9 @@ class _HTTPBridgeStreamingMixin:
             nonlocal file_required_preferred_account
             nonlocal force_local_recovery_creation
             nonlocal client_full_resend_fresh_upstream_request_text
+            nonlocal client_full_resend_fresh_upstream_request_account_neutral
             nonlocal fresh_upstream_request_text
+            nonlocal fresh_upstream_request_account_neutral
             nonlocal incoming_turn_state_header
             nonlocal previous_response_trimmed_input_count
             nonlocal previous_response_trimmed_input_fingerprint
@@ -2430,6 +2460,8 @@ class _HTTPBridgeStreamingMixin:
             proxy_injected_previous_response_id = False
             fresh_upstream_request_text = None
             client_full_resend_fresh_upstream_request_text = None
+            fresh_upstream_request_account_neutral = None
+            client_full_resend_fresh_upstream_request_account_neutral = None
             previous_response_trimmed_input_count = None
             previous_response_trimmed_input_fingerprint = None
             durable_full_resend_anchor_count = None
@@ -3162,6 +3194,9 @@ class _HTTPBridgeStreamingMixin:
             )
         if session_anchor_candidate and session_anchor_account_owned:
             fresh_upstream_request_text = text_data
+            fresh_upstream_request_account_neutral = _http_bridge_anchor_free_replay_is_account_neutral(
+                effective_payload
+            )
             session_level_payload_looks_like_full_resend = _http_bridge_payload_looks_like_full_resend(
                 effective_payload
             )
@@ -3186,6 +3221,7 @@ class _HTTPBridgeStreamingMixin:
             request_state.proxy_injected_previous_response_id = True
             request_state.proxy_injected_anchor_had_full_resend_payload = session_level_payload_looks_like_full_resend
             request_state.fresh_upstream_request_text = fresh_upstream_request_text
+            request_state.fresh_upstream_request_account_neutral = fresh_upstream_request_account_neutral
             if request_state.previous_response_id is not None:
                 _bind_http_bridge_proxy_injected_anchor(
                     self,
@@ -3357,6 +3393,7 @@ class _HTTPBridgeStreamingMixin:
                     previous_request_state.proxy_injected_anchor_had_full_resend_payload
                 )
                 request_state.fresh_upstream_request_text = fresh_upstream_request_text
+                request_state.fresh_upstream_request_account_neutral = fresh_upstream_request_account_neutral
                 # The trim branch only fires when the untrimmed payload
                 # is a true full resend whose prefix exactly matches the
                 # already-stored context, so the unanchored request text
@@ -3372,6 +3409,9 @@ class _HTTPBridgeStreamingMixin:
                 )
             elif client_full_resend_fresh_upstream_request_text is not None:
                 request_state.fresh_upstream_request_text = client_full_resend_fresh_upstream_request_text
+                request_state.fresh_upstream_request_account_neutral = (
+                    client_full_resend_fresh_upstream_request_account_neutral
+                )
                 request_state.fresh_upstream_request_is_retry_safe = True
         initial_handoff_session = session
         initial_handoff_scope_id = ensure_request_scope_id() if original_request_unanchored else None

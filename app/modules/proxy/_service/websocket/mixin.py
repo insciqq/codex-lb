@@ -3640,6 +3640,10 @@ class _WebSocketMixin:
         # mask in the reception path treats both variants identically.
         if responses_payload.previous_response_id is None and not request_state.proxy_injected_previous_response_id:
             request_state.fresh_upstream_request_text = text_data
+            request_state.fresh_upstream_request_account_neutral = _websocket_fresh_replay_payload_is_account_neutral(
+                responses_payload,
+                replaces_anchored_body=False,
+            )
             request_state.fresh_upstream_request_is_retry_safe = True
             request_state.fresh_upstream_request_responses_lite_model = next_responses_lite_model
 
