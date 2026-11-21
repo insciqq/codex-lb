@@ -3606,6 +3606,15 @@ class _StreamingRetryMixin:
                             if retry_exc.status_code == 401 and candidates_remaining > 0:
                                 action = "failover_next"
                             elif resilience.deterministic_failover_enabled:
+                                if candidates_remaining > 0 and classified["failure_class"] in ("rate_limit", "quota"):
+                                    # The refreshable 401 may have left a soft
+                                    # dispatch owner; project before deciding,
+                                    # as the first status rejection does, so a
+                                    # portable resend is not surfaced as owned.
+                                    _move_previsible_quota_rejection_from_soft_owner(
+                                        account_id=account.id,
+                                        outcome="owner_post_refresh_quota_rejection",
+                                    )
                                 action = failover_decision(
                                     failure_class=classified["failure_class"],
                                     downstream_visible=False,

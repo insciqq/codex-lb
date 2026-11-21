@@ -1749,6 +1749,128 @@ async def test_stream_previsible_429_does_not_replay_unanchored_delta_owner_stat
 
 
 @pytest.mark.asyncio
+async def test_stream_post_refresh_quota_rejection_projects_soft_owner_replay(async_client, monkeypatch):
+    """A refreshable 401 leaves a soft owner; the post-refresh quota rejection must still move."""
+    await _import_account(async_client, "acc_post_refresh_429_a", "postrefresh429a@example.com")
+    await _import_account(async_client, "acc_post_refresh_429_b", "postrefresh429b@example.com")
+
+    seen_account_ids: list[str | None] = []
+    seen_inputs: list[object] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        seen_inputs.append(payload.input)
+        attempts_on_first = seen_account_ids.count(seen_account_ids[0])
+        if account_id == seen_account_ids[0] and attempts_on_first == 1:
+            raise ProxyResponseError(401, openai_error("invalid_api_key", "token expired"), failure_phase="status")
+        if account_id == seen_account_ids[0]:
+            raise ProxyResponseError(
+                429,
+                openai_error("usage_limit_reached", "usage limit reached"),
+                failure_phase="status",
+            )
+        yield _success_sse_event("resp_post_refresh_429_ok")
+
+    async def fake_ensure_fresh(self, account, **kwargs):
+        del self, kwargs
+        return account
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh)
+
+    payload = {
+        "model": "gpt-5.1",
+        "prompt_cache_key": "post-refresh-usage-limit",
+        "instructions": "hi",
+        "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "first question"}]},
+            {
+                "type": "message",
+                "id": "msg_previous_answer",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "previous answer"}],
+            },
+            {"type": "reasoning", "id": "rs_soft_owner", "summary": []},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+        ],
+        "stream": True,
+    }
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = _extract_events(lines)
+    assert [event["type"] for event in events if event.get("type") in ("response.completed", "response.failed")] == [
+        "response.completed"
+    ]
+    assert len(seen_account_ids) == 3
+    assert seen_account_ids[1] == seen_account_ids[0]
+    assert seen_account_ids[2] != seen_account_ids[0]
+    replay_input = seen_inputs[2]
+    assert isinstance(replay_input, list)
+    assert all(isinstance(item, dict) and item.get("type") != "reasoning" and "id" not in item for item in replay_input)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_delivery", ["sse", "status"])
+async def test_stream_post_refresh_quota_rejection_keeps_hard_owner(async_client, monkeypatch, failure_delivery):
+    """A file-pinned body stays on its account after the post-refresh quota rejection."""
+    await _import_account(async_client, "acc_post_refresh_hard_a", "postrefreshharda@example.com")
+    await _import_account(async_client, "acc_post_refresh_hard_b", "postrefreshhardb@example.com")
+
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        if len(seen_account_ids) == 1:
+            raise ProxyResponseError(401, openai_error("invalid_api_key", "token expired"), failure_phase="status")
+        if failure_delivery == "status":
+            raise ProxyResponseError(
+                429,
+                openai_error("usage_limit_reached", "usage limit reached"),
+                failure_phase="status",
+            )
+        yield _sse_event(
+            {
+                "type": "response.failed",
+                "response": {"error": {"code": "usage_limit_reached", "message": "usage limit reached"}},
+            }
+        )
+
+    async def fake_ensure_fresh(self, account, **kwargs):
+        del self, kwargs
+        return account
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh)
+
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        json={
+            "model": "gpt-5.1",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "first"}]},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "answer"}],
+                },
+                {"type": "input_file", "file_id": "file_hard_owner"},
+            ],
+            "prompt_cache_key": "post-refresh-hard-owner",
+            "stream": True,
+        },
+    ) as resp:
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    assert len(set(seen_account_ids)) == 1
+    del lines
+
+
+@pytest.mark.asyncio
 async def test_stream_previsible_429_replays_scheduled_heartbeat_on_another_account(async_client, monkeypatch):
     """Codex host heartbeats are fresh input, not an orphaned upstream tool result."""
     await _import_account(async_client, "acc_heartbeat_429_a", "heartbeat429a@example.com")
