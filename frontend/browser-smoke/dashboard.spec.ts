@@ -175,17 +175,12 @@ test("the built dashboard accepts real backend responses", async ({ page }) => {
   }
   DashboardProjectionsSchema.parse(await projectionsResponse.json());
 
-  // First run against an empty database resolves telemetry consent as
-  // undecided/default, so the informed-consent dialog must appear before
-  // anything else. Exercise it as a first-class scenario: verify the exact
-  // transmitted envelope is rendered, then keep telemetry enabled to unblock
-  // the dashboard underneath.
-  const consentDialog = page.getByRole("dialog", { name: "Anonymous telemetry" });
-  await expect(consentDialog).toBeVisible();
-  await expect(consentDialog.getByText('"instance_id"').first()).toBeVisible();
-  await acceptTelemetryConsent(page, consentDialog);
-
+  // In the fork, telemetry is off by default (CODEX_LB_TELEMETRY_ENABLED
+  // defaults to false), so a first run against an empty database resolves
+  // consent as disabled/env and the informed-consent dialog must not appear.
   await expect(page.getByRole("heading", { name: "Dashboard", exact: true })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  await expect(page.getByRole("dialog", { name: "Anonymous telemetry" })).toHaveCount(0);
   await expect(page.getByText("No accounts connected yet", { exact: true })).toBeVisible();
   await expect(page.getByText("No requests yet", { exact: true })).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
