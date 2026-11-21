@@ -40346,7 +40346,7 @@ async def test_merged_poison_opening_quarantines_even_with_no_cooldown_left() ->
     # A durable merge can adopt a cooldown that already elapsed — another
     # replica may have opened the circuit long enough ago that its deadline is
     # in the past. That key sits at its threshold with no cooldown left, so the
-    # very next request is the half-open probe: it needs the quarantine most.
+    # very next request is admitted at once: it needs the quarantine most.
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     hard_session = _make_bridge_session(key_value="bridge-circuit-merge-elapsed")
     now_wall = time.time()
@@ -45950,7 +45950,9 @@ async def test_a_twice_missed_settle_reconciles_the_surviving_row(survivor_prese
     def row(epoch: float, count: int) -> Any:
         return SimpleNamespace(
             consecutive_failures=count,
-            cooldown_until_epoch=time.time() + 45.0,
+            # Already elapsed: the surviving episode's cooldown ended, so the
+            # reconciled state must not arm a half-open probe for it.
+            cooldown_until_epoch=epoch - 1.0,
             last_detail="stream_incomplete",
             updated_at_epoch=epoch,
             admission_generation=7,
@@ -45974,6 +45976,11 @@ async def test_a_twice_missed_settle_reconciles_the_surviving_row(survivor_prese
         )
         assert restored.consecutive_failures == 3
         assert restored.persisted_admission_generation == 7
+        service._durable_bridge.lookup_retry_circuit = AsyncMock(return_value=survivor)
+        admissions = [await service._http_bridge_precreated_retry_allowed(session) for _ in range(2)]
+        assert admissions == [True, True], (
+            "reconciling onto a survivor whose cooldown already ended must not arm a half-open probe"
+        )
     else:
         assert settled is True, "a chase that finds the row gone is settled after all"
         assert cast(Any, service)._http_bridge_retry_circuits.get(session.key) is None

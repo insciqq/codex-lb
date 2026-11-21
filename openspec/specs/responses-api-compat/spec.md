@@ -585,17 +585,20 @@ reports the same way.
 When the cooldown expires, each worker process MUST admit exactly one probe
 request and MUST keep suppressing its other non-bypassed requests for that
 key while that probe may still be running. Only a cooldown that has not
-ended can produce that expiry: mapping a durable row onto the worker's clock,
-on a load or on a persist reconciliation, MUST turn an absent, zero or
-already elapsed cooldown into no cooldown at all, never into a deadline that
-ends at the mapping instant, because the admission gate reads any expired
-positive deadline as the half-open transition and would arm a lease and
-suppress the key's siblings for a cooldown that already ended. A load that
-re-observes the unchanged episode after its cooldown elapsed MUST keep the
-worker's local deadline instead, so a cooldown the worker saw running (or
-the transition marker a handed-back probe restored) still admits exactly
-one probe, and a transition a probe already consumed is not re-armed by the
-next reload. Probe admission is process-local:
+ended can produce that expiry: mapping a durable row onto the worker's clock
+— on a load, on a persist reconciliation, or when a settlement whose fenced
+resets missed reconciles onto the surviving row — MUST turn an absent, zero
+or already elapsed cooldown into no cooldown at all, never into a deadline
+that ends at the mapping instant, because the admission gate reads any
+expired positive deadline as the half-open transition and would arm a lease
+for a cooldown that already ended, suppressing the key's other requests
+while the key is at the failure threshold. A mapping that re-observes the
+unchanged episode after its cooldown elapsed MUST keep the worker's local
+deadline instead, so a cooldown the worker saw running (or the transition
+marker a handed-back probe restored) still admits exactly one probe, and a
+transition a probe already consumed is not re-armed by the next reload; a
+mapping that adopts an already elapsed replacement episode MUST drop both
+the ended episode's deadline and its lease. Probe admission is process-local:
 the half-open lease is not persisted, and replicas do not coordinate probe
 admission (an accepted residual recorded in this change's `design.md`). When the circuit opens on an eventless
 poison-class failure (`stream_incomplete` or `stream_idle_timeout` with no

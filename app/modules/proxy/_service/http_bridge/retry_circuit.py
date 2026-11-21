@@ -1707,9 +1707,10 @@ class _HTTPBridgeRetryCircuitMixin:
                 # may have opened the circuit long enough ago that its deadline
                 # is in the past by the time this write returns. That key is at
                 # its threshold with no cooldown left, so the very next request
-                # is the half-open probe: it needs the quarantine most, not
-                # least. Track the opening itself, and let a zero remainder fall
-                # through to the bare half-open lease.
+                # is admitted at once (an ended cooldown arms no probe lease):
+                # it needs the quarantine most, not least. Track the opening
+                # itself, and let a zero remainder fall through to the floor of
+                # the bare half-open lease window.
                 #
                 # This deliberately does not skip keys quarantined from the
                 # local opening. A local open arms the floor from its own
@@ -2395,12 +2396,27 @@ class _HTTPBridgeRetryCircuitMixin:
                                     # and persist merges.
                                     state.poison_anchor_cleared = False
                                     state.owed_poison_detail = None
-                                state.consecutive_failures = max(0, surviving.consecutive_failures)
-                                state.cooldown_until = clock_for(self).monotonic() + max(
-                                    0.0, surviving.cooldown_until_epoch - clock_for(self).time()
+                                surviving_episode_replaced = (
+                                    surviving.updated_at_epoch != state.persisted_updated_at_epoch
+                                    or surviving.consecutive_failures != state.consecutive_failures
+                                    or surviving.last_detail != state.last_detail
                                 )
+                                surviving_cooldown_until = _http_bridge_retry_circuit_cooldown_deadline(
+                                    clock_for(self).monotonic(),
+                                    surviving.cooldown_until_epoch - clock_for(self).time(),
+                                )
+                                state.consecutive_failures = max(0, surviving.consecutive_failures)
+                                # Same rule as the load: an ended cooldown is
+                                # no cooldown, and only the unchanged episode
+                                # keeps its local deadline. An already elapsed
+                                # replacement also drops the ended episode's
+                                # lease, which is no probe of the new one.
+                                if surviving_cooldown_until > 0.0 or surviving_episode_replaced:
+                                    state.cooldown_until = surviving_cooldown_until
                                 state.last_detail = surviving.last_detail
-                                if state.cooldown_until > clock_for(self).monotonic():
+                                if state.cooldown_until > clock_for(self).monotonic() or (
+                                    surviving_episode_replaced and surviving_cooldown_until <= 0.0
+                                ):
                                     state.half_open_until = 0.0
                                 state.persisted_updated_at_epoch = surviving.updated_at_epoch
                                 state.persisted_admission_generation = getattr(surviving, "admission_generation", 0)
