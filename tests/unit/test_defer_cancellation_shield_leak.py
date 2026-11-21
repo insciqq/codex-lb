@@ -252,7 +252,8 @@ async def test_keyed_health_drain_keeps_apply_task_callbacks_bounded():
         apply_task_holder["task"] = cast("asyncio.Task[None] | None", asyncio.current_task())
         await release.wait()
 
-    penalty = SimpleNamespace(account=SimpleNamespace(id="acc"), error=RuntimeError("x"), code="c")
+    # ``error`` is an ``UpstreamError`` payload, as the drain bounds its deadline.
+    penalty = SimpleNamespace(account=SimpleNamespace(id="acc"), error={"message": "x"}, code="c")
     request_state = SimpleNamespace(deferred_keyed_stream_health=[penalty])
     fake_self = SimpleNamespace(_handle_stream_error=slow_penalty)
 
@@ -290,7 +291,8 @@ async def test_keyed_health_drain_surfaces_level_cancellation_after_cleanup():
     async def quick_penalty(*_args: object) -> None:
         await asyncio.sleep(0)
 
-    penalty = SimpleNamespace(account=SimpleNamespace(id="acc"), error=RuntimeError("x"), code="c")
+    # ``error`` is an ``UpstreamError`` payload, as the drain bounds its deadline.
+    penalty = SimpleNamespace(account=SimpleNamespace(id="acc"), error={"message": "x"}, code="c")
     request_state = SimpleNamespace(deferred_keyed_stream_health=[penalty])
     fake_self = SimpleNamespace(_handle_stream_error=quick_penalty)
 
