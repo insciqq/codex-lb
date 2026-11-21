@@ -1591,8 +1591,8 @@ reason = "Upstream 1.25.0-beta.2 removed several causes; a deadline for a retain
 [issue.1844]
 title = "Telemetry opt-out: close the consent/send race and follow-up hardening"
 state = "open"
-status = "out-of-scope"
-reason = "Telemetry consent hardening follow-ups that upstream deferred; closing the remaining race needs a collector-side protocol change."
+status = "partial"
+reason = "The fork fixes the settings preview, which showed consent enabled while only the environment disabled telemetry. Closing the consent/send race needs a collector-side protocol change, and the timestamp typing and logging follow-ups are hardening outside the fork's scope."
 
 [issue.1870]
 title = "feat: add an upstream facet to dashboard request logs"

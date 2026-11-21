@@ -16,6 +16,7 @@ from app.core.auth.dependencies import (
 from app.db.session import get_session
 from app.modules.telemetry.consent import ResolvedConsent, TelemetryConsentStore
 from app.modules.telemetry.schemas import (
+    ActiveConsentState,
     TelemetryConsentResponse,
     TelemetryConsentUpdate,
     TelemetrySnapshotEnvelope,
@@ -88,7 +89,7 @@ async def _response(
     preview: TelemetrySnapshotEnvelope | None = None
     if include_preview:
         identity = await store.get_or_create_identity()
-        snapshot_consent = "enabled" if consent.state == "disabled" else consent.state
+        snapshot_consent = _preview_consent(consent)
         snapshot = await TelemetrySnapshotBuilder(session).build(
             identity.instance_id,
             consent=snapshot_consent,
@@ -100,6 +101,19 @@ async def _response(
         active=consent.active,
         preview=preview,
     )
+
+
+def _preview_consent(consent: ResolvedConsent) -> ActiveConsentState:
+    """Consent value the next transmitted snapshot would carry once telemetry is active.
+
+    A persisted ``disabled`` decision becomes active only through a dashboard
+    enable, which persists ``enabled``. The environment kill switch disables
+    telemetry while the persisted state is still ``undecided``; lifting it
+    makes snapshots carry ``undecided``.
+    """
+    if consent.state != "disabled":
+        return consent.state
+    return "undecided" if consent.source == "env" else "enabled"
 
 
 def _handle_opt_out_task_done(task: asyncio.Task[None]) -> None:

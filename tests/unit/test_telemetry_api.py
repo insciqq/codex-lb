@@ -78,6 +78,24 @@ async def test_consent_api_builds_decided_preview_only_when_requested(
 
 
 @pytest.mark.asyncio
+async def test_consent_api_preview_keeps_undecided_state_under_env_kill_switch(
+    async_client,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CODEX_LB_TELEMETRY_ENABLED", "false")
+    get_settings.cache_clear()
+
+    response = await async_client.get("/api/settings/telemetry?include_preview=true")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == "disabled"
+    assert payload["source"] == "env"
+    assert payload["active"] is False
+    assert payload["preview"]["metrics"]["consent"] == "undecided"
+
+
+@pytest.mark.asyncio
 async def test_consent_api_env_override_wins_and_suppresses_undecided_state(async_client, monkeypatch) -> None:
     monkeypatch.setenv("CODEX_LB_TELEMETRY_ENABLED", "true")
     get_settings.cache_clear()

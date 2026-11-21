@@ -25,10 +25,10 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | Status | Issues | Meaning |
 |---|---|---|
 | fixed | 37 | fixed in the fork by a taken PR or the fork's own commits |
-| partial | 12 | partly addressed in the fork; the reason says what is left |
+| partial | 13 | partly addressed in the fork; the reason says what is left |
 | fixed-upstream | 5 | fixed in upstream main |
 | not-fixed | 15 | reviewed and not fixed in the fork, for the reason given |
-| out-of-scope | 38 | a feature request |
+| out-of-scope | 37 | a feature request |
 | not-applicable | 8 | does not concern the fork |
 | deferred | 15 | decided, scheduled after the first release |
 | pending | 0 | no decision yet |
@@ -302,7 +302,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [1758](https://github.com/Soju06/codex-lb/issues/1758) | http-bridge: evicting an inflight waiter does not cancel its creator, so multiple creators race one session key | open | deferred | Cancelling an evicted waiter's creator belongs to the bridge admission waiter rework scheduled with PR 2088 after the first release. |
 | [1793](https://github.com/Soju06/codex-lb/issues/1793) | feat: weekly limits estimation in $ | open | out-of-scope | Feature request: weekly limit estimates in dollars. |
 | [1799](https://github.com/Soju06/codex-lb/issues/1799) | bug: HTTP responses session bridge returns 503: "preserving an incompatible admission handoff" | open | deferred | Upstream 1.25.0-beta.2 removed several causes; a deadline for a retained admission handoff is scheduled after the first release. |
-| [1844](https://github.com/Soju06/codex-lb/issues/1844) | Telemetry opt-out: close the consent/send race and follow-up hardening | open | out-of-scope | Telemetry consent hardening follow-ups that upstream deferred; closing the remaining race needs a collector-side protocol change. |
+| [1844](https://github.com/Soju06/codex-lb/issues/1844) | Telemetry opt-out: close the consent/send race and follow-up hardening | open | partial | own fix; The fork fixes the settings preview, which showed consent enabled while only the environment disabled telemetry. Closing the consent/send race needs a collector-side protocol change, and the timestamp typing and logging follow-ups are hardening outside the fork's scope. |
 | [1870](https://github.com/Soju06/codex-lb/issues/1870) | feat: add an upstream facet to dashboard request logs | open | out-of-scope | PRs [2708](https://github.com/Soju06/codex-lb/pull/2708); Feature request: an upstream facet in dashboard request logs. |
 | [1895](https://github.com/Soju06/codex-lb/issues/1895) | bug(warmup): /v1/warmup fails with 404 (compact payload) and account probe fails with 400 (max\_output\_tokens=1) — windows cannot be auto-started | open | fixed-upstream | PRs [1809](https://github.com/Soju06/codex-lb/pull/1809), [2496](https://github.com/Soju06/codex-lb/pull/2496); Fixed in upstream main: the warm-up compact route by PR 1809 and the probe's unsupported max_output_tokens field by PR 2496. |
 | [1898](https://github.com/Soju06/codex-lb/issues/1898) | fix(proxy): persist complete HTTP bridge replay transcripts | open | not-fixed | PRs [2430](https://github.com/Soju06/codex-lb/pull/2430), [2579](https://github.com/Soju06/codex-lb/pull/2579); Complete durable replay transcripts need new schema, which both candidate PRs add through Alembic revisions; the fork keeps the upstream schema, and bridge recovery fails closed when a transcript is incomplete. |
@@ -535,3 +535,4 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(http-bridge): leave a concurrent session close to its owner | - | bug found in production or review |
 | fix(proxy): keep frame-less direct WebSocket drops after output account-neutral | [2081](https://github.com/Soju06/codex-lb/issues/2081) | - |
 | fix(proxy): keep frame-less bridge drops after output account-neutral | [2074](https://github.com/Soju06/codex-lb/issues/2074) | - |
+| fix(telemetry): show the undecided state in the kill-switch preview | [1844](https://github.com/Soju06/codex-lb/issues/1844) | - |

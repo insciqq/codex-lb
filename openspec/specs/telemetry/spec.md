@@ -237,7 +237,10 @@ An unmeasurable database size MUST be reported as `unknown`, not as a plausible 
 
 Every snapshot payload MUST include a top-level `consent` field whose value is the resolved
 persisted consent state `undecided` or `enabled`; `disabled` MUST NOT appear because snapshots
-are not transmitted while telemetry is inactive.
+are not transmitted while telemetry is inactive. A preview built while telemetry is inactive
+MUST show the value the next snapshot would carry once telemetry is active: `enabled` after a
+persisted `disabled` decision, and `undecided` while only `CODEX_LB_TELEMETRY_ENABLED=false`
+disables telemetry and no decision is persisted.
 
 #### Scenario: Undecided snapshot declares consent
 
@@ -248,6 +251,13 @@ are not transmitted while telemetry is inactive.
 
 - **WHEN** telemetry is active under persisted enabled consent
 - **THEN** the transmitted snapshot and exact payload preview contain `consent: "enabled"`
+
+#### Scenario: Preview under the environment kill switch keeps the undecided state
+
+- **WHEN** no consent decision is persisted, `CODEX_LB_TELEMETRY_ENABLED=false` disables
+  telemetry and the settings view requests a preview
+- **THEN** the preview contains `consent: "undecided"`, the value a snapshot carries once the
+  override is removed
 
 ### Requirement: Dashboard opt-out notification
 
