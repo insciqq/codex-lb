@@ -77,9 +77,14 @@ Callers and outcomes:
   requests that cannot move, and the single-shot paths, answer a retryable
   503 `selected_account_removed` rather than the proxy-outage error.
   The HTTP bridge forced refresh after a 401 owns the selected account's
-  lease until a session takes it: any failure there (deletion, timeout,
-  cancellation) releases it once, and a reconnect also completes its failed
-  handoff. A session start moves a movable request off a deleted account.
+  lease until a session takes it. Any failure of that refresh or of the
+  re-open (deletion, timeout, cancellation) releases it once, and the lease
+  goes back before an account health write, so a failed or cancelled write
+  cannot strand it. A session start moves a movable request off a deleted
+  account and answers `selected_account_removed` for a required owner. A
+  reconnect does not reselect: it releases the replacement lease (also under
+  a cancellation its cancel scope re-delivers), completes the failed handoff
+  and re-raises.
 - Force Probe and the dashboard reset-credit endpoints answer 404, as when
   the account was gone on arrival, also when the refresh before them or the
   SQLite redeem claim fails because the row is gone (the claim rows

@@ -538,12 +538,24 @@ stripped. The same history without the namespace still moves once to B.
 The connect loop computes the owner requirement before selection, and
 selection then binds an account-scoped body (a captured Codex history carries
 item ids) to the account it picks. A handshake model rejection from that
-account surfaces its original error. Every other handshake failure keeps the
-requirement computed before selection, so a confirmed proxy pre-dispatch
-failure or a deleted account still fails over as before. Known limitation,
-unchanged from upstream: a handshake 401, 5xx or 429 on such a selection-bound
-body excludes the account, and the next selection, which still requires it,
-ends in `previous_response_owner_unavailable`.
+account, or from an account whose recorded decision keeps the body, surfaces
+its original error. Every other handshake failure keeps the requirement
+computed before selection and its ordinary failover decision.
+
+Known limitations, unchanged from upstream:
+
+- For a selection-bound body, a handshake 401, 403, 429, quota or 5xx
+  failure, a confirmed proxy pre-dispatch failure and a deleted account all
+  exclude the account; the next selection still requires it and ends in
+  `previous_response_owner_unavailable`.
+- Only the model-rejection paths consult the recorded decision. On every
+  other path (those handshake failures, the accepted output-free capacity
+  replay, the accepted transport-close replay, the authentication replay) a
+  text-neutral namespaced history still moves as before.
+
+Dropping `stream` and `background` at recording also applies to the fresh
+body retained behind a proxy-injected anchor. That is benign: the frame
+never carries either field, so the decision now describes what is sent.
 
 ## Reasoning policy for configuration_update items
 
