@@ -33379,6 +33379,81 @@ async def test_process_upstream_websocket_text_does_not_fresh_retry_injected_too
 
 
 @pytest.mark.asyncio
+async def test_process_upstream_websocket_text_keyed_owner_pinned_quota_penalty_waits_for_settlement(
+    monkeypatch,
+):
+    """A keyed owner-pinned terminal queues its quota penalty until the reservation settles."""
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    finalize_request_state = AsyncMock()
+    handle_stream_error = AsyncMock()
+    account = _make_account("acc_ws_keyed_prev_quota_owner")
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize_request_state)
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+
+    reservation = proxy_service.ApiKeyUsageReservationData(
+        reservation_id="resv_ws_keyed_owner_pinned",
+        key_id="key_ws_keyed_owner_pinned",
+        model="gpt-5.1",
+    )
+    request_payload = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "instructions": "",
+        "previous_response_id": "resp_anchor",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "continue"}]}],
+    }
+    pending_request = proxy_service._WebSocketRequestState(
+        request_id="ws_req_keyed_prev_quota",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=reservation,
+        started_at=0.0,
+        awaiting_response_created=True,
+        request_text=json.dumps(request_payload, separators=(",", ":")),
+        previous_response_id="resp_anchor",
+        preferred_account_id=account.id,
+    )
+    upstream_payload = {
+        "type": "error",
+        "status": 429,
+        "error": {
+            "type": "invalid_request_error",
+            "code": "usage_limit_reached",
+            "message": "The usage limit has been reached",
+            "resets_in_seconds": 14_555,
+        },
+    }
+
+    observed_from = time.time()
+    downstream_text = await service._process_upstream_websocket_text(
+        json.dumps(upstream_payload, separators=(",", ":")),
+        account=account,
+        account_id_value=account.id,
+        pending_requests=deque([pending_request]),
+        pending_lock=anyio.Lock(),
+        api_key=None,
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        response_create_gate=asyncio.Semaphore(1),
+    )
+    observed_until = time.time()
+
+    assert '"code":"upstream_unavailable"' in downstream_text
+    handle_stream_error.assert_not_awaited()
+    assert [(penalty.account, penalty.code) for penalty in pending_request.deferred_keyed_stream_health] == [
+        (account, "usage_limit_reached")
+    ]
+    _assert_frozen_reset_deadline(
+        pending_request.deferred_keyed_stream_health[0].error,
+        message="The usage limit has been reached",
+        observed_from=observed_from,
+        observed_until=observed_until,
+        reset_in_seconds=14_555,
+    )
+    finalize_request_state.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_process_upstream_websocket_text_maps_previous_response_usage_limit_to_upstream_unavailable(
     monkeypatch,
 ):

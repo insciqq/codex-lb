@@ -6094,15 +6094,19 @@ class _WebSocketMixin:
             and not retry_safe_previous_response_not_found
             and not retry_safe_owner_replay
         ):
-            await proxy._handle_stream_error(
-                account,
-                _websocket_event_health_error(
+            # Owner-pinned terminal: a keyed request queues the penalty and
+            # the finalizer writes it after the reservation settles.
+            await _record_or_defer_websocket_accepted_replay_health(
+                proxy,
+                request_state,
+                account=account,
+                error=_websocket_event_health_error(
                     event_type,
                     payload,
                     _websocket_event_error_message(event_type, payload),
                     now=clock.time(),
                 ),
-                retry_error_code,
+                error_code=cast(str, retry_error_code),
             )
             event, payload, event_type, downstream_text = _rewrite_websocket_previous_response_owner_unavailable_event(
                 request_state=request_state,
@@ -6111,15 +6115,17 @@ class _WebSocketMixin:
         if retry_safe_owner_replay and not retry_safe_previous_response_not_found:
             safe_request_text = _prepare_websocket_request_state_for_account_switch(request_state)
             if safe_request_text is None:
-                await proxy._handle_stream_error(
-                    account,
-                    _websocket_event_health_error(
+                await _record_or_defer_websocket_accepted_replay_health(
+                    proxy,
+                    request_state,
+                    account=account,
+                    error=_websocket_event_health_error(
                         event_type,
                         payload,
                         _websocket_event_error_message(event_type, payload),
                         now=clock.time(),
                     ),
-                    retry_error_code,
+                    error_code=cast(str, retry_error_code),
                 )
                 event, payload, event_type, downstream_text = (
                     _rewrite_websocket_previous_response_owner_unavailable_event(

@@ -710,7 +710,10 @@ async def _record_or_defer_websocket_accepted_replay_health(
     error: UpstreamError,
     error_code: str,
 ) -> None:
-    """Penalize the account an accepted replay leaves, now or after settlement.
+    """Penalize the account an accepted replay or owner-pinned terminal leaves.
+
+    The write happens now for an unkeyed request and after settlement for a
+    keyed one.
 
     The accepted request keeps its API-key reservation open across the
     re-send, and account health must not be written while a reservation is
