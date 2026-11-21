@@ -597,6 +597,14 @@ _WS_THIRD = _message("user", "third question")
             [_WS_BASELINE_NEW, _WS_PLAN, _WS_ANSWER, _WS_THIRD],
             id="skills-refresh",
         ),
+        # The same developer messages in another order are a change: both go,
+        # in client order, so Default stays the last mode.
+        pytest.param(
+            [_ws_mode("Default"), _WS_PLAN, _WS_QUESTION],
+            [_WS_PLAN, _ws_mode("Default"), _WS_QUESTION, _WS_ANSWER, _WS_FOLLOW_UP],
+            [_WS_PLAN, _ws_mode("Default"), _WS_ANSWER, _WS_FOLLOW_UP],
+            id="reordered-developer-messages",
+        ),
     ],
 )
 def test_warm_socket_anchor_forwards_a_changed_developer_message(
@@ -642,50 +650,120 @@ def _ws_last_mode(items: Sequence[Mapping[str, object]]) -> str | None:
     return modes[-1] if modes else None
 
 
+def _run_socket_turns(
+    app_instance,
+    monkeypatch: pytest.MonkeyPatch,
+    session_id: str,
+    turns: Sequence[Sequence[Mapping[str, object]]],
+    **frame_fields: object,
+) -> list[dict[str, object]]:
+    """Send each input as one turn on a warm Codex socket and return the frames upstream received."""
+    upstream = _SequencedUpstreamWebSocket(
+        [], deferred_message_batches=[_response_batch(f"resp_{session_id}_{index}") for index in range(len(turns))]
+    )
+    _install_upstreams(monkeypatch, [upstream])
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"session_id": session_id, "openai-beta": "responses_websockets=2026-02-06"},
+        ) as websocket:
+            for turn_input in turns:
+                frame = {
+                    "type": "response.create",
+                    "model": "gpt-5.6-sol",
+                    "instructions": "",
+                    "input": list(turn_input),
+                    "stream": True,
+                    **frame_fields,
+                }
+                websocket.send_text(json.dumps(frame))
+                assert [json.loads(websocket.receive_text())["type"] for _ in range(2)] == [
+                    "response.created",
+                    "response.completed",
+                ]
+    frames = [json.loads(text) for text in upstream.sent_text]
+    assert [frame.get("previous_response_id") for frame in frames] == [
+        None,
+        *(f"resp_{session_id}_{index}" for index in range(len(turns) - 1)),
+    ]
+    return frames
+
+
 def test_warm_socket_keeps_the_clients_last_collaboration_mode(app_instance, monkeypatch):
     """Default, then Plan, a skills refresh, then Default again: the chain upstream ends with the client's mode."""
     history = [_WS_QUESTION, _WS_ANSWER, _WS_PLAN, _WS_FOLLOW_UP]
     default_again = [_WS_ANSWER, _ws_mode("Default"), _message("user", "fourth question")]
+    fifth = _message("user", "fifth")
     turns: list[list[Mapping[str, object]]] = [
         [_WS_BASELINE_OLD, _WS_QUESTION],
         [_WS_BASELINE_OLD, *history],
         [_WS_BASELINE_NEW, *history, _WS_ANSWER, _WS_THIRD],
         [_WS_BASELINE_NEW, *history, _WS_ANSWER, _WS_THIRD, *default_again],
-        [_WS_BASELINE_NEW, *history, _WS_ANSWER, _WS_THIRD, *default_again, _WS_ANSWER, _message("user", "fifth")],
+        [_WS_BASELINE_NEW, *history, _WS_ANSWER, _WS_THIRD, *default_again, _WS_ANSWER, fifth],
     ]
-    upstream = _SequencedUpstreamWebSocket(
-        [], deferred_message_batches=[_response_batch(f"resp_ws_mode_{index}") for index in range(len(turns))]
-    )
-    _install_upstreams(monkeypatch, [upstream])
 
-    with TestClient(app_instance) as client:
-        with client.websocket_connect(
-            "/backend-api/codex/responses",
-            headers={"session_id": "thread-ws-mode-round-trip", "openai-beta": "responses_websockets=2026-02-06"},
-        ) as websocket:
-            for turn_input in turns:
-                websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "response.create",
-                            "model": "gpt-5.6-sol",
-                            "instructions": "",
-                            "input": turn_input,
-                            "stream": True,
-                        }
-                    )
-                )
-                assert [json.loads(websocket.receive_text())["type"] for _ in range(2)] == [
-                    "response.created",
-                    "response.completed",
-                ]
+    frames = _run_socket_turns(app_instance, monkeypatch, "ws_mode_round_trip", turns)
 
-    frames = [json.loads(text) for text in upstream.sent_text]
-    assert [frame.get("previous_response_id") for frame in frames] == [
-        None,
-        *(f"resp_ws_mode_{index}" for index in range(len(turns) - 1)),
+    # The appended Plan, the refreshed message followed by Plan again, the
+    # appended Default, and nothing repeated after.
+    assert [frame["input"] for frame in frames] == [
+        [_WS_BASELINE_OLD, _WS_QUESTION],
+        [_WS_ANSWER, _WS_PLAN, _WS_FOLLOW_UP],
+        [_WS_BASELINE_NEW, _WS_PLAN, _WS_ANSWER, _WS_THIRD],
+        default_again,
+        [_WS_ANSWER, fifth],
     ]
     chain: list[dict[str, object]] = []
     for frame, client_input in zip(frames, turns, strict=True):
-        chain.extend(frame["input"])
+        chain.extend(cast(list[dict[str, object]], frame["input"]))
         assert _ws_last_mode(chain) == _ws_last_mode(client_input)
+
+
+def test_json_suffix_order(app_instance, monkeypatch):
+    """JSON mode: a skills refresh resends the later modes too, including the one the old hoist kept inline.
+
+    The stored turn sent a skills list, Plan, then Default with a JSON
+    mention, which the old hoist left in ``input`` as history the anchor
+    carries. Changing only the skills list must not leave Plan as the last
+    mode upstream.
+    """
+    default_json = _ws_mode("Default")
+    default_json["content"] = [
+        *cast(list[object], default_json["content"]),
+        {"type": "input_text", "text": "Reply in JSON."},
+    ]
+    skills_v1 = _message("developer", "Skills list version 1")
+    skills_v2 = _message("developer", "Skills list version 2")
+    stored = [skills_v1, _WS_PLAN, default_json, _WS_QUESTION]
+    resend = [skills_v2, _WS_PLAN, default_json, _WS_QUESTION, _WS_ANSWER, _WS_FOLLOW_UP]
+
+    frames = _run_socket_turns(
+        app_instance,
+        monkeypatch,
+        "ws_json_suffix_order",
+        [stored, resend, [*resend, _WS_ANSWER, _WS_THIRD]],
+        text={"format": {"type": "json_object"}},
+    )
+
+    assert frames[1]["input"] == [skills_v2, _WS_PLAN, default_json, _WS_ANSWER, _WS_FOLLOW_UP]
+    assert frames[2]["input"] == [_WS_ANSWER, _WS_THIRD]
+    chain = [*cast(list[dict[str, object]], frames[0]["input"]), *cast(list[dict[str, object]], frames[1]["input"])]
+    assert _ws_last_mode(chain) == "Default"
+
+
+_CODEX_BODIES = sorted(
+    path for path in Path("tests/fixtures/codex_bodies").glob("*.json") if path.name != "provenance.json"
+)
+
+
+@pytest.mark.parametrize("path", _CODEX_BODIES, ids=lambda path: path.stem)
+def test_warm_socket_resends_no_developer_message_on_an_append_only_codex_thread(app_instance, monkeypatch, path):
+    """Real Codex bodies: once the session is anchored, an append-only history sends no developer message again."""
+    body = json.loads(path.read_text())
+    turns = [list(body.pop("input"))]
+    for number in range(3):
+        turns.append([*turns[-1], _WS_ANSWER, _message("user", f"follow-up {number}")])
+
+    frames = _run_socket_turns(app_instance, monkeypatch, f"ws_steady_{path.stem}", turns, **body)
+
+    assert [frame["input"] for frame in frames[1:]] == [[_WS_ANSWER, turn[-1]] for turn in turns[1:]]

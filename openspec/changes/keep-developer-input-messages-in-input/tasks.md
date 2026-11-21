@@ -57,3 +57,7 @@
   resend, compact consumed-pair cleanup behind a trailing developer message, and the goal marker beside an attachment.
 - [x] 2.7 A skills refresh of an earlier developer message keeps the later Plan-mode message, and a Default, Plan,
   Default round trip keeps the client's last collaboration mode upstream (HTTP bridge and WebSocket).
+- [x] 2.8 Position-by-position developer matching: reordered Default and Plan messages are sent in client order, a
+  JSON-mode skills refresh also sends the later Default message the hoist kept inline, the round trip sends exactly the
+  expected frames, an unknown record resends in client order and leaves Lite history alone, and anchored turns of the
+  captured Codex bodies send no developer message again (HTTP bridge and WebSocket).

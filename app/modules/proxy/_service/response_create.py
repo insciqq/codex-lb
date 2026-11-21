@@ -6,7 +6,6 @@ import json
 import logging
 import re
 import sys
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -307,15 +306,15 @@ def _wire_remainder_after_stored_prefix(
 
     The stored prefix is ``stored_count`` base-equivalent items; the range
     runs up to the next base-equivalent item after it. Its history items go
-    (the anchor carries them). Developer messages the old hoist would have
-    moved or changed are matched in order against the stored turn's
-    (``stored_developer_fingerprints``): each match consumes one recorded
-    occurrence and goes, and a new, changed or extra occurrence is sent, in
-    client order, because the anchor cannot supply it. Once one is sent, every
-    later developer message in the range is sent too, so the instruction order
-    upstream ends with the client's last one (a refreshed earlier message must
-    not override a later one the anchor already carries). An unknown record
-    (``None``) sends every such message in the range.
+    (the anchor carries them). The developer messages the old hoist would
+    have moved or changed are compared, in client order, with the stored
+    turn's sequence (``stored_developer_fingerprints``): while each equals
+    the recorded one at its position it goes. From the first that does not
+    (new, changed, moved or extra), every developer message left in the
+    range is sent in client order, including one the old hoist kept inline
+    for JSON mode, so a refreshed or reordered message cannot end up behind
+    a later one the anchor already carries. An unknown record (``None``)
+    matches nothing.
     """
     items = list(input_items)
     if stored_count <= 0:
@@ -323,18 +322,21 @@ def _wire_remainder_after_stored_prefix(
     positions = base_equivalent_input_positions(items, hoist=hoist)
     range_end = positions[stored_count][0] if stored_count < len(positions) else len(items)
     altered = _hoist_altered_developer_indices(items, hoist=hoist)
-    remaining = Counter(stored_developer_fingerprints) if stored_developer_fingerprints is not None else None
-    kept: list[JsonValue] = []
+    recorded = stored_developer_fingerprints or ()
+    matched = 0
+    sent: list[JsonValue] = []
     for index, item in enumerate(items[:range_end]):
+        if sent:
+            if is_json_mapping(item) and item.get("role") == "developer" and item.get("type") in (None, "message"):
+                sent.append(item)
+            continue
         if index not in altered:
             continue
-        if remaining is not None and not kept:
-            fingerprint = _fingerprint_input_items([item])
-            if remaining[fingerprint] > 0:
-                remaining[fingerprint] -= 1
-                continue
-        kept.append(item)
-    return [*kept, *items[range_end:]]
+        if matched < len(recorded) and _fingerprint_input_items([item]) == recorded[matched]:
+            matched += 1
+            continue
+        sent.append(item)
+    return [*sent, *items[range_end:]]
 
 
 def _input_prefix_matches_stored_context(

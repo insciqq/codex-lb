@@ -264,14 +264,18 @@ response id, the fingerprints, in order, of the developer messages the hoist
 would have moved or changed in the stored turn's full client input; every
 completion MUST replace that record, and a completion without a stored prefix
 MUST leave it unknown. The trimmed range runs up to the next base-equivalent
-item after the prefix; within it, each such developer message MUST consume one
-recorded occurrence of its fingerprint and is then not sent again, and a new,
-changed or additional occurrence MUST be sent, in client order, ahead of the
-remainder, and once one is sent every later such message in the range MUST be
-sent too. The record MUST be used only when the request is anchored to the
-response it was recorded for. When it is unknown (or a stored context was
-hydrated from a durable row that differs from it), every such developer
-message in that range MUST be sent.
+item after the prefix. The range's developer messages the hoist would have
+moved or changed MUST be compared with the record in order, position by
+position, and one equal to the recorded fingerprint at its position is not
+sent again. From the first one that is not (a new, changed, moved or
+additional message), that message and every later developer message of the
+range, including one the hoist kept in `input` for JSON mode, MUST be sent, in
+client order, ahead of the remainder. When those messages equal the record,
+none of them MUST be sent again. The record MUST be used only when the request
+is anchored to the response it was recorded for. When it is unknown (or a
+stored context was hydrated from a durable row that differs from it), nothing
+matches it: the first of those messages and every later developer message of
+the range MUST be sent.
 
 Durable operation and recovery-attempt keys hash the serialized request. An
 identical retry of a turn recorded before developer messages stayed inline
@@ -316,15 +320,25 @@ keep the request on its owner.
 - **AND** it sends the new or changed developer message, followed by the prior output and the new user message
 - **AND** the next turn does not send that developer message again
 
-#### Scenario: Developer messages are matched occurrence by occurrence
+#### Scenario: Developer messages are compared position by position
 - **GIVEN** a warm session whose stored turn sent `Use French`, then `Use English`
 - **WHEN** the next request repeats both and adds `Use French` again after the stored history
 - **THEN** the anchored request sends the added `Use French`
+
+#### Scenario: Reordered developer messages are sent in client order
+- **GIVEN** a warm session whose stored turn sent a Default-mode developer message, then a Plan-mode one
+- **WHEN** the next request sends the Plan-mode message before the Default-mode one, with the same history
+- **THEN** the anchored request sends the Plan-mode message followed by the Default-mode message
 
 #### Scenario: A refreshed earlier developer message does not override a later one
 - **GIVEN** a warm session whose stored turn sent a Default-mode developer message with a skills list, history, and a later Plan-mode developer message
 - **WHEN** the next request refreshes only the skills list
 - **THEN** the anchored request sends the refreshed message followed by the Plan-mode message
+
+#### Scenario: A JSON-mode instruction kept in input follows a refreshed earlier message
+- **GIVEN** a warm JSON-mode session whose stored turn sent a skills list, a Plan-mode developer message, and a Default-mode developer message that mentions JSON
+- **WHEN** the next request changes only the skills list
+- **THEN** the anchored request sends the skills list, the Plan-mode message and the Default-mode message, in that order
 
 #### Scenario: A changed instruction beside an unchanged attachment reaches upstream
 - **GIVEN** a warm session whose stored turn sent a developer message with text and a file
@@ -340,6 +354,7 @@ keep the request on its owner.
 - **GIVEN** a warm session whose stored turn ended with a developer message
 - **WHEN** the client resends the same history followed by prior output and a new user message
 - **THEN** the anchored request sends only the prior output and the new user message
+- **AND** on a captured Codex request body, standard or Lite, each later turn that only appends output and a user message sends no developer message again
 
 #### Scenario: A developer-only turn leaves no stored context
 - **GIVEN** a turn whose `input` held only developer messages

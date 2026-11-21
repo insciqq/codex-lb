@@ -21,6 +21,7 @@ import pytest
 
 from app.core.clients.proxy import ProxyResponseError
 from app.core.clients.proxy_websocket import UpstreamWebSocket
+from app.core.openai.requests import BaseHoist
 from app.db.models import AccountStatus, HttpBridgeSessionState
 from app.modules.proxy import service as proxy_service
 from app.modules.proxy._service.http_bridge import streaming as http_bridge_streaming_module
@@ -801,3 +802,31 @@ async def test_retry_of_a_pre_upgrade_operation_finds_its_record(monkeypatch: py
     assert exc_info.value.status_code == 400
     assert exc_info.value.payload["error"]["code"] == "previous_response_not_found"
     send_text.assert_not_awaited()
+
+
+def test_unknown_developer_record_resends_the_range_in_client_order() -> None:
+    """Without a developer record (a durable reattach), the range's developer messages go again, in order.
+
+    In JSON mode that includes the message the old hoist kept inline behind
+    the hoisted ones, so it stays the last instruction. A Lite request's
+    developer messages are history the anchor carries and are not resent.
+    """
+    user: proxy_service.JsonValue = {"role": "user", "content": "q"}
+    follow_up: proxy_service.JsonValue = {"role": "user", "content": "next"}
+    skills: proxy_service.JsonValue = {"role": "developer", "content": "Skills"}
+    plan: proxy_service.JsonValue = {"role": "developer", "content": "Plan"}
+    default_json: proxy_service.JsonValue = {"role": "developer", "content": "Default. Reply in JSON."}
+    tools: proxy_service.JsonValue = {"type": "additional_tools", "role": "developer", "tools": []}
+
+    json_remainder = proxy_service._wire_remainder_after_stored_prefix(
+        [skills, plan, default_json, user, follow_up],
+        2,
+        hoist=BaseHoist(json_mode=True),
+        stored_developer_fingerprints=None,
+    )
+    lite_remainder = proxy_service._wire_remainder_after_stored_prefix(
+        [tools, plan, user, follow_up], 3, hoist=BaseHoist(lite=True), stored_developer_fingerprints=None
+    )
+
+    assert json_remainder == [skills, plan, default_json, follow_up]
+    assert lite_remainder == [follow_up]

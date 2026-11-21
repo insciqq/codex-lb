@@ -45,9 +45,13 @@ question about it):
   `instructions`) and skips one the stored turn already sent. The stored turn's developer messages are recorded for that exact
   response: a request anchored to another response, a turn without a stored prefix, or a reattach from a durable row
   that differs from the in-memory record leaves them unknown, so that one request sends the developer messages of the
-  trimmed range again. Each recorded occurrence covers one occurrence on the next request, and once one developer message of the range is
-  sent every later one in it is sent too, so the last instruction upstream is the client's last one; a developer message whose
-  attachment the hoist kept as a `user` item is matched as a whole message.
+  trimmed range again. The record is a sequence: the range's developer messages are compared with it position by
+  position, and from the first one that differs (new, changed, moved or extra) every later developer message of the
+  range is sent again in client order, including one the hoist kept in `input` for JSON mode. An unchanged sequence
+  sends none again, so an append-only history (the Codex shape) repeats nothing. The client's developer messages thus
+  reach the chain in client order and its last one is the last one upstream, except for the removals and JSON-mode
+  moves listed under the limitations below. A developer message whose attachment the hoist kept as a `user` item is
+  matched as a whole message.
 - Operation keys: durable operation and recovery-attempt records from before the change still match an identical
   retry, through a second lookup of the key rebuilt in the old frame shape (the `instructions` text the old hoist
   produced from the raw request, recorded at validation).
@@ -70,3 +74,10 @@ question about it):
   can dispatch once more.
 - Limitation: `system` messages are still hoisted, because upstream rejects them in `input`. A `system` message on a
   request chained through `previous_response_id` therefore applies to that request only.
+- Limitation: an anchored chain cannot revoke a developer message. One the client removes or replaces stays where the
+  chain already has it; when it was the client's last developer message and nothing later is sent, it stays the last
+  one upstream (the old hoist sent only the current text, in `instructions`). Codex appends a new developer message
+  for a mode or permissions change instead of removing one.
+- Limitation: in JSON mode a developer message the hoist kept in `input` is history, verified by the stored prefix
+  rather than by the developer record, so moving a hoisted developer message across it, or inserting a copy of a
+  hoisted one in front of it, is not detected and the chain keeps the stored order.

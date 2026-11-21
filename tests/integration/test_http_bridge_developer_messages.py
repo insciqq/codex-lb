@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -90,6 +91,7 @@ def _baseline_developer(skills: str) -> dict[str, object]:
 
 _BASELINE_OLD = _baseline_developer("Skills: testing")
 _BASELINE_NEW = _baseline_developer("Skills: testing, linting")
+_DEFAULT = _collaboration_mode("Default")
 _PLAN = _collaboration_mode("Plan")
 _PLAN_HISTORY = [_ENV, _U1, _A1, _PLAN, _U2]
 
@@ -122,11 +124,23 @@ _INSERT_CASES = {
         [_BASELINE_NEW, *_PLAN_HISTORY, _A1, _U3],
         [_BASELINE_NEW, _PLAN, _A1, _U3],
     ),
+    # The record is a sequence: the same messages in another order are a
+    # change, and the client's last one must be the last one upstream.
+    "reordered-developer-messages": (
+        [_DEFAULT, _PLAN, _U1],
+        [_PLAN, _DEFAULT, _U1, _A1, _U2],
+        [_PLAN, _DEFAULT, _A1, _U2],
+    ),
 }
 
 
 async def _run_bridge_turns(
-    async_client, monkeypatch, tag: str, turns: list[tuple[list[dict[str, object]], str | None]]
+    async_client,
+    monkeypatch,
+    tag: str,
+    turns: list[tuple[list[dict[str, object]], str | None]],
+    *,
+    body: dict[str, object] | None = None,
 ) -> list[_FakeBridgeUpstreamWebSocket]:
     """Send each ``(input, previous_response_id)`` turn on one warm HTTP bridge session."""
     _install_bridge_settings(monkeypatch, enabled=True)
@@ -148,7 +162,8 @@ async def _run_bridge_turns(
     monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
     monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
     headers = {"session_id": f"dev-insert-session-{tag}"}
-    body = {"model": "gpt-5.1", "instructions": "You are Codex.", "stream": True}
+    if body is None:
+        body = {"model": "gpt-5.1", "instructions": "You are Codex.", "stream": True}
     for turn_input, previous_response_id in turns:
         json_body: dict[str, object] = {**body, "input": turn_input}
         if previous_response_id is not None:
@@ -237,8 +252,17 @@ _MODE_ROUND_TRIP_TURNS = [
     [_BASELINE_OLD, _ENV, _U1],
     [_BASELINE_OLD, _ENV, _U1, _A1, _PLAN, _U2],
     [_BASELINE_NEW, _ENV, _U1, _A1, _PLAN, _U2, _A1, _U3],
-    [_BASELINE_NEW, _ENV, _U1, _A1, _PLAN, _U2, _A1, _U3, _A1, _collaboration_mode("Default"), _U4],
-    [_BASELINE_NEW, _ENV, _U1, _A1, _PLAN, _U2, _A1, _U3, _A1, _collaboration_mode("Default"), _U4, _A1, _U5],
+    [_BASELINE_NEW, _ENV, _U1, _A1, _PLAN, _U2, _A1, _U3, _A1, _DEFAULT, _U4],
+    [_BASELINE_NEW, _ENV, _U1, _A1, _PLAN, _U2, _A1, _U3, _A1, _DEFAULT, _U4, _A1, _U5],
+]
+# What each anchored frame sends: the appended Plan, the refreshed message
+# followed by Plan again, the appended Default, and nothing repeated after.
+_MODE_ROUND_TRIP_FRAMES = [
+    [_BASELINE_OLD, _ENV, _U1],
+    [_A1, _PLAN, _U2],
+    [_BASELINE_NEW, _PLAN, _A1, _U3],
+    [_A1, _DEFAULT, _U4],
+    [_A1, _U5],
 ]
 
 
@@ -256,7 +280,79 @@ async def test_warm_bridge_keeps_the_clients_last_collaboration_mode(async_clien
         None,
         *(f"resp_conn1_{index}" for index in range(1, len(frames))),
     ]
+    assert [frame["input"] for frame in frames] == _MODE_ROUND_TRIP_FRAMES
     chain: list[dict[str, object]] = []
     for frame, client_input in zip(frames, _MODE_ROUND_TRIP_TURNS, strict=True):
         chain.extend(frame["input"])
         assert _last_collaboration_mode(chain) == _last_collaboration_mode(client_input)
+
+
+_SKILLS_V1 = _m("developer", "Skills list version 1")
+_SKILLS_V2 = _m("developer", "Skills list version 2")
+_DEFAULT_JSON = _collaboration_mode("Default")
+cast(list[object], _DEFAULT_JSON["content"]).append({"type": "input_text", "text": "Reply in JSON."})
+
+
+@pytest.mark.asyncio
+async def test_json_suffix_order(async_client, app_instance, monkeypatch):
+    """JSON mode: a skills refresh resends the later modes too, including the one the old hoist kept inline.
+
+    The old hoist left the Default-mode message (it mentions JSON) in
+    ``input``, so it is stored history the anchor carries; once the refreshed
+    skills list and Plan are sent again, Default must follow them.
+    """
+    del app_instance
+    stored = [_SKILLS_V1, _PLAN, _DEFAULT_JSON, _U1]
+    resend = [_SKILLS_V2, _PLAN, _DEFAULT_JSON, _U1, _A1, _U2]
+    body: dict[str, object] = {
+        "model": "gpt-5.1",
+        "instructions": "You are Codex.",
+        "stream": True,
+        "text": {"format": {"type": "json_object"}},
+    }
+    upstreams = await _run_bridge_turns(
+        async_client,
+        monkeypatch,
+        "json_suffix_order",
+        [(stored, None), (resend, None), ([*resend, _A1, _U3], None)],
+        body=body,
+    )
+
+    assert len(upstreams) == 1
+    frames = [json.loads(text) for text in upstreams[0].sent_text]
+    assert [frame.get("previous_response_id") for frame in frames] == [None, "resp_conn1_1", "resp_conn1_2"]
+    assert frames[1]["input"] == [_SKILLS_V2, _PLAN, _DEFAULT_JSON, _A1, _U2]
+    assert frames[2]["input"] == [_A1, _U3]
+    assert _last_collaboration_mode([*frames[0]["input"], *frames[1]["input"]]) == "Default"
+
+
+_CODEX_BODIES = sorted(
+    path for path in Path("tests/fixtures/codex_bodies").glob("*.json") if path.name != "provenance.json"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", _CODEX_BODIES, ids=lambda path: path.stem)
+async def test_warm_bridge_resends_no_developer_message_on_an_append_only_codex_thread(
+    async_client, app_instance, monkeypatch, path
+):
+    """Real Codex bodies: once the thread is anchored, an append-only history sends no developer message again."""
+    del app_instance
+    body = json.loads(path.read_text())
+    turns = [list(body.pop("input"))]
+    for number in range(3):
+        turns.append([*turns[-1], _A1, _m("user", f"follow-up {number}")])
+
+    upstreams = await _run_bridge_turns(
+        async_client, monkeypatch, f"steady_{path.stem}", [(turn, None) for turn in turns], body=body
+    )
+
+    assert len(upstreams) == 1
+    frames = [json.loads(text) for text in upstreams[0].sent_text]
+    assert [frame.get("previous_response_id") for frame in frames] == [
+        None,
+        "resp_conn1_1",
+        "resp_conn1_2",
+        "resp_conn1_3",
+    ]
+    assert [frame["input"] for frame in frames[1:]] == [[_A1, turn[-1]] for turn in turns[1:]]
