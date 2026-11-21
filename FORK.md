@@ -58,19 +58,24 @@ floating tags. Images are built by GitHub Actions, never locally.
 * Pushing a version tag runs `.github/workflows/fork-image.yml`, which
   publishes `ghcr.io/insciqq/codex-lb:<version>` and
   `ghcr.io/insciqq/codex-lb:sha-<full commit SHA>` for linux/amd64 and
-  linux/arm64. There is no `latest`, and an existing tag is never
-  overwritten.
-* Before building, the workflow requires the tag commit to be reachable from
+  linux/arm64. There is no `latest`, and a tag that already names another
+  digest is never moved.
+* The workflow runs on the tag ref only. Before building, it requires the
+  run's commit to be the tag commit, the commit to be reachable from
   `patched`, a successful full CI run for that exact commit, and the tag's
-  version in `pyproject.toml` and `app/__init__.py`.
-* Images carry `org.opencontainers.image.revision`, `.version` and `.source`
-  and a signed build provenance attestation. The job summary prints the
-  pushed digest.
+  version in every release-managed file listed above.
+* It builds once and pushes by digest, signs build provenance for that
+  digest, and only then points both tags at it. A re-run of failed jobs
+  re-signs or re-tags the same digest without rebuilding.
+* Images carry `org.opencontainers.image.revision`, `.version` and `.source`.
+  The job summary prints the digest.
 * Deploy by the `sha-<full>` tag or by digest, not by the version tag, and
   verify the digest first:
 
   ```bash
-  gh attestation verify oci://ghcr.io/insciqq/codex-lb@<digest> --repo insciqq/codex-lb
+  gh attestation verify oci://ghcr.io/insciqq/codex-lb@<digest> \
+    --repo insciqq/codex-lb --source-digest <full commit SHA> \
+    --signer-workflow insciqq/codex-lb/.github/workflows/fork-image.yml
   ```
 
 * The Helm chart defaults to `ghcr.io/insciqq/codex-lb:<appVersion>`, and
@@ -78,8 +83,8 @@ floating tags. Images are built by GitHub Actions, never locally.
   tag (`git grep -n 'fork\.[0-9]'`). Bump them with the version; the fork
   publishes no Helm chart or Python package.
 * When the tag push built nothing (the workflow was disabled, or the run
-  failed before pushing), publish an existing tag with
-  `gh workflow run "Fork image" --ref patched -f tag=v<version>`.
+  failed), publish an existing tag with
+  `gh workflow run "Fork image" --ref v<version>`.
 
 The Fork image workflow has to be enabled once in the Actions settings. The
 first publish creates the `codex-lb` container package; check in its

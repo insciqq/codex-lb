@@ -5,29 +5,33 @@ name: Fork image
 # untouched; this workflow only builds and pushes the image, with no PyPI,
 # Helm chart, GitHub release or floating tags.
 #
-# Gates, all before anything is pushed:
-# * the tag commit is reachable from origin/patched;
-# * the CI workflow succeeded for that exact commit (checks are per commit,
-#   so the green wip/merge-* run of the same SHA counts);
-# * pyproject.toml and app/__init__.py carry the tag's version;
-# * neither image tag exists yet, so a tag never moves to another build.
+# It runs on the tag ref only: a tag push, or `gh workflow run "Fork image"
+# --ref v<version>`. The run's commit is then the tag commit, so the
+# provenance attestation names the commit that was built.
 #
-# Published tags: ghcr.io/insciqq/codex-lb:<version> and
-# ghcr.io/insciqq/codex-lb:sha-<full commit SHA>. Deploy by the sha tag or by
-# digest; verify with `gh attestation verify oci://<image>@<digest> --repo
-# insciqq/codex-lb`.
+# verify  the tag commit is reachable from origin/patched, has a successful
+#         full CI run (checks are per commit, so the green wip/merge-* run of
+#         the same SHA counts) and carries the tag's version in every
+#         release-managed file.
+# build   builds once and pushes by digest only, without tags.
+# attest  signs build provenance for that digest; a re-run of failed jobs
+#         re-signs without rebuilding.
+# tag     points <version> and sha-<full SHA> at the digest. A tag that
+#         already names this digest is kept, any other digest fails the job,
+#         and an unclear registry answer fails closed.
+#
+# Deploy by the sha- tag or by digest, and verify with
+#   gh attestation verify oci://ghcr.io/insciqq/codex-lb@<digest> \
+#     --repo insciqq/codex-lb --source-digest <commit SHA> \
+#     --signer-workflow insciqq/codex-lb/.github/workflows/fork-image.yml
 
 on:
   push:
     tags: ["v*-fork.*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing fork tag to publish (e.g. v1.25.0-fork.1)"
-        required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.inputs.tag || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -35,11 +39,11 @@ permissions:
 
 env:
   IMAGE: ghcr.io/insciqq/codex-lb
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
   verify:
-    name: Verify tag, branch and CI
+    name: Verify tag, branch, versions and CI
     runs-on: ubuntu-24.04
     if: github.repository == 'insciqq/codex-lb'
     timeout-minutes: 10
@@ -52,33 +56,37 @@ jobs:
 
     steps:
       - name: Validate tag name
+        env:
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
+          if [[ "${REF_TYPE}" != tag ]]; then
+            echo "::error::run this workflow on a tag ref: gh workflow run \"Fork image\" --ref v<version>"
+            exit 1
+          fi
           if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[1-9][0-9]*$ ]]; then
             echo "::error::tag ${RELEASE_TAG} does not match v<major>.<minor>.<patch>-fork.<n>"
             exit 1
           fi
 
       # fetch-depth 0 brings every branch and tag, including origin/patched.
-      - name: Checkout repository
+      - name: Checkout tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: refs/tags/${{ env.RELEASE_TAG }}
 
-      - name: Resolve tag commit and version
+      - name: Require the run commit to be the tag commit
         id: tag
         run: |
           set -euo pipefail
           sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
-          if [[ ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::could not resolve ${RELEASE_TAG} to a full commit SHA"
+          if [[ "${sha}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::run commit ${GITHUB_SHA} is not the commit of ${RELEASE_TAG} (${sha})"
             exit 1
           fi
-          version="${RELEASE_TAG#v}"
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
           echo "${RELEASE_TAG} -> ${sha}"
 
       - name: Require the commit on patched
@@ -92,29 +100,44 @@ jobs:
             exit 1
           fi
 
-      # The Python package version is PEP 440: X.Y.Z-fork.N is X.Y.Z+fork.N.
+      # Python and the dashboard use the PEP 440 form X.Y.Z+fork.N; the Helm
+      # chart uses the tag's SemVer form X.Y.Z-fork.N, which image tags and
+      # Kubernetes label values accept.
       - name: Require the tag version in the project files
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import json
           import os
           import re
           import sys
           import tomllib
           from pathlib import Path
 
-          expected = os.environ["VERSION"].replace("-fork.", "+fork.", 1)
+          semver = os.environ["VERSION"]
+          pep440 = semver.replace("-fork.", "+fork.", 1)
+          chart = Path("deploy/helm/codex-lb/Chart.yaml").read_text()
+          uv_lock = Path("uv.lock").read_text()
+
+          def field(pattern: str, text: str) -> str | None:
+              match = re.search(pattern, text, re.MULTILINE)
+              return match.group(1).strip() if match else None
+
           found = {
-              "pyproject.toml": tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"],
-              "app/__init__.py": re.search(r'^__version__ = "([^"]+)"', Path("app/__init__.py").read_text(), re.M).group(1),
+              "pyproject.toml": (tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"], pep440),
+              "app/__init__.py": (field(r'^__version__ = "([^"]+)"', Path("app/__init__.py").read_text()), pep440),
+              "frontend/package.json": (json.loads(Path("frontend/package.json").read_text())["version"], pep440),
+              "uv.lock": (field(r'^name = "codex-lb"\nversion = "([^"]+)"', uv_lock), pep440),
+              "Chart.yaml version": (field(r"^version: (.+)$", chart), semver),
+              "Chart.yaml appVersion": (field(r"^appVersion: (.+)$", chart), semver),
           }
-          drift = {name: value for name, value in found.items() if value != expected}
+          drift = {name: f"{actual!r} != {expected!r}" for name, (actual, expected) in found.items() if actual != expected}
           if drift:
-              print(f"::error::expected version {expected}, found {drift}")
+              print(f"::error::version drift: {drift}")
               sys.exit(1)
-          print(f"project version {expected}")
+          print(f"project version {pep440}, chart version {semver}")
           PY
 
       # Only full-suite runs count: pull_request runs skip jobs by path.
@@ -133,20 +156,18 @@ jobs:
           echo "successful CI runs for ${SHA}:"
           echo "${runs}"
 
-  image:
-    name: Build and push image
+  build:
+    name: Build and push by digest
     needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
-      attestations: write
       contents: read
-      id-token: write
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
 
     steps:
-      # Check out the verified SHA, not the tag name, so a moved tag cannot
-      # change what is built.
       - name: Checkout verified commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -166,35 +187,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # A resolvable tag fails the job. Any other answer means absent: the
-      # registry reports a package that was never pushed in several ways, and a
-      # real registry outage fails the push below anyway.
-      - name: Refuse to overwrite existing tags
-        env:
-          SHA: ${{ needs.verify.outputs.sha }}
-          VERSION: ${{ needs.verify.outputs.version }}
-        run: |
-          set -euo pipefail
-          for ref in "${IMAGE}:${VERSION}" "${IMAGE}:sha-${SHA}"; do
-            if out="$(docker buildx imagetools inspect "${ref}" 2>&1)"; then
-              echo "::error::${ref} already exists; image tags are immutable"
-              exit 1
-            fi
-            echo "${ref} is not published yet: ${out}"
-          done
-
+      # No cache: a tag-scoped cache never hits again and only widens what a
+      # release build trusts.
       - name: Build and push
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
         with:
           context: .
           file: Dockerfile
-          push: true
           pull: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ env.IMAGE }}:${{ needs.verify.outputs.version }}
-            ${{ env.IMAGE }}:sha-${{ needs.verify.outputs.sha }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.verify.outputs.sha }}
@@ -203,21 +206,117 @@ jobs:
             index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
             index:org.opencontainers.image.revision=${{ needs.verify.outputs.sha }}
             index:org.opencontainers.image.version=${{ needs.verify.outputs.version }}
-          cache-from: type=gha,scope=codex-lb-fork-image
-          cache-to: type=gha,mode=max,scope=codex-lb-fork-image
 
+      - name: Require a digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::build returned no image digest: '${DIGEST}'"
+            exit 1
+          fi
+          echo "pushed ${IMAGE}@${DIGEST}"
+
+  attest:
+    name: Attest build provenance
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No predicate inputs: actions/attest generates SLSA build provenance.
       - name: Attest build provenance
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ needs.build.outputs.digest }}
           push-to-registry: true
           # Storage records exist only for organization-owned repositories.
           create-storage-record: false
 
+  tag:
+    name: Tag the digest
+    needs: [verify, build, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Point the version and sha tags at the digest
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          SHA: ${{ needs.verify.outputs.sha }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Prints the root digest of a tag, "absent" for a missing tag, and
+          # fails after retries on any other registry answer.
+          tag_digest() {
+            local ref="$1" out attempt
+            for attempt in 1 2 3 4; do
+              if out="$(docker buildx imagetools inspect "${ref}" 2>&1)"; then
+                awk '/^Digest:/ { print $2; exit }' <<< "${out}"
+                return 0
+              fi
+              if grep -qiE 'not found|manifest unknown|name unknown' <<< "${out}"; then
+                echo absent
+                return 0
+              fi
+              echo "attempt ${attempt}: could not inspect ${ref}: ${out}" >&2
+              sleep $((attempt * 15))
+            done
+            echo "::error::registry did not answer for ${ref}" >&2
+            return 1
+          }
+
+          for ref in "${IMAGE}:${VERSION}" "${IMAGE}:sha-${SHA}"; do
+            current="$(tag_digest "${ref}")"
+            if [[ "${current}" == "${DIGEST}" ]]; then
+              echo "${ref} already points to ${DIGEST}"
+              continue
+            fi
+            if [[ "${current}" != absent ]]; then
+              echo "::error::${ref} already points to ${current}, not ${DIGEST}; image tags are immutable"
+              exit 1
+            fi
+            docker buildx imagetools create --tag "${ref}" "${IMAGE}@${DIGEST}"
+            current="$(tag_digest "${ref}")"
+            if [[ "${current}" != "${DIGEST}" ]]; then
+              echo "::error::${ref} points to ${current} after tagging, expected ${DIGEST}"
+              exit 1
+            fi
+            echo "tagged ${ref} -> ${DIGEST}"
+          done
+
       - name: Write job summary
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ needs.build.outputs.digest }}
           SHA: ${{ needs.verify.outputs.sha }}
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
@@ -233,6 +332,8 @@ jobs:
             echo
             echo '```bash'
             echo "docker pull ${IMAGE}@${DIGEST}"
-            echo "gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${GITHUB_REPOSITORY}"
+            echo "gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${GITHUB_REPOSITORY} \\"
+            echo "  --source-digest ${SHA} \\"
+            echo "  --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/fork-image.yml"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
