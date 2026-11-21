@@ -18,7 +18,8 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | out-of-scope | 50 | a feature or other change outside the fork's scope |
 | not-applicable | 4 | does not concern the fork (upstream release, CI, docs or translation work) |
 | merged-upstream | 0 | merged upstream; the fork gets it with upstream main |
-| pending | 49 | no decision yet |
+| deferred | 3 | decided, scheduled after the first release |
+| pending | 46 | no decision yet |
 | total | 231 | |
 
 | Status | Issues | Meaning |
@@ -29,7 +30,8 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | not-fixed | 3 | reviewed and not fixed in the fork, for the reason given |
 | out-of-scope | 38 | a feature request |
 | not-applicable | 8 | does not concern the fork |
-| pending | 49 | no decision yet |
+| deferred | 2 | decided, scheduled after the first release |
+| pending | 47 | no decision yet |
 | total | 129 | |
 
 ## Pull requests
@@ -57,7 +59,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2102](https://github.com/Soju06/codex-lb/pull/2102) | feat(proxy): support Codex history and notes across account pools | open | out-of-scope | Codex history and notes across account pools, with a new API-key option and new Alembic revisions. |
 | [2112](https://github.com/Soju06/codex-lb/pull/2112) | fix(observability): record HTTP upstream phase timings | open | pending | - |
 | [2115](https://github.com/Soju06/codex-lb/pull/2115) | feat(proxy): support Astra steering with transport-owned dispatch | open | out-of-scope | Support for response.steer, which current Codex clients do not emit. |
-| [2117](https://github.com/Soju06/codex-lb/pull/2117) | fix(proxy): retire revoked stream accounts | open | pending | Deferred until after the first release: retiring an account on a single token_revoked or token_invalidated observation needs a recovery path and race-free quarantine first. |
+| [2117](https://github.com/Soju06/codex-lb/pull/2117) | fix(proxy): retire revoked stream accounts | open | deferred | Retiring an account on a single token_revoked or token_invalidated observation needs a recovery path and race-free quarantine first. |
 | [2118](https://github.com/Soju06/codex-lb/pull/2118) | feat(ui): add Japanese dashboard localization | open | out-of-scope | A new dashboard locale. |
 | [2120](https://github.com/Soju06/codex-lb/pull/2120) | fix(auth): retain unexpired access on refresh preflight failure | open | pending | - |
 | [2121](https://github.com/Soju06/codex-lb/pull/2121) | fix(proxy): recover tool-complete goal followups from unavailable owners | open | pending | - |
@@ -77,12 +79,12 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2312](https://github.com/Soju06/codex-lb/pull/2312) | docs: use GPT-6 Astra in current client examples | open | taken | issues [2311](https://github.com/Soju06/codex-lb/issues/2311) |
 | [2317](https://github.com/Soju06/codex-lb/pull/2317) | fix(proxy): align compact budget with responses stream | open | taken | - |
 | [2319](https://github.com/Soju06/codex-lb/pull/2319) | fix(proxy): contain post-terminal health write failures | open | taken | issues [2033](https://github.com/Soju06/codex-lb/issues/2033) |
-| [2321](https://github.com/Soju06/codex-lb/pull/2321) | fix(accounts): preserve observed monthly quota across plans | open | pending | Deferred until after the first release: moving the 30-day Team quota from the primary to the monthly slot needs a migration-safe path for existing blocks and reset evidence. |
+| [2321](https://github.com/Soju06/codex-lb/pull/2321) | fix(accounts): preserve observed monthly quota across plans | open | deferred | Moving the 30-day Team quota from the primary to the monthly slot needs a migration-safe path for existing blocks and reset evidence. |
 | [2322](https://github.com/Soju06/codex-lb/pull/2322) | feat(db): explain guarded migration recovery stamping | open | rejected | The documented recovery sequence fails: after a metadata-only stamp back, the schema drift check and startup refuse the database by default. |
 | [2323](https://github.com/Soju06/codex-lb/pull/2323) | feat(cli): add targeted session metadata preview and repair | open | out-of-scope | A new client-side CLI to preview and repair session metadata.; issues [1636](https://github.com/Soju06/codex-lb/issues/1636) |
 | [2324](https://github.com/Soju06/codex-lb/pull/2324) | feat(proxy): forward explicit compact requests to model sources | open | out-of-scope | Forwards explicit compact requests to model sources, a new capability.; issues [2318](https://github.com/Soju06/codex-lb/issues/2318) |
 | [2325](https://github.com/Soju06/codex-lb/pull/2325) | feat(cli): bound whole-home retag planning and report progress | open | out-of-scope | CLI retag performance work and a new progress flag.; issues [1636](https://github.com/Soju06/codex-lb/issues/1636) |
-| [2326](https://github.com/Soju06/codex-lb/pull/2326) | fix(warmup): preserve live reset evidence across skipped polls | open | pending | Deferred until after the first release: the reset-confirmed warm-up after a skipped poll is being redesigned without the second history scan. |
+| [2326](https://github.com/Soju06/codex-lb/pull/2326) | fix(warmup): preserve live reset evidence across skipped polls | open | deferred | The reset-confirmed warm-up after a skipped poll is being redesigned without the second history scan. |
 | [2332](https://github.com/Soju06/codex-lb/pull/2332) | fix(proxy): fail over account-local model rejection | open | taken with changes | changes: The HTTP bridge sends model_not_found through the same bounded model fallback as the legacy entitlement rejection. |
 | [2344](https://github.com/Soju06/codex-lb/pull/2344) | feat(health): expose request-persistence ownership during drain | open | out-of-scope | New request-persistence ownership fields in the drain status.; issues [2343](https://github.com/Soju06/codex-lb/issues/2343) |
 | [2345](https://github.com/Soju06/codex-lb/pull/2345) | fix(proxy): preserve local quarantine evidence during completion | open | pending | - |
@@ -309,7 +311,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [1946](https://github.com/Soju06/codex-lb/issues/1946) | UI account section bug | open | pending | - |
 | [1950](https://github.com/Soju06/codex-lb/issues/1950) | bug(compact): hosted computer screenshots can still hard-fail compaction and wedge image-heavy threads | open | pending | - |
 | [1959](https://github.com/Soju06/codex-lb/issues/1959) | feat: Would you be interested in an optional auto re-login feature? | open | out-of-scope | Feature request: automatic re-login. |
-| [1975](https://github.com/Soju06/codex-lb/issues/1975) | bug(warmup): live usage ingestion can consume reset evidence without invoking limit warm-up | open | pending | Deferred until after the first release: the reset-confirmed warm-up after a skipped poll is being redesigned. |
+| [1975](https://github.com/Soju06/codex-lb/issues/1975) | bug(warmup): live usage ingestion can consume reset evidence without invoking limit warm-up | open | deferred | The reset-confirmed warm-up after a skipped poll is being redesigned. |
 | [1976](https://github.com/Soju06/codex-lb/issues/1976) | bug(warmup): staggered idle slots can be unreachable for sliding reset\_at | open | pending | - |
 | [1979](https://github.com/Soju06/codex-lb/issues/1979) | feat(automations): add an opt-in verified weekly-window prestart preset | open | out-of-scope | Feature request: a weekly-window prestart automation preset. |
 | [1981](https://github.com/Soju06/codex-lb/issues/1981) | bug: wedged-teardown interrupt fails with "Cannot operate on a closed database", then the process holds the SQLite write lock permanently (55 min of database-is-locked while /health stays 200) | open | pending | - |
@@ -353,7 +355,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2420](https://github.com/Soju06/codex-lb/issues/2420) | bug(accounts): Hard-coded Pro and Pro Lite credit capacities disagree with observed quota consumption, distorting pooled credit reporting | open | pending | - |
 | [2425](https://github.com/Soju06/codex-lb/issues/2425) | bug: input\_image requests still fail \~35% during overload on beta.8 — the HTTP bridge bypass, not the upstream transport, is the cause (follow-up to #2363/#2386) | open | pending | - |
 | [2426](https://github.com/Soju06/codex-lb/issues/2426) | bug(metrics): populate account counts and expose availability for alerting | open | fixed | own fix |
-| [2442](https://github.com/Soju06/codex-lb/issues/2442) | bug(proxy): early token\_expired reauth account poisons fresh Codex HTTP routing | open | pending | Deferred until after the first release: blocking an account on a refused access token must not retire accounts whose refresh token still works. |
+| [2442](https://github.com/Soju06/codex-lb/issues/2442) | bug(proxy): early token\_expired reauth account poisons fresh Codex HTTP routing | open | deferred | Blocking an account on a refused access token must not retire accounts whose refresh token still works. |
 | [2443](https://github.com/Soju06/codex-lb/issues/2443) | bug(metrics): dashboard/report TPS uses post-settlement latency and reasoning-inclusive TTFT | open | pending | - |
 | [2455](https://github.com/Soju06/codex-lb/issues/2455) | bug(proxy): bridge payload bypass blocks verified quota failover | open | pending | - |
 | [2456](https://github.com/Soju06/codex-lb/issues/2456) | bug(proxy): Windows route errors 1231/1232 bypass shared-client recovery | open | pending | - |
