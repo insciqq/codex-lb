@@ -1,8 +1,13 @@
 name: CI
 
 on:
+  # Fork: push CI only for ready merge branches. `patched` is fast-forwarded to
+  # an already-green wip/merge-* SHA (checks are per commit) and `main` mirrors
+  # upstream, so neither re-runs the suite. Run any other ref manually with
+  # `gh workflow run CI --ref <branch>`.
   push:
-    branches: ["main", "patched", "wip/**"]
+    branches: ["wip/merge-*"]
+  workflow_dispatch:
   # No `edited`: a PR title/body edit (agents finalizing descriptions, review
   # bots rewriting summaries) must not cancel the in-flight matrix and re-queue
   # ~30 jobs for an unchanged head. The only jobs that read PR metadata are the
@@ -25,7 +30,7 @@ permissions:
 
 jobs:
   # Detect changed areas so PRs can skip unrelated expensive jobs.
-  # Pushes to main and merge queue events still run the full suite.
+  # Every other event (push, merge queue, manual dispatch) runs the full suite.
   changes:
     name: Detect changes
     runs-on: ubuntu-24.04
@@ -49,7 +54,7 @@ jobs:
       - name: Detect full-suite events
         id: force
         run: |
-          if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "merge_group" ]]; then
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
             echo "full_suite=true" >> "$GITHUB_OUTPUT"
           else
             echo "full_suite=" >> "$GITHUB_OUTPUT"

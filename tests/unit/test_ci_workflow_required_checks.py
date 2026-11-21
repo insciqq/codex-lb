@@ -167,3 +167,16 @@ def test_fork_registry_check_runs_offline_on_full_history_and_is_required() -> N
     assert "--strict" not in registry_job
     assert "GITHUB_TOKEN" not in registry_job
     assert "- fork-registry" in required_job
+
+
+def test_non_pull_request_events_run_the_full_suite() -> None:
+    # detect_changed_areas.py needs a pull_request payload; every other trigger
+    # (push, merge queue, manual dispatch) must skip it and force the full suite.
+    workflow = _ci_workflow_text()
+    trigger_block = workflow.split("concurrency:", maxsplit=1)[0]
+    changes_job = _job_block(workflow, "changes")
+
+    assert "\n  workflow_dispatch:" in trigger_block
+    assert 'if [[ "${{ github.event_name }}" != "pull_request" ]]; then' in changes_job
+    assert 'echo "full_suite=true" >> "$GITHUB_OUTPUT"' in changes_job
+    assert "if: steps.force.outputs.full_suite != 'true'" in changes_job

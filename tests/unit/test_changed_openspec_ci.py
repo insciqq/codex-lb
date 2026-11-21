@@ -107,6 +107,13 @@ def test_new_branch_push_validates_all_tracked_active_changes(tmp_path: Path) ->
     assert "--type change --strict --no-interactive -- untouched-invalid" in result.stdout
 
 
+def test_manual_dispatch_validates_all_tracked_active_changes(tmp_path: Path) -> None:
+    repo = setup_repo(tmp_path)
+    result = run_gate(repo, "workflow_dispatch", {"inputs": {}, "ref": "refs/heads/feature"})
+    assert result.returncode == 0, result.stderr
+    assert "--type change --strict --no-interactive -- untouched-invalid" in result.stdout
+
+
 def test_renames_deletions_and_archives_select_surviving_folders(tmp_path: Path) -> None:
     repo = setup_repo(tmp_path)
     deleted = change(repo, "deleted")

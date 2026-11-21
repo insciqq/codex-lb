@@ -23,9 +23,12 @@ def main() -> None:
         base, head = event["before"], event["after"]
     elif event_name == "merge_group":
         base, head = event["merge_group"]["base_sha"], event["merge_group"]["head_sha"]
+    elif event_name == "workflow_dispatch":
+        # A manual run has no range: validate every active change, like a new branch.
+        base, head = "0" * 40, "HEAD"
     else:
         raise ValueError(f"Unsupported event: {event_name}")
-    if event_name == "push" and base == "0" * 40:
+    if base == "0" * 40:
         paths = git("ls-tree", "-r", "--name-only", "-z", head, "--", "openspec/changes/")
     else:
         paths = git("diff", "--name-only", "-z", "--no-renames", base, head, "--", "openspec/changes/")

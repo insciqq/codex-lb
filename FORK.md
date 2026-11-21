@@ -10,9 +10,35 @@ no functionality of its own.
 |---|---|
 | `patched` | Default branch. Upstream `main` plus the patch queue. Deploy only full SHAs from this branch with green CI. |
 | `main` | Mirror of upstream `main`. No fork commits. Sync with `git push origin upstream/main:main`. |
+| `wip/merge-*` | A ready change set on top of `patched`. The only branches pushed for CI. |
 
-Only CI runs in the fork. Release, publishing, docs, labeler, stale and
-metadata workflows are disabled in the Actions settings.
+Work branches stay local. When a `wip/merge-*` head is green, `patched` is
+fast-forwarded to exactly that SHA:
+`git push origin origin/wip/merge-<name>:refs/heads/patched`.
+
+## CI
+
+`.github/workflows/ci.yml` runs the full suite on every push to a
+`wip/merge-*` branch. Pushes to `patched` and `main` do not run it:
+
+* Checks belong to a commit, not to a branch. A `patched` head moved to a
+  green `wip/merge-*` SHA shows the green checks of that run, so a second run
+  would test the same tree again.
+* `main` carries no fork commits. A push to `main` still runs the workflows
+  defined in the pushed upstream commit, because GitHub reads workflow files
+  from that commit.
+
+Run CI by hand on any branch, for example a work branch pushed for an early
+signal; a manual run also executes the full suite:
+
+```bash
+gh workflow run CI --ref <branch>
+gh run list --workflow CI --branch <branch> --limit 1
+```
+
+Only CI runs in the fork. Release, publishing, release guard, simplicity
+budget, docs, labeler, stale and metadata workflows are disabled in the
+Actions settings; they serve upstream's `main`, pull requests and releases.
 
 Tags named `patched/<date>-<short>` keep previous `patched` heads reachable
 after a rebuild. They are recovery points, not versions. The fork publishes
@@ -105,8 +131,10 @@ Rebuild instead:
 2. `git tag patched/<date>-<short> patched` and push the tag.
 3. `git switch -C patched upstream/main`, then cherry-pick the patches
    without a `merged upstream` signal, in report order.
-4. `git push --force-with-lease origin patched`. CI runs on every push to
-   `patched`; a head is deployable only after its own checks are green.
+4. Push the rebuilt head for CI, `git push origin patched:refs/heads/wip/merge-rebuild-<date>`,
+   and wait until it is green. A push to `patched` runs no CI.
+5. `git push --force-with-lease origin patched` moves `patched` to the same
+   SHA. A head is deployable only after its checks are green.
 
 ## Considered, not taken
 
