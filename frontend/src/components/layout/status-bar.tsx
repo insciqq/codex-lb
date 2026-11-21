@@ -14,6 +14,10 @@ import { formatTimeLong } from "@/utils/formatters";
 
 const GITHUB_REPOSITORY_URL = "https://github.com/insciqq/codex-lb";
 const STATUS_REFRESH_INTERVAL_MS = 60_000;
+// Matches the backend's release lookup cache: 6 h after a successful lookup,
+// 15 min after a failed one (the request failed or GitHub could not be read).
+const RUNTIME_VERSION_REFRESH_MS = 6 * 60 * 60 * 1000;
+const RUNTIME_VERSION_RETRY_MS = 15 * 60 * 1000;
 const USAGE_FRESHNESS_THRESHOLD_MS = 60_000;
 export const STATUS_BAR_DEFAULT_HEIGHT_PX = 40;
 
@@ -115,7 +119,13 @@ export function StatusBar({ onHeightChange }: StatusBarProps = {}) {
     queryKey: ["runtime", "version"],
     queryFn: getRuntimeVersion,
     retry: false,
-    staleTime: 6 * 60 * 60 * 1000,
+    staleTime: RUNTIME_VERSION_REFRESH_MS,
+    // The footer stays mounted for the tab's lifetime, so recheck on a timer
+    // instead of relying on remounts or window focus.
+    refetchInterval: (query) =>
+      query.state.status === "error" || query.state.data?.source == null
+        ? RUNTIME_VERSION_RETRY_MS
+        : RUNTIME_VERSION_REFRESH_MS,
   });
   const dateDisplayFormat = useDateDisplayFormatStore((state) => state.dateDisplayFormat);
   const lastSync = formatTimeLong(lastSyncAt, dateDisplayFormat);

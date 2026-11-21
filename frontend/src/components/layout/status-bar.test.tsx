@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StatusBar, type StatusBarProps } from "@/components/layout/status-bar";
 import i18n from "@/i18n";
@@ -207,6 +207,59 @@ describe("StatusBar", () => {
     expect(link).toHaveAttribute("href", "https://github.com/insciqq/codex-lb/releases/latest");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer");
+  });
+
+  describe("runtime version recheck", () => {
+    function countRuntimeVersionRequests(source: string | null, status = 200) {
+      const calls = { count: 0 };
+      server.use(
+        http.get("/api/runtime/version", () => {
+          calls.count += 1;
+          if (status !== 200) {
+            return HttpResponse.json({ error: "unavailable" }, { status });
+          }
+          return HttpResponse.json({
+            currentVersion: "1.25.0+fork.2",
+            latestVersion: source ? "1.25.0-fork.2" : null,
+            updateAvailable: false,
+            checkedAt: "2026-05-26T00:00:00Z",
+            source,
+            releaseUrl: "https://github.com/insciqq/codex-lb/releases/latest",
+          });
+        }),
+      );
+      return calls;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("rechecks six hours after a successful lookup", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const calls = countRuntimeVersionRequests("github");
+      renderStatusBar();
+      await waitFor(() => expect(calls.count).toBe(1));
+
+      await act(() => vi.advanceTimersByTimeAsync(15 * 60 * 1000 + 1));
+      expect(calls.count).toBe(1);
+
+      await act(() => vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000));
+      await waitFor(() => expect(calls.count).toBe(2));
+    });
+
+    it.each([
+      ["the request fails", null, 503],
+      ["GitHub could not be read", null, 200],
+    ])("rechecks fifteen minutes after %s", async (_name, source, status) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const calls = countRuntimeVersionRequests(source, status);
+      renderStatusBar();
+      await waitFor(() => expect(calls.count).toBe(1));
+
+      await act(() => vi.advanceTimersByTimeAsync(15 * 60 * 1000 + 1));
+      await waitFor(() => expect(calls.count).toBe(2));
+    });
   });
 
   it("does not show an update link when the runtime version check fails", async () => {

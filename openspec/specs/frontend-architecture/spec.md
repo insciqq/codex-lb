@@ -500,7 +500,7 @@ When API key limit rules exist, the sidebar SHALL also render the legacy limit p
 
 ### Requirement: Footer version update indicator
 
-The dashboard footer SHALL show the running application version and SHALL display a compact update-available icon next to that version only when the runtime version API confirms a newer fork release exists.
+The dashboard footer SHALL show the running application version and SHALL display a compact update-available icon next to that version only when the runtime version API confirms a newer fork release exists. While the footer stays mounted, the dashboard MUST re-request the runtime version every 6 hours after a successful lookup and every 15 minutes after a failed one (the request failed or the response carries no `source`).
 
 #### Scenario: Newer release is available
 
@@ -508,6 +508,12 @@ The dashboard footer SHALL show the running application version and SHALL displa
 - **THEN** the footer renders an accessible update icon beside the current version
 - **AND** the icon links to `https://github.com/insciqq/codex-lb/releases/latest`
 - **AND** the icon title or accessible label includes the latest version
+
+#### Scenario: An open dashboard rechecks for releases
+
+- **WHEN** the dashboard stays open after a successful runtime version lookup
+- **THEN** it requests `GET /api/runtime/version` again after 6 hours, without a reload or focus change
+- **AND** after a failed lookup it requests it again after 15 minutes
 
 #### Scenario: Version lookup is unavailable
 
