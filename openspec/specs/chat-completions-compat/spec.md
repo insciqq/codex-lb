@@ -39,16 +39,21 @@ The service MUST enforce role-specific message content rules: `system` and `deve
 
 ### Requirement: Map chat requests to Responses wire format
 
-The service MUST map chat messages into the Responses request format by merging `system`/`developer` content into `instructions` and forwarding all other messages as `input`. When `response_format.type` is `json_object`, the service MUST instead preserve `system`/`developer` messages as Responses input role messages so JSON-mode instructions remain in the request context. Tool definitions MUST be normalized to the Responses tool schema, and `tool_choice`, `reasoning_effort`, and `response_format` MUST be mapped consistently. Unsupported fields MUST not be silently ignored if they change behavior.
+The service MUST map chat messages into the Responses request format by merging `system`/`developer` content into `instructions` and forwarding all other messages as `input`. JSON mode is decided on the effective format after `response_format` is mapped: when `text.format.type` is `json_object`, whether set through `response_format` or directly, the service MUST instead keep a `system`/`developer` message that mentions JSON in `input` so the JSON-mode instruction remains in the request context, and a `system` message kept this way MUST be forwarded with the `developer` role, because upstream rejects `system` messages in `input`; in that case other `developer` messages also stay in `input` and other `system` messages are merged into `instructions`. Tool definitions MUST be normalized to the Responses tool schema, and `tool_choice`, `reasoning_effort`, and `response_format` MUST be mapped consistently. Unsupported fields MUST not be silently ignored if they change behavior.
 
 #### Scenario: System message normalization
 - **WHEN** the client sends a `system` message followed by a `user` message
-- **AND** the request does not use `response_format.type = "json_object"`
+- **AND** the effective `text.format.type` after `response_format` is mapped is not `json_object`
 - **THEN** the service maps the system content to `instructions` and the user message to `input`
 
 #### Scenario: JSON object response format preserves instruction-role messages
 - **WHEN** the client sends `response_format: {"type":"json_object"}` with a `system` or `developer` message that instructs JSON output
-- **THEN** the mapped Responses payload keeps that message in `input` with its original role
+- **THEN** the mapped Responses payload keeps that message in `input` with the `developer` role
+- **AND** the mapped `instructions` value does not contain that message content
+
+#### Scenario: JSON mode from text.format preserves instruction-role messages
+- **WHEN** the client sends `messages` with a `system` or `developer` message that instructs JSON output and `text: {"format": {"type": "json_object"}}` without `response_format`
+- **THEN** the mapped Responses payload keeps that message in `input` with the `developer` role
 - **AND** the mapped `instructions` value does not contain that message content
 
 #### Scenario: Tool choice values

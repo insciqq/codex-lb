@@ -670,13 +670,21 @@ async def test_v1_chat_completions_maps_response_format(async_client, monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("instruction_role", ["system", "developer"])
+@pytest.mark.parametrize(
+    "format_fields",
+    [
+        pytest.param({"response_format": {"type": "json_object"}}, id="response_format"),
+        pytest.param({"text": {"format": {"type": "json_object"}}}, id="text_format"),
+    ],
+)
 async def test_v1_chat_completions_json_object_keeps_json_instruction_in_input(
-    async_client, monkeypatch, instruction_role
+    async_client, monkeypatch, instruction_role, format_fields
 ):
     """JSON mode is accepted upstream only when an input message mentions JSON.
 
     A client that asks for JSON only in its system or developer message used to
-    get a 400, because the message moved into top-level ``instructions``.
+    get a 400, because the message moved into top-level ``instructions``. That
+    holds whether JSON mode comes from ``response_format`` or ``text.format``.
     """
     await _import_account(
         async_client, f"acc_chat_json_object_{instruction_role}", f"chat-json-object-{instruction_role}@example.com"
@@ -696,7 +704,7 @@ async def test_v1_chat_completions_json_object_keeps_json_instruction_in_input(
             {"role": instruction_role, "content": "Reply with a JSON object."},
             {"role": "user", "content": "Say hello."},
         ],
-        "response_format": {"type": "json_object"},
+        **format_fields,
     }
     resp = await async_client.post("/v1/chat/completions", json=payload)
 

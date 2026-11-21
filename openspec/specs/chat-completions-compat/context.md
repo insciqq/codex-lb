@@ -47,6 +47,11 @@ and [OpenAI's strict-mode documentation](https://developers.openai.com/api/docs/
   not a blanket 502). The upstream Responses generator is closed so reservation
   finalizers run even when the first collected event is `response.failed`.
 - **Invalid content types:** Reject with `invalid_request_error`.
+- **JSON mode without a JSON mention in input:** Upstream rejects `json_object`
+  unless an input message mentions JSON; top-level `instructions` do not count.
+  JSON mode is therefore decided after `response_format` is mapped, from the
+  resulting `text.format`, so a client that sets `text.format` directly keeps
+  its JSON instruction in `input` too.
 
 ## Examples
 
