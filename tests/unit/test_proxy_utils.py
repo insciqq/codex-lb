@@ -108,6 +108,7 @@ from app.modules.proxy.load_balancer import (
     _filter_accounts_for_model,
     _mapped_model_has_registry_entry,
 )
+from app.modules.proxy.rate_limit_events import CodexQuotaView
 from app.modules.proxy.repo_bundle import ProxyRepositories
 from app.modules.proxy.sticky_repository import StickySessionsRepository
 from app.modules.proxy.work_admission import AdmissionLease
@@ -4029,8 +4030,8 @@ async def test_external_stream_startup_waits_for_single_account_response_create_
     async def skip_limits(*_args: object, **_kwargs: object) -> None:
         return None
 
-    async def no_rate_limit_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
-        return {}
+    async def visible_empty_quota_view(*_args: object, **_kwargs: object) -> CodexQuotaView:
+        return CodexQuotaView(hidden=False, headers={})
 
     async def fake_stream_once(*_args: object, **_kwargs: object):
         nonlocal stream_once_calls
@@ -4051,7 +4052,7 @@ async def test_external_stream_startup_waits_for_single_account_response_create_
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", skip_limits)
-    monkeypatch.setattr(proxy_api, "_rate_limit_headers_for_request", no_rate_limit_headers)
+    monkeypatch.setattr(proxy_api, "_codex_quota_view_for_request", visible_empty_quota_view)
     monkeypatch.setattr(
         streaming_retry_module,
         "_account_selection_recovery_sleep_seconds",
@@ -4135,8 +4136,8 @@ async def test_responses_route_preserves_immediate_error_after_capacity_recovers
     async def skip_limits(*_args: object, **_kwargs: object) -> None:
         return None
 
-    async def no_rate_limit_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
-        return {}
+    async def visible_empty_quota_view(*_args: object, **_kwargs: object) -> CodexQuotaView:
+        return CodexQuotaView(hidden=False, headers={})
 
     async def fake_stream_once(*_args: object, **_kwargs: object):
         nonlocal stream_once_calls
@@ -4166,7 +4167,7 @@ async def test_responses_route_preserves_immediate_error_after_capacity_recovers
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", skip_limits)
-    monkeypatch.setattr(proxy_api, "_rate_limit_headers_for_request", no_rate_limit_headers)
+    monkeypatch.setattr(proxy_api, "_codex_quota_view_for_request", visible_empty_quota_view)
     monkeypatch.setattr(
         streaming_retry_module,
         "_account_selection_recovery_sleep_seconds",
@@ -4240,8 +4241,8 @@ async def test_responses_route_preserves_selection_cap_429_after_startup_wait(
     async def skip_limits(*_args: object, **_kwargs: object) -> None:
         return None
 
-    async def no_rate_limit_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
-        return {}
+    async def visible_empty_quota_view(*_args: object, **_kwargs: object) -> CodexQuotaView:
+        return CodexQuotaView(hidden=False, headers={})
 
     async def select_account(*_args: object, **_kwargs: object) -> AccountSelection:
         nonlocal selection_calls
@@ -4259,7 +4260,7 @@ async def test_responses_route_preserves_selection_cap_429_after_startup_wait(
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", skip_limits)
-    monkeypatch.setattr(proxy_api, "_rate_limit_headers_for_request", no_rate_limit_headers)
+    monkeypatch.setattr(proxy_api, "_codex_quota_view_for_request", visible_empty_quota_view)
     monkeypatch.setattr(
         streaming_retry_module,
         "_account_selection_recovery_sleep_seconds",
@@ -19035,8 +19036,8 @@ async def test_stream_responses_route_keyed_owner_rewrite_settles_before_origina
     async def skip_limits(*_args: object, **_kwargs: object) -> proxy_service.ApiKeyUsageReservationData:
         return reservation
 
-    async def no_rate_limit_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
-        return {}
+    async def visible_empty_quota_view(*_args: object, **_kwargs: object) -> CodexQuotaView:
+        return CodexQuotaView(hidden=False, headers={})
 
     async def settle_usage(
         settled_api_key: ApiKeyData | None,
@@ -19078,7 +19079,7 @@ async def test_stream_responses_route_keyed_owner_rewrite_settles_before_origina
         )
 
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", skip_limits)
-    monkeypatch.setattr(proxy_api, "_rate_limit_headers_for_request", no_rate_limit_headers)
+    monkeypatch.setattr(proxy_api, "_codex_quota_view_for_request", visible_empty_quota_view)
     monkeypatch.setattr(proxy_service, "core_stream_responses", core_stream)
     monkeypatch.setattr(
         service,
@@ -19146,8 +19147,8 @@ async def test_stream_responses_route_health_failure_keeps_one_terminal(
     async def skip_limits(*_args: object, **_kwargs: object) -> proxy_service.ApiKeyUsageReservationData | None:
         return reservation if keyed else None
 
-    async def no_rate_limit_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
-        return {}
+    async def visible_empty_quota_view(*_args: object, **_kwargs: object) -> CodexQuotaView:
+        return CodexQuotaView(hidden=False, headers={})
 
     async def settle_usage(
         settled_api_key: ApiKeyData | None,
@@ -19194,7 +19195,7 @@ async def test_stream_responses_route_health_failure_keeps_one_terminal(
         )
 
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", skip_limits)
-    monkeypatch.setattr(proxy_api, "_rate_limit_headers_for_request", no_rate_limit_headers)
+    monkeypatch.setattr(proxy_api, "_codex_quota_view_for_request", visible_empty_quota_view)
     monkeypatch.setattr(proxy_service, "core_stream_responses", core_stream)
     monkeypatch.setattr(
         service,
@@ -19270,8 +19271,8 @@ async def test_stream_responses_route_keyed_owner_rewrite_preserves_health_after
     async def skip_limits(*_args: object, **_kwargs: object) -> proxy_service.ApiKeyUsageReservationData:
         return reservation
 
-    async def no_rate_limit_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
-        return {}
+    async def visible_empty_quota_view(*_args: object, **_kwargs: object) -> CodexQuotaView:
+        return CodexQuotaView(hidden=False, headers={})
 
     async def settle_usage(
         settled_api_key: ApiKeyData | None,
@@ -19317,7 +19318,7 @@ async def test_stream_responses_route_keyed_owner_rewrite_preserves_health_after
         )
 
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", skip_limits)
-    monkeypatch.setattr(proxy_api, "_rate_limit_headers_for_request", no_rate_limit_headers)
+    monkeypatch.setattr(proxy_api, "_codex_quota_view_for_request", visible_empty_quota_view)
     monkeypatch.setattr(proxy_service, "core_stream_responses", core_stream)
     monkeypatch.setattr(
         service,
@@ -19548,8 +19549,8 @@ async def test_stream_responses_route_keyed_refresh_connect_settles_before_accou
     async def skip_limits(*_args: object, **_kwargs: object) -> proxy_service.ApiKeyUsageReservationData:
         return reservation
 
-    async def no_rate_limit_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
-        return {}
+    async def visible_empty_quota_view(*_args: object, **_kwargs: object) -> CodexQuotaView:
+        return CodexQuotaView(hidden=False, headers={})
 
     async def settle_usage(
         settled_api_key: ApiKeyData | None,
@@ -19596,7 +19597,7 @@ async def test_stream_responses_route_keyed_refresh_connect_settles_before_accou
     monkeypatch.setattr(proxy_service, "_STREAM_MAX_ACCOUNT_ATTEMPTS", 2)
     monkeypatch.setattr(streaming_retry_module.ProcessNetworkRecovery, "wait", AsyncMock(return_value=None))
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", skip_limits)
-    monkeypatch.setattr(proxy_api, "_rate_limit_headers_for_request", no_rate_limit_headers)
+    monkeypatch.setattr(proxy_api, "_codex_quota_view_for_request", visible_empty_quota_view)
     monkeypatch.setattr(service, "_handle_stream_error", AsyncMock(side_effect=handle_stream_error))
     monkeypatch.setattr(service, "_settle_stream_api_key_usage", settle_usage)
     monkeypatch.setattr(service, "_release_unsettled_stream_api_key_usage", release_unsettled)
@@ -19657,8 +19658,8 @@ async def test_stream_responses_route_failed_ordered_settlement_retries_release(
     async def skip_limits(*_args: object, **_kwargs: object) -> proxy_service.ApiKeyUsageReservationData:
         return reservation
 
-    async def no_rate_limit_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
-        return {}
+    async def visible_empty_quota_view(*_args: object, **_kwargs: object) -> CodexQuotaView:
+        return CodexQuotaView(hidden=False, headers={})
 
     async def select_account(_deadline: float, **kwargs: object) -> AccountSelection:
         excluded = set(cast(set[str], kwargs["exclude_account_ids"]))
@@ -19681,7 +19682,7 @@ async def test_stream_responses_route_failed_ordered_settlement_retries_release(
     monkeypatch.setattr(proxy_service, "ApiKeysService", FakeApiKeysService)
     monkeypatch.setattr(streaming_retry_module.ProcessNetworkRecovery, "wait", AsyncMock(return_value=None))
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", skip_limits)
-    monkeypatch.setattr(proxy_api, "_rate_limit_headers_for_request", no_rate_limit_headers)
+    monkeypatch.setattr(proxy_api, "_codex_quota_view_for_request", visible_empty_quota_view)
     monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
     monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(side_effect=ensure_fresh))
     monkeypatch.setattr(service, "_select_account_with_budget_compatible", select_account)
