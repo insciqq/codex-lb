@@ -28,3 +28,13 @@ def use_rowless_request_path_routes(monkeypatch: Any) -> None:
         return await resolve(session, **kwargs)
 
     monkeypatch.setattr(proxy_service, "resolve_upstream_route", rowless)
+
+
+class WindowsOSError(OSError):
+    """OSError carrying a typed ``winerror``, as CPython raises on Windows."""
+
+    winerror: int
+
+    def __init__(self, winerror: int, message: str = "Windows socket failure") -> None:
+        super().__init__(message)
+        self.winerror = winerror
