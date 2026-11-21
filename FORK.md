@@ -92,6 +92,10 @@ removes its orphaned `rework` and resets an orphaned issue `partial` to
 `pending`. `sync` refreshes what changed upstream since the previous snapshot;
 `sync --full` refreshes everything updated since `closed_since`.
 
+`deferred` records a decision to act after the first release; it needs a
+`reason`. Unlike `pending` it is a decision: `check --strict` does not fail on
+it and `sync` keeps it. A taken PR or a trailer-fixed issue cannot be deferred.
+
 ## Rebuilding on a new upstream
 
 Upstream squash-merges, so a plain rebase does not recognise merged patches.

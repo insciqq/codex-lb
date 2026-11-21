@@ -536,3 +536,64 @@ def test_committed_registry_of_this_repository_is_valid(monkeypatch: pytest.Monk
         pytest.skip("shallow checkout: registry base commit not available")
     monkeypatch.chdir(REPO_ROOT)
     assert registry.main(["--root", str(REPO_ROOT), "check"]) == 0
+
+
+DEFERRED_ENTRIES = """
+[pr.30]
+title = "fix: after the release"
+state = "open"
+status = "deferred"
+reason = "Needs a recovery path first."
+
+[issue.40]
+title = "Bug forty"
+state = "open"
+status = "deferred"
+reason = "Being redesigned."
+"""
+
+
+def test_deferred_entries_render_and_do_not_fail_strict(repo: Path) -> None:
+    write_data(repo, DEFERRED_ENTRIES)
+    doc = render(repo)
+
+    pr_summary, issue_summary = doc.split("| Status | Issues | Meaning |", 1)
+    assert "| deferred | 1 | decided, scheduled after the first release |" in pr_summary
+    assert "| deferred | 1 | decided, scheduled after the first release |" in issue_summary
+    assert "| fix: after the release | open | deferred | Needs a recovery path first. |" in doc
+    assert "| Bug forty | open | deferred | Being redesigned. |" in doc
+    assert run(repo, "check", "--strict") == 0
+
+
+@pytest.mark.parametrize(
+    ("entries", "message"),
+    [
+        (
+            '[pr.10]\nstatus = "deferred"\nreason = "x"\n',
+            "data may only set pending or merged-upstream, not 'deferred'",
+        ),
+        ('[issue.5]\nstatus = "deferred"\nreason = "x"\n', "data may only set pending or partial, not 'deferred'"),
+        ('[pr.30]\nstatus = "deferred"\n', "status deferred requires reason"),
+        ('[issue.40]\nstatus = "deferred"\n', "status deferred requires reason"),
+    ],
+)
+def test_deferred_contradicting_trailers_or_without_reason_is_rejected(
+    repo: Path, capsys: pytest.CaptureFixture[str], entries: str, message: str
+) -> None:
+    write_data(repo, entries)
+    assert run(repo, "check") == 1
+    assert message in capsys.readouterr().err
+
+
+def test_sync_keeps_deferred_entries() -> None:
+    responses = {
+        OPEN.format(page=1): [_item(41, pr=False)],
+        SINCE.format(since="2026-01-01", page=1): [_item(30, "closed", merged=True, closed="2026-01-03T00:00:00Z")],
+    }
+    data = _data(p30={"title": "x", "state": "open", "status": "deferred", "reason": "Later."})
+    data["issue"][41] = {"title": "y", "state": "open", "status": "deferred", "reason": "Later."}
+
+    registry.sync_data(data, registry.Trailers([]), _fetcher(responses, []), date(2026, 1, 7))
+
+    assert data["pr"][30] == {"title": "Item 30", "state": "merged", "status": "deferred", "reason": "Later."}
+    assert data["issue"][41] == {"title": "Item 41", "state": "open", "status": "deferred", "reason": "Later."}

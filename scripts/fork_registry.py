@@ -53,12 +53,18 @@ sorted by number, keys in the order below, empty lists omitted, lists sorted):
   reason = "..."
 
 PR statuses set in data: pending, rejected (reason), out-of-scope, not-applicable
-(reason), superseded (by), own-fix (issues or reason), merged-upstream (state merged).
+(reason), superseded (by), own-fix (issues or reason), merged-upstream (state merged),
+deferred (reason).
 Derived: taken, or taken with changes when the entry has `rework`.
 
 Issue statuses set in data: pending, fixed-upstream, not-applicable (reason),
 out-of-scope, not-fixed (reason), partial (reason; only for an issue the trailers
-reference). Derived: fixed.
+reference), deferred (reason). Derived: fixed.
+
+`deferred` is a decision to act after the first release. Only `pending` means
+undecided: `check --strict` fails on pending entries, not on deferred ones, and
+`sync` never resets a deferred entry. A taken PR or trailer-fixed issue cannot be
+deferred.
 
 `sync` reconciles: a pending PR merged upstream becomes merged-upstream (a taken one
 renders as taken with a drop-on-rebuild note until the rebuild drops the pick); after a
@@ -113,6 +119,7 @@ PR_LEGEND = {
     "out-of-scope": "a feature or other change outside the fork's scope",
     "not-applicable": "does not concern the fork (upstream release, CI, docs or translation work)",
     "merged-upstream": "merged upstream; the fork gets it with upstream main",
+    "deferred": "decided, scheduled after the first release",
     "pending": "no decision yet",
 }
 ISSUE_LEGEND = {
@@ -122,11 +129,32 @@ ISSUE_LEGEND = {
     "not-fixed": "reviewed and not fixed in the fork, for the reason given",
     "out-of-scope": "a feature request",
     "not-applicable": "does not concern the fork",
+    "deferred": "decided, scheduled after the first release",
     "pending": "no decision yet",
 }
-PR_DATA_STATUSES = ("pending", "rejected", "out-of-scope", "not-applicable", "superseded", "own-fix", "merged-upstream")
-ISSUE_DATA_STATUSES = ("pending", "fixed-upstream", "not-applicable", "out-of-scope", "not-fixed", "partial")
-REASON_REQUIRED = {"pr": {"rejected", "not-applicable"}, "issue": {"not-applicable", "not-fixed", "partial"}}
+PR_DATA_STATUSES = (
+    "pending",
+    "rejected",
+    "out-of-scope",
+    "not-applicable",
+    "superseded",
+    "own-fix",
+    "merged-upstream",
+    "deferred",
+)
+ISSUE_DATA_STATUSES = (
+    "pending",
+    "fixed-upstream",
+    "not-applicable",
+    "out-of-scope",
+    "not-fixed",
+    "partial",
+    "deferred",
+)
+REASON_REQUIRED = {
+    "pr": {"rejected", "not-applicable", "deferred"},
+    "issue": {"not-applicable", "not-fixed", "partial", "deferred"},
+}
 
 OWN_SKIP_TYPES = {"docs", "test", "ci", "style"}
 OWN_SKIP_FORK_ONLY = {"tooling", "policy", "ci", "spec-fix"}
