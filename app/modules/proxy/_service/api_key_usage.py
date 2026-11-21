@@ -9,6 +9,7 @@ from typing import Any, Protocol, cast
 import anyio
 from anyio.lowlevel import checkpoint_if_cancelled
 
+from app.core.balancer.logic import bound_elapsed_reset_deadline
 from app.core.clients.proxy import ProxyResponseError
 from app.core.clock import clock_for, scheduler_for
 from app.core.errors import openai_error
@@ -237,7 +238,11 @@ class _ApiKeyUsageMixin:
             while penalties:
                 penalty = penalties.pop(0)
                 apply_task = scheduler_for(self).create_task(
-                    proxy._handle_stream_error(penalty.account, penalty.error, penalty.code)
+                    proxy._handle_stream_error(
+                        penalty.account,
+                        bound_elapsed_reset_deadline(penalty.error, now=clock_for(self).time()),
+                        penalty.code,
+                    )
                 )
                 while True:
                     try:

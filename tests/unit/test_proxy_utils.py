@@ -57394,6 +57394,62 @@ async def test_stream_responses_keyed_movable_burst_429_engages_cooldown_at_reje
 
 
 @pytest.mark.asyncio
+async def test_stream_responses_keyed_usage_limit_penalty_keeps_rejection_time_deadline(monkeypatch):
+    """A queued keyed penalty carries the reset observed at rejection, not re-anchored at settlement."""
+    clock = VirtualClock(monotonic_value=5_000.0)
+    first_account = _make_account("acc_keyed_reset_first")
+    second_account = _make_account("acc_keyed_reset_second")
+    service, _scheduler, api_key, reservation = _keyed_burst_stream_service(
+        monkeypatch, account_id=first_account.id, clock=clock
+    )
+    monkeypatch.setattr(
+        service._load_balancer,
+        "select_account",
+        AsyncMock(
+            side_effect=[
+                AccountSelection(account=first_account, error_message=None),
+                AccountSelection(account=second_account, error_message=None),
+            ]
+        ),
+    )
+    handle_stream_error = AsyncMock()
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+    rejected_at: float | None = None
+
+    async def fake_stream(payload, headers, access_token, account_id, *args, **kwargs):
+        nonlocal rejected_at
+        if account_id == first_account.chatgpt_account_id:
+            rejected_at = clock.time()
+            raise proxy_module.ProxyResponseError(
+                429,
+                {
+                    "error": {
+                        "code": "usage_limit_reached",
+                        "message": "usage limit reached",
+                        "resets_in_seconds": 14_400,
+                    }
+                },
+                failure_phase="status",
+            )
+        # The replacement takes a while before the reservation settles.
+        clock.advance(600.0)
+        yield 'data: {"type":"response.completed","response":{"id":"resp_keyed_reset"}}\n\n'
+
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+
+    chunks = await _collect_keyed_burst_stream(service, _burst_payload([]), api_key=api_key, reservation=reservation)
+
+    assert any("resp_keyed_reset" in chunk for chunk in chunks)
+    assert rejected_at is not None
+    penalty_calls = [call for call in handle_stream_error.await_args_list if call.args[0] is first_account]
+    assert len(penalty_calls) == 1
+    assert penalty_calls[0].args[1] == {
+        "message": "usage limit reached",
+        "resets_at": math.ceil(rejected_at + 14_400),
+    }
+
+
+@pytest.mark.asyncio
 async def test_stream_with_retry_post_refresh_owner_bound_burst_429_retries_same_account(monkeypatch, caplog):
     """A code-less 429 right after the forced 401 refresh backs off and re-selects the same owner."""
     settings = _make_proxy_settings()

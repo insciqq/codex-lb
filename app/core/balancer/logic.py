@@ -1588,6 +1588,44 @@ def freeze_reset_deadline(error: UpstreamError, *, now: float) -> int | float | 
     return min(rounded, horizon_ceiling)
 
 
+def anchor_reset_deadline(error: UpstreamError, *, now: float) -> UpstreamError:
+    """Return ``error`` with its reset hints frozen into one absolute deadline.
+
+    Used when an account penalty is queued to be written after API-key
+    reservation settlement: the queued error must not keep a relative
+    ``resets_in_seconds`` that the later write would re-anchor at application
+    time. Unusable hints are dropped, so the write falls back as before.
+    """
+    anchored: UpstreamError = {}
+    if "message" in error:
+        anchored["message"] = error["message"]
+    deadline = freeze_reset_deadline(error, now=now)
+    if deadline is not None:
+        anchored["resets_at"] = deadline
+    return anchored
+
+
+def bound_elapsed_reset_deadline(error: UpstreamError, *, now: float) -> UpstreamError:
+    """Keep an anchored deadline that elapsed before the deferred write short.
+
+    A deadline observed at rejection time can pass while the reservation
+    settles. Without metadata the write would fall back to a fresh default
+    hold (an hour for quota), so the elapsed deadline becomes the minimum
+    rate-limit cooldown from ``now`` instead.
+    """
+    reset_at = error.get("resets_at")
+    if (
+        isinstance(reset_at, bool)
+        or not isinstance(reset_at, (int, float))
+        or not math.isfinite(reset_at)
+        or reset_at > now
+    ):
+        return error
+    bounded: UpstreamError = {**error}
+    bounded["resets_at"] = int(math.ceil(now + RATE_LIMITED_MIN_COOLDOWN_SECONDS))
+    return bounded
+
+
 def evaluate_health_tier(
     state: AccountState,
     *,

@@ -46337,7 +46337,7 @@ async def test_http_bridge_precreated_usage_limit_freezes_relative_reset_deadlin
             },
             separators=(",", ":"),
         ),
-        clock=clock,
+        clock=cast(Any, clock),
     )
 
     assert len(request_state.deferred_keyed_stream_health) == 1

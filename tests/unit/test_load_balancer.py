@@ -6625,3 +6625,33 @@ def test_background_recovery_state_from_account_follows_the_dashboard_soft_drain
     assert captured[-1]["routing_tunables"] is dashboard_tunables
     assert captured[0]["soft_drain_enabled"] is None
     assert captured[0]["routing_tunables"] is None
+
+
+def test_anchor_reset_deadline_freezes_relative_hint_at_observation() -> None:
+    from app.core.balancer.logic import anchor_reset_deadline
+
+    anchored = anchor_reset_deadline({"message": "limit", "resets_in_seconds": 14_400}, now=1_000.0)
+
+    assert anchored == {"message": "limit", "resets_at": 15_400}
+
+
+def test_anchor_reset_deadline_drops_unusable_hints() -> None:
+    from app.core.balancer.logic import anchor_reset_deadline
+
+    assert anchor_reset_deadline({"message": "limit", "resets_at": 10, "resets_in_seconds": -1}, now=1_000.0) == {
+        "message": "limit"
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        ({"message": "limit", "resets_at": 900}, {"message": "limit", "resets_at": 1_030}),
+        ({"message": "limit", "resets_at": 5_000}, {"message": "limit", "resets_at": 5_000}),
+        ({"message": "limit"}, {"message": "limit"}),
+    ],
+)
+def test_bound_elapsed_reset_deadline(error, expected) -> None:
+    from app.core.balancer.logic import bound_elapsed_reset_deadline
+
+    assert bound_elapsed_reset_deadline(error, now=1_000.0) == expected

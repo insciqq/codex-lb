@@ -13,6 +13,7 @@ time, and ``cancel_owned_tasks`` leaves nothing alive.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -388,3 +389,35 @@ async def test_deferred_keyed_stream_health_apply_task_is_scheduler_owned(monkey
     assert len(scheduler.task_names) == 1
     assert request_state.deferred_keyed_stream_health == []
     assert not scheduler.owned_tasks
+
+
+@pytest.mark.asyncio
+async def test_deferred_keyed_stream_health_bounds_a_deadline_that_elapsed_during_settlement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = _RecordingVirtualScheduler(VirtualClock())
+    service = _service(scheduler)
+    applied: list[Any] = []
+
+    async def handle_stream_error(
+        account: Any, error: Any, code: str, http_status: int | None = None, **_kwargs
+    ) -> None:
+        del account, code, http_status
+        applied.append(error)
+
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+    request_state = _request_state(scheduler.clock)
+    now = scheduler.clock.time()
+    request_state.deferred_keyed_stream_health.append(
+        support._DeferredKeyedStreamHealthPenalty(
+            account=cast(Any, SimpleNamespace(id="acc-deferred")),
+            error=UpstreamError(message="usage limit reached", resets_at=int(now) - 5),
+            code="usage_limit_reached",
+        )
+    )
+
+    await service._drain_deferred_keyed_stream_health(request_state)
+
+    # The observed reset passed while the reservation settled: only the short
+    # cooldown remains, not a fresh metadata-free default hold.
+    assert applied == [{"message": "usage limit reached", "resets_at": math.ceil(now + 30.0)}]

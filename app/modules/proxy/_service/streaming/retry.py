@@ -14,6 +14,8 @@ from app.core.balancer import failover_decision
 from app.core.balancer.logic import (
     BURST_SAME_ACCOUNT_MAX_RETRIES,
     BURST_SURFACE_RETRY_AFTER_SECONDS,
+    anchor_reset_deadline,
+    bound_elapsed_reset_deadline,
     burst_same_account_backoff_seconds,
 )
 from app.core.balancer.types import ClassifiedFailure, UpstreamError
@@ -701,7 +703,7 @@ class _StreamingRetryMixin:
                     try:
                         await proxy._handle_stream_error(
                             account,
-                            error_payload,
+                            bound_elapsed_reset_deadline(error_payload, now=clock.time()),
                             error_code,
                             http_status=http_status,
                             failover_replay=_failover_replay_for(account.id),
@@ -851,7 +853,8 @@ class _StreamingRetryMixin:
                 pending_post_refresh_transient_penalties.append(
                     (
                         failed_account,
-                        failed_error,
+                        # Applied after settlement: keep the reset observed now.
+                        anchor_reset_deadline(failed_error, now=clock.time()),
                         failed_code,
                         http_status,
                         transient_retry_count,
@@ -1278,7 +1281,7 @@ class _StreamingRetryMixin:
                         pending_post_refresh_transient_penalties.append(
                             (
                                 account,
-                                _stream_settlement_error_payload(settlement),
+                                anchor_reset_deadline(_stream_settlement_error_payload(settlement), now=clock.time()),
                                 settlement.error_code or "upstream_error",
                                 502,
                                 transient_retries,
