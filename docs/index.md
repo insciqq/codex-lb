@@ -4,7 +4,7 @@
     This site documents [insciqq/codex-lb](https://github.com/insciqq/codex-lb), a maintained fork of
     [Soju06/codex-lb](https://github.com/Soju06/codex-lb) limited to bug fixes, security, compatibility and
     dependency updates. Images: `ghcr.io/insciqq/codex-lb` ([Docker](deployment/docker.md#images)).
-    Telemetry is off by default ([details](telemetry.md)). Report problems in the
+    Telemetry is off by default since the `fork.2` release ([details](telemetry.md)). Report problems in the
     [fork's issues](https://github.com/insciqq/codex-lb/issues/new/choose).
 
 Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, view everything in a dashboard.

@@ -1,9 +1,13 @@
 # Anonymous telemetry
 
-**Off by default in this fork.** The telemetry endpoint, `https://telemetry.tokmaxxing.com`, is
-a collector operated by the upstream Soju06/codex-lb project. This fork does not operate it
-and cannot see what it receives, so with no configuration a fork instance sends nothing and
-opens no connection to it.
+**Off by default since the fork's `fork.2` release.** The telemetry endpoint,
+`https://telemetry.tokmaxxing.com`, is a collector operated by the upstream Soju06/codex-lb
+project. This fork does not operate it and cannot see what it receives, so with no
+configuration a fork instance from `fork.2` on sends nothing and opens no connection to it.
+
+The first fork release (`fork.1`) still has upstream's default: with no saved decision it
+sends telemetry and shows the consent dialog, unless `CODEX_LB_TELEMETRY_ENABLED=false` is set
+before a decision is saved. Upgrade, or set that variable.
 
 When an operator opts in, codex-lb sends an anonymous usage snapshot to that upstream
 collector when the service starts and every 24 hours. In a multi-replica deployment, only the
@@ -47,7 +51,7 @@ free-text errors. Exact schemas and privacy constraints live in the
 
 ## Consent, opting in and disabling
 
-In this fork `CODEX_LB_TELEMETRY_ENABLED` defaults to `false`. With no saved dashboard
+From `fork.2` on, `CODEX_LB_TELEMETRY_ENABLED` defaults to `false`. With no saved dashboard
 decision, an instance behaves exactly as if that value were set: telemetry is disabled, no
 snapshot or opt-out notice is sent, and the dashboard shows no consent dialog. Upstream
 releases instead default to informed opt-out consent with a one-time dialog.

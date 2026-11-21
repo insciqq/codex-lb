@@ -136,8 +136,8 @@ The fork uses the same database and data directory as upstream, so moving is an 
 3. Start the same volume and environment with `ghcr.io/insciqq/codex-lb:<version>` (pin
    `sha-<commit>` or the digest in production). Pending migrations run on startup.
 4. Check Settings → Anonymous telemetry. A decision saved under upstream carries over and wins over
-   `CODEX_LB_TELEMETRY_ENABLED`; turn the toggle off there to stop sending. The fork's default (off)
-   applies only when no decision was saved.
+   `CODEX_LB_TELEMETRY_ENABLED`; turn the toggle off there to stop sending. The fork's default (off,
+   since the `fork.2` release) applies only when no decision was saved.
 
 Going back: an upstream build of the same base or newer runs on the same database. Going back to
 an older upstream release (for example 1.24.0) after the fork migrated the database needs the

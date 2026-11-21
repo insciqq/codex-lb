@@ -11,7 +11,8 @@ before the first dashboard decision.
 Decision record (2026-08-06, maintainer): default-on with first-run confirmation dialog for
 both new and existing users; settings toggle; expanded field set over the minimal version.
 
-Fork decision record (fork owner): `CODEX_LB_TELEMETRY_ENABLED` defaults to `false`. The
+Fork decision record (fork owner, from the `fork.2` release on; `fork.1` kept upstream's
+default): `CODEX_LB_TELEMETRY_ENABLED` defaults to `false`. The
 collector is operated by the upstream project; the fork cannot see that data and does not
 send its users' data there by default. The default reuses the existing silent environment
 opt-out path, so the module, endpoint and opt-in behaviour stay as upstream.
