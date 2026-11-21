@@ -64,7 +64,7 @@ async def test_targeted_oauth_uses_local_account_routing_policy(
     expected_pool: str,
 ) -> None:
     @asynccontextmanager
-    async def fake_background_session() -> AsyncIterator[AsyncSession]:
+    async def fake_background_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
             yield session
 
@@ -107,7 +107,7 @@ async def test_targeted_oauth_rejects_unknown_account_before_resolving_route(
     session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     @asynccontextmanager
-    async def fake_background_session() -> AsyncIterator[AsyncSession]:
+    async def fake_background_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
             yield session
 
@@ -464,7 +464,7 @@ async def test_oauth_route_fails_closed_when_binding_lookup_fails(
     await _seed_bound_account_without_default(session_factory)
 
     @asynccontextmanager
-    async def locked_background_session() -> AsyncIterator[AsyncSession]:
+    async def locked_background_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
             yield cast(AsyncSession, _BindingLookupFailingSession(session, "database is locked"))
 
@@ -485,7 +485,7 @@ async def test_oauth_route_tolerates_missing_proxy_schema(
         await session.commit()
 
     @asynccontextmanager
-    async def schema_less_background_session() -> AsyncIterator[AsyncSession]:
+    async def schema_less_background_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
             yield cast(AsyncSession, _BindingLookupFailingSession(session, "no such table: account_proxy_bindings"))
 
