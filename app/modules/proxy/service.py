@@ -388,9 +388,7 @@ from app.modules.proxy._service.observability import continuity_fail_closed_tota
 from app.modules.proxy._service.observability import (
     continuity_owner_resolution_total as continuity_owner_resolution_total,
 )
-from app.modules.proxy._service.rate_limit import (
-    _RateLimitMixin,
-)
+from app.modules.proxy._service.rate_limit import _RateLimitMixin
 from app.modules.proxy._service.realtime_live import LiveWebSocketConnector, _RealtimeLiveMixin
 from app.modules.proxy._service.refresh import (
     ensure_fresh_with_auth_error,
