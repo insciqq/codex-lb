@@ -28116,8 +28116,10 @@ async def test_process_http_bridge_upstream_text_marks_text_delta_downstream_vis
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("incomplete_reason", ["interrupted", "max_output_tokens"])
 async def test_http_bridge_recovery_releases_origin_after_terminal_event_following_created(
     monkeypatch: pytest.MonkeyPatch,
+    incomplete_reason: str,
 ) -> None:
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     request_state = proxy_service._WebSocketRequestState(
@@ -28131,7 +28133,7 @@ async def test_http_bridge_recovery_releases_origin_after_terminal_event_followi
         event_queue=asyncio.Queue(),
         request_text='{"type":"response.create","model":"gpt-5.4","input":"hello"}',
         transport="http",
-        skip_request_log=True,
+        skip_request_log=False,
         recovery_attempt_fingerprint="recovery-origin-terminal-fingerprint",
         recovery_attempt_session_id="durable-recovery-origin",
         recovery_attempt_owner_epoch=4,
@@ -28143,6 +28145,8 @@ async def test_http_bridge_recovery_releases_origin_after_terminal_event_followi
     )
     session.durable_session_id = "durable-replacement"
     session.durable_owner_epoch = 9
+    write_log = AsyncMock()
+    monkeypatch.setattr(service, "_write_request_log", write_log)
     mark_replayed = AsyncMock(return_value=True)
     release_origin = AsyncMock()
     service._durable_bridge = cast(
@@ -28175,7 +28179,8 @@ async def test_http_bridge_recovery_releases_origin_after_terminal_event_followi
                 "response": {
                     "id": "resp-recovery-origin",
                     "status": "incomplete",
-                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "incomplete_details": {"reason": incomplete_reason},
+                    "usage": {"input_tokens": 12, "output_tokens": 7, "total_tokens": 19},
                 },
             },
             separators=(",", ":"),
@@ -28189,6 +28194,14 @@ async def test_http_bridge_recovery_releases_origin_after_terminal_event_followi
         owner_epoch=4,
         draining=False,
     )
+
+    write_log.assert_awaited_once()
+    assert write_log.await_args is not None
+    log = write_log.await_args.kwargs
+    assert log["status"] == ("cancelled" if incomplete_reason == "interrupted" else "error")
+    assert log["error_code"] == incomplete_reason
+    assert log["input_tokens"] == 12
+    assert log["output_tokens"] == 7
 
 
 @pytest.mark.asyncio

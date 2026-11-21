@@ -249,3 +249,19 @@ copy and a visual treatment distinct from error.
 - **AND** the row and request details use the localized cancelled label
 - **AND** the cancelled badge is visually distinct from the error badge
 
+### Requirement: Controlled interruptions use cancellation presentation
+
+Newly persisted controlled interruptions, status `cancelled` with code `interrupted`, MUST use the existing cancelled label, styling, filters and accounting rules, preserving the interruption reason and usage details. Request-log rows persisted earlier with status `error` and code `interrupted`, and historical aggregate buckets, MUST remain unchanged.
+
+#### Scenario: A new interruption is listed as cancelled
+
+- **GIVEN** one newly persisted controlled interruption and one genuine error
+- **WHEN** Request Logs is filtered by cancelled or error
+- **THEN** each filter returns only its matching row
+- **AND** the interruption exposes status `cancelled` and reason `interrupted`
+
+#### Scenario: New interruptions do not inflate errors
+
+- **GIVEN** one newly persisted controlled interruption and one genuine error
+- **WHEN** dashboard metrics aggregate these rows
+- **THEN** there is one cancellation and one error out of two requests
