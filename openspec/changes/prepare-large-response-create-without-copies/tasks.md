@@ -12,6 +12,6 @@
 - [x] 2.1 Peak-allocation regressions for direct HTTP dispatch, websocket preparation and the fingerprint.
 - [x] 2.2 Exactness: sizes match the compact dump, digests match the whole-list dump, the command line decodes to the body.
 - [x] 2.3 A sender cancelled under pipe backpressure still queues one complete command line.
-- [x] 2.4 Closing the client finishes the command being written, drops queued ones and terminates a helper that stopped reading.
+- [x] 2.4 Closing the client finishes the command being written, drops queued ones and terminates a helper that stopped reading or whose input does not flush; a cancelled close still tears the helper down.
 - [x] 2.5 A routine body is encoded once on bridge and websocket preparation.
 - [x] 2.6 Decoding a 16 MiB zstd, gzip or deflate body stays below 1.5x the decoded size.

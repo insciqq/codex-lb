@@ -12,7 +12,11 @@ sender cancelled part way MUST queue the rest of the line before the
 cancellation propagates, so the helper never receives a partial command.
 Closing the client MUST close the helper's input only after the command being
 written is complete, MUST NOT write commands still waiting to be sent, and
-MUST terminate a helper that stops reading after a bounded wait.
+MUST terminate a helper that stops reading, or whose input does not flush,
+after a bounded wait. Once a close has begun, cancelling it MUST NOT stop the
+teardown: the helper and its reader MUST still be stopped before the
+cancellation propagates, and no error may surface in the event loop when the
+helper's input closes after the wait.
 
 #### Scenario: Large body reaches the helper within a bounded peak
 
@@ -34,8 +38,13 @@ MUST terminate a helper that stops reading after a bounded wait.
 
 #### Scenario: Closing the client when the helper stopped reading
 
-- **WHEN** the client is closed while the helper no longer reads its input
-- **THEN** the close completes within a bounded time and the helper is terminated
+- **WHEN** the client is closed while the helper no longer reads its input, whether a command holds the write lock or unflushed input remains
+- **THEN** the close completes within a bounded time, the helper is terminated, and the event loop reports no error
+
+#### Scenario: Cancelled close
+
+- **WHEN** a close is cancelled while a body command is still being written
+- **THEN** the command completes, the helper exits and its reader stops, and the close then raises the cancellation
 
 #### Scenario: Command line decodes to the original body
 

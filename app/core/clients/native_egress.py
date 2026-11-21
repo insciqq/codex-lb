@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from multidict import CIMultiDict
 
@@ -992,33 +992,46 @@ class SubprocessNativeEgressClient:
         )
 
     async def aclose(self) -> None:
-        """Stop the current helper generation and fail any remaining streams."""
+        """Stop the current helper generation and fail any remaining streams.
+
+        Once the client is marked closed the teardown runs to the end even if
+        the caller is cancelled while it waits, and the cancellation is raised
+        afterwards: a close stopped half way would leave the helper and its
+        reader running, and every later close would return at once.
+        """
 
         async with self._start_lock:
             if self._closed:
                 return
             self._closed = True
-            process = self._process
-            reader_task = self._reader_task
-            generation = self._generation
-            if process is not None and process.stdin is not None:
-                await self._close_helper_stdin(process, process.stdin)
-            if process is not None:
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=_NATIVE_CANCEL_TIMEOUT_SECONDS)
-                except TimeoutError:
-                    await _stop_process(process)
-            if reader_task is not None and reader_task is not asyncio.current_task():
-                if not reader_task.done():
-                    reader_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, NativeEgressError):
-                    await reader_task
-            self._fail_generation(
-                generation,
-                NativeEgressTransportError("native helper closed", failure_phase="shutdown"),
+            cancellation = await _await_cleanup_deferring_cancellation(
+                self._tear_down_generation(caller=asyncio.current_task())
             )
-            self._process = None
-            self._reader_task = None
+        if cancellation is not None:
+            raise cancellation
+
+    async def _tear_down_generation(self, *, caller: asyncio.Task[Any] | None) -> None:
+        process = self._process
+        reader_task = self._reader_task
+        generation = self._generation
+        if process is not None and process.stdin is not None:
+            await self._close_helper_stdin(process, process.stdin)
+        if process is not None:
+            try:
+                await asyncio.wait_for(process.wait(), timeout=_NATIVE_CANCEL_TIMEOUT_SECONDS)
+            except TimeoutError:
+                await _stop_process(process)
+        if reader_task is not None and reader_task is not caller:
+            if not reader_task.done():
+                reader_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, NativeEgressError):
+                await reader_task
+        self._fail_generation(
+            generation,
+            NativeEgressTransportError("native helper closed", failure_phase="shutdown"),
+        )
+        self._process = None
+        self._reader_task = None
 
     async def _close_helper_stdin(self, process: asyncio.subprocess.Process, stdin: asyncio.StreamWriter) -> None:
         """Close the helper's stdin once the command being written is complete.
@@ -1038,10 +1051,17 @@ class SubprocessNativeEgressClient:
             return
         try:
             stdin.close()
-            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-                await asyncio.wait_for(stdin.wait_closed(), timeout=_NATIVE_CANCEL_TIMEOUT_SECONDS)
-        except TimeoutError:
-            await _stop_process(process)
+            # ``wait_closed()`` awaits the subprocess protocol's shared close
+            # future. ``asyncio.wait`` never cancels it on timeout: asyncio
+            # completes that future when the pipe closes, and completing a
+            # cancelled future raises in the event loop. The callback consumes
+            # the pipe error a terminated helper leaves behind.
+            closed = asyncio.ensure_future(stdin.wait_closed())
+            closed.add_done_callback(_consume_close_outcome)
+            done, _ = await asyncio.wait({closed}, timeout=_NATIVE_CANCEL_TIMEOUT_SECONDS)
+            if not done:
+                await _stop_process(process)
+                await asyncio.wait({closed}, timeout=_NATIVE_CANCEL_TIMEOUT_SECONDS)
         finally:
             self._write_lock.release()
 
@@ -1379,6 +1399,11 @@ async def _read_event(stdout: asyncio.StreamReader) -> dict[str, object]:
     if not isinstance(value, dict):
         raise NativeEgressProtocolError("native helper event must be a JSON object")
     return cast(dict[str, object], value)
+
+
+def _consume_close_outcome(closed: asyncio.Future[None]) -> None:
+    if not closed.cancelled():
+        closed.exception()
 
 
 async def _stop_process(process: asyncio.subprocess.Process) -> None:

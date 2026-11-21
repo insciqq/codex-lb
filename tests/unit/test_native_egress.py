@@ -1451,12 +1451,14 @@ async def test_cancelled_body_command_still_queues_the_whole_line(tmp_path: Path
     assert not client._write_lock.locked()
 
 
-_SLOW_READER_HELPER = r"""#!/usr/bin/env python3
+_GATED_READER_HELPER = r"""#!/usr/bin/env python3
 import json
+import os
 import sys
 import time
 
 stdin = sys.stdin.buffer
+gate = sys.argv[0] + ".go"
 marker = open(sys.argv[0] + ".lines", "a", encoding="utf-8")
 hello = json.loads(stdin.readline())
 assert hello["type"] == "client_hello"
@@ -1470,12 +1472,12 @@ print(json.dumps({
         "websocket_responses_routing_v1", "websocket_send_ack",
     ],
 }), flush=True)
-READ_BYTES = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+# Nothing after the handshake is read until the test opens the gate.
+while not os.path.exists(gate):
+    time.sleep(0.01)
 pending = b""
 while True:
-    if READ_BYTES == 0:
-        time.sleep(3600)
-    chunk = stdin.read1(READ_BYTES)
+    chunk = stdin.read1(1 << 16)
     if not chunk:
         if pending:
             marker.write("partial\n")
@@ -1490,58 +1492,122 @@ while True:
         else:
             marker.write("ok\n")
         marker.flush()
-    time.sleep(0.005)
 marker.close()
 """
 
 
-def _write_slow_reader_helper(path: Path, read_bytes: int) -> None:
-    path.write_text(_SLOW_READER_HELPER.replace("int(sys.argv[1]) if len(sys.argv) > 1 else 0", str(read_bytes)))
-    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+def _gated_helper(tmp_path: Path) -> tuple[Path, Path, Path]:
+    helper = tmp_path / "native-helper"
+    helper.write_text(_GATED_READER_HELPER)
+    helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
+    return helper, tmp_path / "native-helper.go", tmp_path / "native-helper.lines"
+
+
+async def _until(condition) -> None:
+    while not condition():
+        await asyncio.sleep(0.001)
 
 
 @pytest.mark.asyncio
-async def test_close_lets_the_body_being_written_finish_before_eof(tmp_path: Path) -> None:
-    helper = tmp_path / "native-helper"
-    _write_slow_reader_helper(helper, 64 * 1024)
+async def test_close_lets_the_body_being_written_finish_before_eof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Only events order this test: the helper reads nothing until the gate
+    # opens, and the close bounds are far beyond any scheduling delay.
+    monkeypatch.setattr(native_egress_module, "_NATIVE_CANCEL_TIMEOUT_SECONDS", 120.0)
+    helper, gate, lines = _gated_helper(tmp_path)
     client = SubprocessNativeEgressClient(helper)
     body = os.urandom(2 * 1024 * 1024)
     first = asyncio.create_task(client.request(NativeEgressRequest("POST", "https://example.test/one", {}, body=body)))
-    while not client._write_lock.locked():
-        await asyncio.sleep(0.001)
+    await _until(client._write_lock.locked)
     # A second request waits for the write lock behind the body in flight.
     second = asyncio.create_task(
         client.request(NativeEgressRequest("POST", "https://example.test/two", {}, body=b"{}"))
     )
-    await asyncio.sleep(0.02)
     process = client._process
     assert process is not None
+    closing = asyncio.create_task(client.aclose())
+    await _until(lambda: client._closed)
+    gate.touch()
 
-    await client.aclose()
-    await asyncio.wait_for(process.wait(), timeout=10)
+    await asyncio.wait_for(closing, timeout=60)
+    await asyncio.wait_for(process.wait(), timeout=60)
 
     results = await asyncio.gather(first, second, return_exceptions=True)
     assert all(isinstance(result, NativeEgressError) for result in results)
     # The helper read the in-flight command whole, then EOF; the queued one was never written.
-    assert (tmp_path / "native-helper.lines").read_text() == "ok\n"
+    assert lines.read_text() == "ok\n"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_close_still_tears_the_helper_down(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(native_egress_module, "_NATIVE_CANCEL_TIMEOUT_SECONDS", 120.0)
+    helper, gate, lines = _gated_helper(tmp_path)
+    client = SubprocessNativeEgressClient(helper)
+    request = asyncio.create_task(
+        client.request(NativeEgressRequest("POST", "https://example.test", {}, body=os.urandom(2 * 1024 * 1024)))
+    )
+    await _until(client._write_lock.locked)
+    process = client._process
+    assert process is not None and client._reader_task is not None
+    reader = client._reader_task
+    closing = asyncio.create_task(client.aclose())
+    await _until(lambda: client._closed)
+
+    # The close is cancelled while the sender still holds the write lock.
+    closing.cancel()
+    gate.touch()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(closing, timeout=60)
+
+    assert process.returncode is not None
+    assert reader.done()
+    assert client._process is None
+    assert lines.read_text() == "ok\n"
+    (result,) = await asyncio.gather(request, return_exceptions=True)
+    assert isinstance(result, NativeEgressError)
 
 
 @pytest.mark.asyncio
 async def test_close_terminates_a_helper_that_stopped_reading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(native_egress_module, "_NATIVE_CANCEL_TIMEOUT_SECONDS", 0.2)
-    helper = tmp_path / "native-helper"
-    _write_slow_reader_helper(helper, 0)
+    helper, _gate, _lines = _gated_helper(tmp_path)
     client = SubprocessNativeEgressClient(helper)
     request = asyncio.create_task(
         client.request(NativeEgressRequest("POST", "https://example.test", {}, body=os.urandom(2 * 1024 * 1024)))
     )
-    while not client._write_lock.locked():
-        await asyncio.sleep(0.001)
+    await _until(client._write_lock.locked)
     process = client._process
     assert process is not None
 
-    await asyncio.wait_for(client.aclose(), timeout=10)
+    await asyncio.wait_for(client.aclose(), timeout=60)
 
     assert process.returncode is not None
     (result,) = await asyncio.gather(request, return_exceptions=True)
     assert isinstance(result, NativeEgressError)
+
+
+@pytest.mark.asyncio
+async def test_close_flush_timeout_terminates_the_helper_without_loop_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(native_egress_module, "_NATIVE_CANCEL_TIMEOUT_SECONDS", 0.2)
+    helper, _gate, _lines = _gated_helper(tmp_path)
+    client = SubprocessNativeEgressClient(helper)
+    process, _generation = await client._ensure_process()
+    assert process.stdin is not None
+    # Unflushable input with the write lock free: the close times out on the flush, not on the lock.
+    process.stdin.write(b"x" * (2 * 1024 * 1024))
+    loop = asyncio.get_running_loop()
+    loop_errors: list[dict[str, object]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+    try:
+        await asyncio.wait_for(client.aclose(), timeout=60)
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert process.returncode is not None
+    assert loop_errors == []
