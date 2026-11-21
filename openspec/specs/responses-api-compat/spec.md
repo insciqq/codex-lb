@@ -2978,6 +2978,13 @@ When an HTTP bridge request is still pending before upstream `response.completed
 - **AND** no bounded task-cancellation timeout elapses and no cancellation-timeout warning is logged for that reader
 - **AND** the reader exits once the retirement returns
 
+#### Scenario: Reader failure retirement leaves a concurrent close to its owner
+
+- **WHEN** an idle sweep or another owner starts closing the bridge session while its failing reader is still finalizing pending requests
+- **AND** that close waits for the reader to finish
+- **THEN** the reader's retirement does not join that close
+- **AND** the close finishes the session resources on its own once the reader exits, without a cancellation-timeout warning
+
 #### Scenario: Prewarm cleanup does not consume visible queue slots
 
 - **WHEN** a prewarm request is rejected or interrupted after response-create gate admission

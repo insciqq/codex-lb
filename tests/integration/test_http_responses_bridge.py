@@ -13851,16 +13851,22 @@ async def test_v1_responses_http_bridge_stream_failure_remains_valid_sse(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("concurrent_idle_sweep", [False, True], ids=["reader-only", "concurrent-idle-sweep"])
 async def test_v1_responses_http_bridge_reader_failure_retires_without_waiting_on_its_own_reader(
     async_client,
     app_instance,
     monkeypatch,
     caplog,
+    concurrent_idle_sweep,
 ):
     """A reader that fails a turn retires its own session; the close must not
     wait for that same reader to be cancelled. The reader is suspended on the
     retirement it handed to a separate task, so that wait can only end at the
-    cancellation timeout and logged a warning after every reader failure."""
+    cancellation timeout and logged a warning after every reader failure.
+
+    An idle sweep that prunes the closed session while the reader is still
+    finalizing its requests starts the resource close first; that close then
+    owns the reader's cancellation and the retirement must not join it."""
     _install_bridge_settings(monkeypatch, enabled=True)
     account_id = await _import_account(
         async_client,
@@ -13886,6 +13892,30 @@ async def test_v1_responses_http_bridge_reader_failure_retires_without_waiting_o
     monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
     monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
     monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+    if concurrent_idle_sweep:
+        original_finalize = proxy_module.ProxyService._finalize_claimed_websocket_requests
+        swept: list[bool] = []
+
+        async def finalize_with_concurrent_idle_sweep(self, **kwargs):
+            if not swept:
+                swept.append(True)
+                readers = [
+                    session.upstream_reader
+                    for session in self._http_bridge_sessions.values()
+                    if session.upstream_reader is not None
+                ]
+                assert await self.prune_idle_http_bridge_sessions() == 1
+                sweep_started = time.monotonic()
+                while not any(reader.cancelling() for reader in readers) and time.monotonic() - sweep_started < 1.0:
+                    await asyncio.sleep(0)
+                assert any(reader.cancelling() for reader in readers)
+            return await original_finalize(self, **kwargs)
+
+        monkeypatch.setattr(
+            proxy_module.ProxyService,
+            "_finalize_claimed_websocket_requests",
+            finalize_with_concurrent_idle_sweep,
+        )
     caplog.set_level(logging.WARNING, logger="app.modules.proxy.service")
 
     async with async_client.stream(

@@ -3674,13 +3674,24 @@ class _HTTPBridgeRequestSubmitMixin:
             if should_close:
                 session.upstream_close_attempted = True
         if should_close:
-            if retiring_reader is not None and session.upstream_reader is retiring_reader:
+            running_resource_close = None
+            if retiring_reader is not None:
                 # The reader-failure funnel runs this retirement in its own
                 # task and the reader awaits it, so the reader cannot finish
                 # until the close returns. Release it from the close like a
                 # reader closing its session directly; it exits right after.
-                session.upstream_reader = None
-            await self._close_http_bridge_session_bounded(session, reason="retire_stale_pending")
+                if session.upstream_reader is retiring_reader:
+                    session.upstream_reader = None
+                # A close another owner already started (an idle sweep, for
+                # example) may have taken the reader before it was released
+                # and now waits for it to finish. That close owns the session
+                # resources and finishes them on its own; joining it from the
+                # reader would wait for the reader itself.
+                running_resource_close = session.resource_close_task
+                if running_resource_close is not None and running_resource_close.done():
+                    running_resource_close = None
+            if running_resource_close is None:
+                await self._close_http_bridge_session_bounded(session, reason="retire_stale_pending")
         _log_http_bridge_event(
             "retire_stale_pending",
             session.key,

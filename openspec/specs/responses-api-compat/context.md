@@ -491,6 +491,11 @@ cancellation warning before the close went on. The funnel now passes its
 reader to the retirement, which releases it from the close just as a reader
 closing its session directly does; the reader exits right after.
 
+The same wait arises when an idle sweep prunes the closed session while the
+reader is still finalizing its requests: the sweep's resource close takes the
+reader before the retirement releases it. The retirement therefore leaves a
+close that is already running to its owner instead of joining it.
+
 ## Routed file transport failover
 
 File operations follow the existing pre-visible unary retry policy. The file client carries typed dispatch provenance through its service adapter so a refused account-proxy connection can retry another eligible account even though credential-safe transport messages omit low-level details. Typed replay eligibility takes precedence over message text: a proxy endpoint named `timeout-primary` must not turn a TLS verification failure into a retry.
