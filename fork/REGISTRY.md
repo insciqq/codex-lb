@@ -542,3 +542,4 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(fork): announce fork releases in the dashboard update notice | - | fork release channel |
 | chore(release): 1.25.0-fork.2 | - | fork release version |
 | fix(telemetry): preview without minting an identity | - | bug found in production or review |
+| fix(fork): recheck fork releases while the dashboard stays open | - | fork release channel |
