@@ -111,10 +111,10 @@ def test_render_derives_statuses_from_trailers(repo: Path) -> None:
     doc = render(repo)
 
     assert "| [10](https://github.com/owner/repo/pull/10) | fix: upstream title \\| with pipe | open |" in doc
-    assert "| taken with changes | changes: Rebased onto the new retry path.; issues [5]" in doc
+    assert "| taken with changes | changes: Rebased onto the new retry path. Issues [5]" in doc
     assert "| superseded | superseded by [10](https://github.com/owner/repo/pull/10) |" in doc
     # Authored reasons keep their markdown.
-    assert "| rejected | Breaks *shared* connections.; issues [7](https://github.com/owner/repo/issues/7) |" in doc
+    assert "| rejected | Breaks *shared* connections. Issues [7](https://github.com/owner/repo/issues/7) |" in doc
     assert "| fixed | fixed by PR [10](https://github.com/owner/repo/pull/10) |" in doc
     # Issue 6 has no data entry but is referenced by an own commit.
     assert "| [6](https://github.com/owner/repo/issues/6) | - | - | fixed | own fix |" in doc

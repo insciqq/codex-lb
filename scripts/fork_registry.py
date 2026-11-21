@@ -462,6 +462,19 @@ def _text(text: str | None) -> str:
     return " ".join((text or "").split()).replace("|", "\\|") or "-"
 
 
+def _join_notes(notes: list[str]) -> str:
+    """One table cell from the notes; a note after a finished sentence starts a new sentence."""
+    cell = ""
+    for note in notes:
+        if not cell:
+            cell = note
+        elif cell.endswith((".", "!", "?")):
+            cell += " " + note[:1].upper() + note[1:]
+        else:
+            cell += "; " + note
+    return cell or "-"
+
+
 def render_document(data: Data, trailers: Trailers) -> str:
     registry = data["registry"]
     repo = registry["upstream"]
@@ -516,7 +529,7 @@ def render_document(data: Data, trailers: Trailers) -> str:
             _title(entry.get("title")),
             entry.get("state") or "-",
             status,
-            "; ".join(notes) or "-",
+            _join_notes(notes),
         ]
         pr_rows.append("| " + " | ".join(cells) + " |")
 
@@ -543,7 +556,7 @@ def render_document(data: Data, trailers: Trailers) -> str:
             _title(entry.get("title")),
             entry.get("state") or "-",
             status,
-            "; ".join(notes) or "-",
+            _join_notes(notes),
         ]
         issue_rows.append("| " + " | ".join(cells) + " |")
 
