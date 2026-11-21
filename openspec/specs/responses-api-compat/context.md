@@ -749,6 +749,13 @@ order, so two keyless threads that interleave `system` and `developer`
 messages and differ only in their order share a scope here where upstream
 split them; they still need identical recent items to share a key.
 
+The same ordering applies across an upgrade (keyless clients only): a
+thread that sends both `system` and `developer` messages, with a developer
+message ahead of a system message on the wire, gets a scope with the system
+text first, where upstream used wire order. Such a thread derives a new key
+and bridge locality once after switching from upstream, so its first turn on
+the fork can miss the warm prefix; later turns keep the new key.
+
 Known limitation (keyless clients only): developer text that validation
 discards, a `developer` message whose content is blank or only reasoning
 parts, is gone before the view is built, so it does not change the derived
