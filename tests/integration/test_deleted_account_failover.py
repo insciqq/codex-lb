@@ -202,3 +202,53 @@ async def test_background_dispatch_route_rejects_a_deleted_account(async_client,
         else:
             await CacheProbeSender(repo_factory)._resolve_route(account)
     assert exc_info.value.reason == "account_not_found"
+
+
+@pytest.mark.parametrize("failure", ["timeout", "database"])
+async def test_stream_pre_check_failure_is_not_blamed_on_the_account(async_client, monkeypatch, failure):
+    """The selected-account check right after selection is advisory: a
+    database error or timeout there leaves the request on its account, with
+    no failover, no health write and the usual request log."""
+    from sqlalchemy import select
+    from sqlalchemy.exc import OperationalError
+
+    from app.db.models import RequestLog
+
+    account_id = await _import_account(async_client, "acc_pre_check", "pre-check@example.test")
+    resolve = proxy_module.ProxyService._resolve_upstream_route_for_account
+    calls: list[str] = []
+
+    async def failing_once(self, account, **kwargs):
+        calls.append(account.id)
+        if len(calls) == 1:
+            if failure == "timeout":
+                raise TimeoutError("command timeout")
+            raise OperationalError("SELECT 1", {}, Exception("database is locked"))
+        return await resolve(self, account, **kwargs)
+
+    sent: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        sent.append(account_id)
+        yield _sse({"type": "response.completed", "response": {"id": "resp_pre_check", "usage": {}}})
+
+    stream_error = AsyncMock()
+    record_error = AsyncMock()
+    monkeypatch.setattr(proxy_module.ProxyService, "_resolve_upstream_route_for_account", failing_once)
+    monkeypatch.setattr(proxy_module.ProxyService, "_handle_stream_error", stream_error)
+    monkeypatch.setattr(proxy_module.LoadBalancer, "record_error", record_error)
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as response:
+        assert response.status_code == 200
+        lines = [line async for line in response.aiter_lines() if line]
+
+    assert any('"response.completed"' in line for line in lines), lines
+    assert sent == ["acc_pre_check"]
+    assert calls == [account_id, account_id]
+    stream_error.assert_not_awaited()
+    record_error.assert_not_awaited()
+    async with SessionLocal() as session:
+        logged = (await session.scalars(select(RequestLog).where(RequestLog.account_id == account_id))).all()
+    assert [row.status for row in logged] == ["success"]

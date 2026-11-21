@@ -2209,11 +2209,15 @@ async def raise_if_selected_account_gone(proxy: Any, account: Any, *, operation:
     """Fail with ``account_not_found`` when ``account`` no longer exists.
 
     Called right after selection and refresh, where the caller can still fail
-    over. Any other route failure is left to the dispatch that follows, which
-    resolves the (cached) route again and reports it as before.
+    over. The check is advisory: any other failure, including a database
+    error or timeout, is left to the dispatch that follows, which resolves
+    the route again strictly and reports it as before. It must not reach the
+    caller's refresh and transport handling, which would blame the account.
     """
     try:
         await proxy._resolve_upstream_route_for_account(account, operation=operation)
     except UpstreamProxyRouteError as exc:
         if is_account_gone(exc):
             raise
+    except Exception as exc:
+        logger.debug("Selected-account pre-check failed; dispatch resolves the route again: %s", type(exc).__name__)
