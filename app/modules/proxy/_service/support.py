@@ -121,6 +121,11 @@ _LOCAL_ACCOUNT_CAP_ERROR_CODES = frozenset(
     {"account_response_create_cap", "account_stream_cap", "api_key_stream_fair_share"}
 )
 _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE = "account_model_unsupported"
+# Pre-created rejections that name the requested model rather than the
+# account: the legacy entitlement alias and the exact upstream code. The
+# WebSocket and HTTP bridge paths give both the same bounded one-replacement
+# replay and restore the original envelope when no replacement serves it.
+_MODEL_REJECTION_REPLAY_CODES = frozenset({_ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE, "model_not_found"})
 _PROPAGATED_CAPACITY_STARTUP_WAIT: ContextVar[asyncio.Event | None] = ContextVar(
     "propagated_capacity_startup_wait",
     default=None,

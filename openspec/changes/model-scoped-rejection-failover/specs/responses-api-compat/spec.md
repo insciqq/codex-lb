@@ -89,3 +89,10 @@ replay rules remain authoritative.
 - **WHEN** bounded replacement selection cannot select another account
 - **THEN** the client receives that original HTTP 404, error code, message,
   type, and parameter
+
+#### Scenario: HTTP bridge model_not_found uses the same bounded model fallback
+
+- **GIVEN** a movable pre-created HTTP bridge request
+- **WHEN** upstream rejects it with `model_not_found` before output is visible
+- **THEN** the bridge takes the same bounded one-replacement model fallback as the legacy entitlement rejection, without an account-health write
+- **AND** when no replacement serves the request, the client receives the original `model_not_found` envelope rather than a synthesized `stream_incomplete`

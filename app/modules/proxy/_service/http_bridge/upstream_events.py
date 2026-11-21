@@ -163,6 +163,7 @@ from app.modules.proxy._service.support import (
     _ACCOUNT_SELECTION_RECOVERY_HEARTBEAT_SECONDS,
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
     _MODEL_OUTPUT_EVENT_TYPES,
+    _MODEL_REJECTION_REPLAY_CODES,
     _PENDING_TOOL_CALL_ITEM_TYPES,
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
     _account_capacity_wait_payload,
@@ -2807,7 +2808,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 reserve_terminal_for_model_capacity_retry = bool(
                     matched_request_state is not None
                     and early_retry_error_code is not None
-                    and early_retry_error_code != _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE
+                    and early_retry_error_code not in _MODEL_REJECTION_REPLAY_CODES
                     and not is_previous_response_not_found_event
                     and is_upstream_model_capacity_error(error_message)
                     and _websocket_request_can_replay_before_visible_output(matched_request_state)
@@ -3410,7 +3411,7 @@ class _HTTPBridgeUpstreamEventsMixin:
         # the capacity terminal unchanged instead of staging a refused retry.
         wait_for_model_capacity_retry = bool(
             retry_error_code is not None
-            and retry_error_code != _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE
+            and retry_error_code not in _MODEL_REJECTION_REPLAY_CODES
             and not is_previous_response_not_found_event
             and status_request_state is not None
             and is_upstream_model_capacity_error(retry_error_message)
@@ -3609,12 +3610,14 @@ class _HTTPBridgeUpstreamEventsMixin:
                     )
                     event_block = f"data: {rewritten_text}\n\n"
         elif (
-            retry_error_code == _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE
+            retry_error_code in _MODEL_REJECTION_REPLAY_CODES
             and not is_previous_response_not_found_event
             and status_request_state is not None
             and _websocket_auth_request_can_switch_account(status_request_state)
         ):
             rejected_account_id = session.account.id
+            # Both model-rejection codes share the bounded model fallback; the
+            # reason is the one legacy marker its replacement path keys on.
             status_request_state.precreated_replay_reason = _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE
             status_request_state.precreated_replay_account_id = rejected_account_id
             previous_upstream_turn_state = session.upstream_turn_state
@@ -3673,7 +3676,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 _clear_websocket_precreated_replay_fallback(status_request_state)
         elif (
             retry_error_code is not None
-            and retry_error_code != _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE
+            and retry_error_code not in _MODEL_REJECTION_REPLAY_CODES
             and not is_previous_response_not_found_event
         ):
             await self._handle_or_defer_precreated_stream_health(

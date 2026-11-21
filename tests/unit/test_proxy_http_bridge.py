@@ -5390,6 +5390,88 @@ async def test_http_bridge_model_capacity_waits_before_precreated_retry(
     assert request_state.account_capacity_waiting is False
 
 
+def _model_not_found_bridge_state(request_id: str) -> proxy_service._WebSocketRequestState:
+    return proxy_service._WebSocketRequestState(
+        request_id=request_id,
+        model="gpt-5.6-sol",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        bridge_request_deadline=time.monotonic() + 60.0,
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+        transport="http",
+        request_text='{"type":"response.create","model":"gpt-5.6-sol","input":"hello"}',
+    )
+
+
+_MODEL_NOT_FOUND_BRIDGE_FRAME = json.dumps(
+    {
+        "type": "error",
+        "status": 404,
+        "error": {
+            "type": "invalid_request_error",
+            "code": "model_not_found",
+            "message": "The requested model does not exist.",
+        },
+    },
+    separators=(",", ":"),
+)
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_model_not_found_takes_the_model_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """model_not_found uses the bounded model fallback, not the capacity replay."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    handle_stream_error = AsyncMock()
+    retry_precreated = AsyncMock(return_value=True)
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+    monkeypatch.setattr(service, "_retry_http_bridge_precreated_request", retry_precreated)
+    request_state = _model_not_found_bridge_state("req-bridge-model-not-found")
+    session = _make_bridge_session(
+        key_value="bridge-model-not-found",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+
+    await service._process_http_bridge_upstream_text(session, _MODEL_NOT_FOUND_BRIDGE_FRAME)
+
+    retry_precreated.assert_awaited_once_with(session)
+    assert request_state.precreated_replay_reason == "account_model_unsupported"
+    # A model rejection says nothing about the account: no health write.
+    handle_stream_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_model_not_found_without_replacement_keeps_the_original_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    monkeypatch.setattr(service, "_retry_http_bridge_precreated_request", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", AsyncMock())
+    request_state = _model_not_found_bridge_state("req-bridge-model-not-found-exhausted")
+    session = _make_bridge_session(
+        key_value="bridge-model-not-found-exhausted",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+
+    await service._process_http_bridge_upstream_text(session, _MODEL_NOT_FOUND_BRIDGE_FRAME)
+
+    assert request_state.event_queue is not None
+    forwarded = []
+    while not request_state.event_queue.empty():
+        block = request_state.event_queue.get_nowait()
+        if block is not None:
+            forwarded.append(block)
+    assert forwarded, "the rejection must reach the client"
+    assert any("model_not_found" in block for block in forwarded)
+    assert not any("stream_incomplete" in block for block in forwarded)
+    assert request_state.precreated_replay_reason is None
+
+
 # --- Accepted output-free capacity replay (#1384 takeover, narrowed scope) ---
 
 

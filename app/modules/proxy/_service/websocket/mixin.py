@@ -336,6 +336,7 @@ from app.modules.proxy._service.support import (
     _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE,
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
     _MODEL_OUTPUT_EVENT_TYPES,
+    _MODEL_REJECTION_REPLAY_CODES,
     _REQUEST_TRANSPORT_HTTP,
     _REQUEST_TRANSPORT_WEBSOCKET,
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
@@ -541,7 +542,7 @@ _WEBSOCKET_SCOPE_CLEANUP_TIMEOUT_SECONDS = 5.0
 # the legacy entitlement alias and the exact upstream ``model_not_found`` code.
 # Both take the same bounded one-replacement replay and restore the same
 # retained envelope when replacement selection is exhausted.
-_WEBSOCKET_MODEL_REJECTION_REPLAY_CODES = frozenset({_ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE, "model_not_found"})
+_WEBSOCKET_MODEL_REJECTION_REPLAY_CODES = _MODEL_REJECTION_REPLAY_CODES
 _CAPABILITY_REQUIRED_NO_AUTHORIZED_ACCOUNTS_MESSAGE = (
     "This request requires Trusted Access for Cyber, but no eligible account is marked as "
     "security-work-authorized. codex-lb did not fall back to an ordinary account."
