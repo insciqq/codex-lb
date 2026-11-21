@@ -45,6 +45,7 @@ from app.modules.proxy._service.http_bridge import helpers as http_bridge_helper
 from app.modules.proxy._service.http_bridge import streaming as http_bridge_streaming
 from app.modules.proxy.durable_bridge_repository import durable_bridge_hash
 from app.modules.proxy.load_balancer import AccountSelection
+from app.modules.proxy.replay_safety import anchor_free_replay_payload_is_account_neutral
 from app.modules.proxy.sticky_repository import StickySessionsRepository
 from tests.integration.test_http_responses_bridge import (
     _TEST_SYNC_TIMEOUT_SECONDS,
@@ -1346,3 +1347,57 @@ async def test_large_native_history_is_not_a_warning_on_every_turn(async_client,
     large = [record for record in caplog.records if "Large response.create prepared" in record.getMessage()]
     assert large
     assert {record.levelno for record in large} == ({logging.DEBUG} if native else {logging.WARNING})
+
+
+@pytest.mark.asyncio
+async def test_owner_bound_native_tool_history_stays_on_its_owner_after_a_model_rejection(async_client, monkeypatch):
+    """A model rejection does not move an owner-bound native history to another account.
+
+    The owner produced a namespaced tool call, which only the owner can
+    continue. The native history is unanchored, so its portability must be
+    judged on the client's request: the wire text drops the namespace and
+    looks portable. Before: the model retry and the reconnect judged that text
+    and sent the call and its output to the other account.
+    """
+    _install_bridge_settings(monkeypatch, enabled=True)
+    await _import_two_accounts(async_client)
+    fleet = _UpstreamFleet(close_code=1000)
+    _install_fleet(monkeypatch, fleet)
+    call = {
+        "type": "function_call",
+        "namespace": "collaboration",
+        "name": "spawn_agent",
+        "arguments": "{}",
+        "call_id": "call_spawn",
+    }
+    monkeypatch.setitem(globals(), "_tool_turn_output", lambda: [call])
+    initial = [_user("Delegate the task")]
+    first = await async_client.post(_ROUTE, json=_body(initial), headers=_HEADERS)
+    assert _terminal_event_type(first.text) == "response.completed"
+    owner = fleet.sockets[0]
+
+    async def reject_model(text: str) -> None:
+        owner.sent_text.append(text)
+        await owner._put(
+            {
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "invalid_request_error",
+                    "message": "The 'gpt-5.1' model is not supported when using Codex with a ChatGPT account.",
+                },
+            }
+        )
+
+    monkeypatch.setattr(owner, "send_text", reject_model)
+    body = _body([*initial, call, {"type": "function_call_output", "call_id": "call_spawn", "output": "agent thread"}])
+    # On the client's request the history is owner-bound.
+    assert not anchor_free_replay_payload_is_account_neutral(
+        proxy_module.ResponsesRequest.model_validate(body).to_replay_safety_payload(),
+        strip_tool_search_ids=False,
+    )
+    await async_client.post(_ROUTE, json=body, headers=_HEADERS)
+
+    assert set(fleet.account_ids) == {fleet.account_ids[0]}
+    assert len(owner.sent_text) == 2

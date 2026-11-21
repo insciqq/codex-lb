@@ -570,15 +570,20 @@ def _http_bridge_durable_owner_is_dead(
     return owner_instance_is_dead or process_epoch_is_dead or not lookup.lease_is_active(now=utcnow())
 
 
-def _http_bridge_anchor_free_replay_is_account_neutral(payload: ResponsesRequest) -> bool:
+def _http_bridge_anchor_free_replay_is_account_neutral(
+    payload: ResponsesRequest,
+    *,
+    replaces_anchored_body: bool = True,
+) -> bool:
     """Portability of the anchor-free body retained from ``payload``.
 
-    Decided on the namespace-preserving request; the tool-search ids the wire
-    text of an anchor-free replay omits do not count.
+    Decided on the namespace-preserving request. The tool-search ids the wire
+    text of a replay that replaces an anchored body omits do not count; an
+    unanchored body keeps them.
     """
     return anchor_free_replay_payload_is_account_neutral(
         payload.to_replay_safety_payload(),
-        strip_tool_search_ids=True,
+        strip_tool_search_ids=replaces_anchored_body,
     )
 
 
@@ -1406,6 +1411,13 @@ class _HTTPBridgeStreamingMixin:
             request_state.deferred_account_backoff_tracker = deferred_account_backoff_tracker
             request_state.deferred_account_backoff_lifecycle = lifecycle
             request_state.durable_owner_dead = dead_owner_anchor
+            if request_state.native_codex_full_history:
+                # Native history goes upstream as the client's own anchor-free
+                # body, so no injection branch records its portability. Decide
+                # it here, before the wire text drops tool-call namespaces.
+                request_state.fresh_upstream_request_account_neutral = (
+                    _http_bridge_anchor_free_replay_is_account_neutral(request_payload, replaces_anchored_body=False)
+                )
             return request_state, text_data
 
         async def release_unowned_bridge_lifecycle(

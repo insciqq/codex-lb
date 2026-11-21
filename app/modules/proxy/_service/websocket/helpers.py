@@ -295,6 +295,7 @@ from app.modules.proxy._service.support import (
     _clear_websocket_request_error_overrides,
     _DeferredKeyedStreamHealthPenalty,
     _event_type_from_payload,
+    _native_codex_history_portability,
     _websocket_request_can_replay_before_visible_output,
     _WebSocketContinuityAnchor,
     _WebSocketContinuityState,
@@ -1168,6 +1169,11 @@ def _websocket_auth_request_can_switch_account(request_state: _WebSocketRequestS
     if request_state.file_required_preferred_account:
         return False
     if request_state.previous_response_id is None:
+        # A native history's own body was judged when it was prepared, before
+        # its wire text dropped tool-call namespaces.
+        recorded_portability = _native_codex_history_portability(request_state)
+        if recorded_portability is not None:
+            return recorded_portability
         return request_state.request_text is None or _websocket_request_text_is_account_neutral_fresh_replay(
             request_state.request_text
         )

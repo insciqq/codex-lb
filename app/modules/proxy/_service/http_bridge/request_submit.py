@@ -185,6 +185,7 @@ from app.modules.proxy._service.support import (
     _HTTPBridgeResponseCreateAttempt,
     _HTTPBridgeRetryCircuitAttemptSelection,
     _HTTPBridgeSession,
+    _native_codex_history_portability,
     _request_log_client_fields,
     _websocket_request_can_replay_before_visible_output,
     _WebSocketRequestState,
@@ -3977,8 +3978,13 @@ class _HTTPBridgeRequestSubmitMixin:
                 # codex_lb_operation_id after selection. Keep that operation
                 # identity on its owner unless a dedicated rebind path has
                 # already replaced the operation ID.
+                # A native history's own body was judged when it was prepared,
+                # before its wire text dropped tool-call namespaces.
+                recorded_portability = _native_codex_history_portability(request_state)
                 candidate_portable = request_state.operation_id is None and (
-                    _websocket_request_text_is_account_neutral_fresh_replay(candidate_text)
+                    recorded_portability
+                    if recorded_portability is not None
+                    else _websocket_request_text_is_account_neutral_fresh_replay(candidate_text)
                 )
                 request_text = _prepare_websocket_request_state_for_visible_output_replay(request_state)
                 if request_text is None or request_text != candidate_text:

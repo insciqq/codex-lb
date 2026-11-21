@@ -1489,6 +1489,18 @@ def _complete_http_bridge_handoff(
         inflight_sessions.pop(session.key, None)
 
 
+def _native_codex_history_portability(request_state: _WebSocketRequestState) -> bool | None:
+    """Return the portability recorded for a native Codex history's own body.
+
+    The bridge records it from the client's request, before the wire text
+    drops replay metadata such as tool-call namespaces. ``None`` for any other
+    request, which is judged on its text.
+    """
+    if request_state.native_codex_full_history:
+        return request_state.fresh_upstream_request_account_neutral
+    return None
+
+
 def _http_bridge_session_supports_service_tier(
     session: _HTTPBridgeSession,
     *,
