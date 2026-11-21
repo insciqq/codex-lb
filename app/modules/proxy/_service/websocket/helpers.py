@@ -1595,7 +1595,11 @@ def _record_websocket_stale_anchor_failure(
     request_state.failure_phase_override = "upstream"
     request_state.failure_detail_override = _websocket_stale_anchor_failure_detail(diagnostics)
     request_state.upstream_error_code_override = upstream_error_code
-    if not diagnostics.fresh_replay_available:
+    # A miss served from the stale-anchor cache is not new upstream evidence:
+    # recording it again would extend the suppression window indefinitely.
+    if not diagnostics.fresh_replay_available and request_state.previous_response_owner_lookup_source != (
+        "stale_response_cache"
+    ):
         _remember_websocket_stale_previous_response(
             previous_response_id=request_state.previous_response_id,
             api_key_id=request_state.api_key.id if request_state.api_key is not None else None,

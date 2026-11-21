@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app.modules.proxy._service.websocket import helpers as websocket_helpers_module
 from tests.integration.test_proxy_websocket_responses import _receive_until_terminal, _SequencedUpstreamWebSocket
 from tests.integration.test_websocket_idle_loss import _FIRST, _create, _IdleSocketFixture, _previous_response_miss
 
@@ -21,6 +22,7 @@ def test_denied_client_anchor_keeps_telling_clients_to_drop_it(app_instance, mon
     unused = _SequencedUpstreamWebSocket([])
     fixture = _IdleSocketFixture(monkeypatch, [first, unused])
     codes = []
+    expiries = []
     with TestClient(app_instance) as client:
         assert client.portal is not None
         client.portal.call(fixture.prepare)
@@ -34,6 +36,9 @@ def test_denied_client_anchor_keeps_telling_clients_to_drop_it(app_instance, mon
             assert isinstance(error, dict)
             codes.append(error["code"])
             assert "resp_old" not in str(terminal)
+            expiries.append(dict(websocket_helpers_module._websocket_stale_previous_response_index))
     assert codes == ["previous_response_not_found", "previous_response_not_found"]
+    # Serving the cached miss does not extend the recovery window.
+    assert expiries[0] and expiries[1] == expiries[0]
     assert len(first.sent_text) == 1
     assert unused.sent_text == []
