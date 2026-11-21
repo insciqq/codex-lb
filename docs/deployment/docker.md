@@ -30,7 +30,9 @@ There is no `latest` or other floating tag. For production, pin the `sha-` tag
 or the image digest, and verify the digest's build provenance first:
 
 ```bash
-gh attestation verify oci://ghcr.io/insciqq/codex-lb@<digest> --repo insciqq/codex-lb
+gh attestation verify oci://ghcr.io/insciqq/codex-lb@<digest> \
+  --repo insciqq/codex-lb --source-digest <full commit SHA> \
+  --signer-workflow insciqq/codex-lb/.github/workflows/fork-image.yml
 ```
 
 The release policy is in [FORK.md](https://github.com/insciqq/codex-lb/blob/patched/FORK.md#releases-and-images).

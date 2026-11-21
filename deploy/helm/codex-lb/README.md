@@ -175,7 +175,7 @@ externalSecrets:
 
 ## Quick Start
 
-No repo clone required — install directly from the OCI registry.
+Run these from a checkout of a fork release tag, after `helm dependency build`; see [Installing from this fork](#installing-from-this-fork).
 
 ### Docker Desktop / kind style cluster
 

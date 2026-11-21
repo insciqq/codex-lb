@@ -19,7 +19,8 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 
 Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, view everything in a dashboard.
 
-**Documentation: <https://soju06.github.io/codex-lb/>** — getting started, client setup, configuration, deployment, troubleshooting, and more screenshots.
+**Documentation: [docs/](docs/index.md)** — getting started, client setup, configuration, deployment, troubleshooting, and more screenshots.
+The published site at <https://soju06.github.io/codex-lb/> documents upstream's releases, images and Helm chart.
 
 ## Features
 
@@ -65,7 +66,7 @@ For production, pin the `sha-` tag or the image digest ([FORK.md](FORK.md#releas
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
 
 Accessing the dashboard remotely for the first time? You need a one-time bootstrap token —
-see [Getting started](https://soju06.github.io/codex-lb/getting-started/).
+see [Getting started](docs/getting-started.md).
 
 ## Client Setup
 
@@ -87,18 +88,18 @@ requires_openai_auth = true # required for codex app
 
 | Logo | Client | Endpoint | Guide |
 |---|--------|----------|-------|
-| <img src="https://avatars.githubusercontent.com/u/14957082?s=200" width="32" alt="OpenAI"> | **Codex CLI / IDE** | `http://127.0.0.1:2455/backend-api/codex` | [Client setup → Codex CLI](https://soju06.github.io/codex-lb/client-setup/#codex-cli-ide-extension) |
-| <img src="https://avatars.githubusercontent.com/u/66570915?s=200" width="32" alt="OpenCode (Anomaly)"> | **OpenCode** | `http://127.0.0.1:2455/v1` | [Client setup → OpenCode](https://soju06.github.io/codex-lb/client-setup/#opencode) |
-| <img src="https://avatars.githubusercontent.com/u/252820863?s=200" width="32" alt="OpenClaw"> | **OpenClaw** | `http://127.0.0.1:2455/v1` | [Client setup → OpenClaw](https://soju06.github.io/codex-lb/client-setup/#openclaw) |
-| <img src="https://avatars.githubusercontent.com/u/134168893?s=200" width="32" alt="Hermes Agent (Nous Research)"> | **Hermes Agent** | `http://127.0.0.1:2455/v1` | [Client setup → Hermes Agent](https://soju06.github.io/codex-lb/client-setup/#hermes-agent) |
-| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/python/python-original.svg" width="32" alt="Python"> | **OpenAI Python SDK** | `http://127.0.0.1:2455/v1` | [Client setup → Python SDK](https://soju06.github.io/codex-lb/client-setup/#openai-python-sdk) |
+| <img src="https://avatars.githubusercontent.com/u/14957082?s=200" width="32" alt="OpenAI"> | **Codex CLI / IDE** | `http://127.0.0.1:2455/backend-api/codex` | [Client setup → Codex CLI](docs/client-setup.md#codex-cli--ide-extension) |
+| <img src="https://avatars.githubusercontent.com/u/66570915?s=200" width="32" alt="OpenCode (Anomaly)"> | **OpenCode** | `http://127.0.0.1:2455/v1` | [Client setup → OpenCode](docs/client-setup.md#opencode) |
+| <img src="https://avatars.githubusercontent.com/u/252820863?s=200" width="32" alt="OpenClaw"> | **OpenClaw** | `http://127.0.0.1:2455/v1` | [Client setup → OpenClaw](docs/client-setup.md#openclaw) |
+| <img src="https://avatars.githubusercontent.com/u/134168893?s=200" width="32" alt="Hermes Agent (Nous Research)"> | **Hermes Agent** | `http://127.0.0.1:2455/v1` | [Client setup → Hermes Agent](docs/client-setup.md#hermes-agent) |
+| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/python/python-original.svg" width="32" alt="Python"> | **OpenAI Python SDK** | `http://127.0.0.1:2455/v1` | [Client setup → Python SDK](docs/client-setup.md#openai-python-sdk) |
 
-Remote clients need an [API key](https://soju06.github.io/codex-lb/api-keys/) created from the dashboard.
+Remote clients need an [API key](docs/api-keys.md) created from the dashboard.
 
 ## Configuration
 
 Environment variables with `CODEX_LB_` prefix or `.env.local` — see [`.env.example`](.env.example) and the
-[configuration guide](https://soju06.github.io/codex-lb/configuration/). SQLite is the default database backend;
+[configuration guide](docs/configuration.md). SQLite is the default database backend;
 PostgreSQL is optional via `CODEX_LB_DATABASE_URL`.
 
 ## Data
@@ -112,22 +113,22 @@ Backup this directory to preserve your data.
 
 ## Documentation
 
-Full docs live at **<https://soju06.github.io/codex-lb/>**:
+Full docs live in **[docs/](docs/index.md)**:
 
-- [Getting started](https://soju06.github.io/codex-lb/getting-started/) — quick start, remote bootstrap token
-- [Client setup](https://soju06.github.io/codex-lb/client-setup/) — Codex CLI, OpenCode, OpenClaw, Python SDK
-- [Configuration](https://soju06.github.io/codex-lb/configuration/) — the few settings that matter
-- [Authentication](https://soju06.github.io/codex-lb/authentication/) — dashboard auth modes
-- [API keys](https://soju06.github.io/codex-lb/api-keys/) — protecting proxy routes
-- [Routing](https://soju06.github.io/codex-lb/routing/) — strategy guide
-- [Database](https://soju06.github.io/codex-lb/database/) — SQLite / PostgreSQL, Postgres 16 → 18 upgrade
-- [Deployment](https://soju06.github.io/codex-lb/deployment/docker/) — [Docker](https://soju06.github.io/codex-lb/deployment/docker/), [Kubernetes](https://soju06.github.io/codex-lb/deployment/kubernetes/), [remote access](https://soju06.github.io/codex-lb/deployment/remote/)
-- [Troubleshooting](https://soju06.github.io/codex-lb/troubleshooting/)
+- [Getting started](docs/getting-started.md) — quick start, remote bootstrap token
+- [Client setup](docs/client-setup.md) — Codex CLI, OpenCode, OpenClaw, Python SDK
+- [Configuration](docs/configuration.md) — the few settings that matter
+- [Authentication](docs/authentication.md) — dashboard auth modes
+- [API keys](docs/api-keys.md) — protecting proxy routes
+- [Routing](docs/routing.md) — strategy guide
+- [Database](docs/database.md) — SQLite / PostgreSQL, Postgres 16 → 18 upgrade
+- [Deployment](docs/deployment/docker.md) — [Docker](docs/deployment/docker.md), [Kubernetes](docs/deployment/kubernetes.md), [remote access](docs/deployment/remote.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
 ### Community companions
 
 Independent projects that consume the dashboard API, maintained outside codex-lb
-(see [the docs listing](https://soju06.github.io/codex-lb/#community-companions)
+(see [the docs listing](docs/index.md#community-companions)
 for access guidance):
 
 - [Codex LB Status Bar](https://github.com/sm1ee/codex-lb-statusbar) — native macOS app: account status, quota details, account controls
