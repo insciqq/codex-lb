@@ -179,7 +179,9 @@ reason = "Bundles a process-wide poison-overflow fence: once tripped, unrelated 
 [pr.2277]
 title = "fix(proxy): preserve continuation anchors during input normalization"
 state = "open"
-status = "pending"
+status = "deferred"
+issues = [2269]
+reason = "Classifying dependent tool-result deltas needs consistent anchor handling across fresh reattach, owner takeover and owner-forward recovery. Scheduled after the release."
 
 [pr.2278]
 title = "fix(proxy): count incomplete responses toward bridge retries"
@@ -627,6 +629,7 @@ rework = "Only the percentage-point lease term is taken; the 99% pressure ceilin
 title = "fix(proxy): honor dashboard caps on warm bridge admission"
 state = "closed"
 status = "pending"
+rework = "A warm reacquisition that finds no settings snapshot is refused with 503 instead of asserted."
 
 [pr.2562]
 title = "docs: explain Codex Desktop voice endpoint configuration"
@@ -709,7 +712,8 @@ reason = "The fork's own fix never anchors native Codex HTTP history, so an agen
 [pr.2583]
 title = "fix(proxy): retire a policy-excluded continuity owner that cannot return in time"
 state = "closed"
-status = "pending"
+status = "deferred"
+reason = "Retiring a policy-excluded owner moves the turn to another account; it must first prove that the replacement body is a complete, account-neutral conversation. Scheduled after the release."
 
 [pr.2589]
 title = "fix(proxy): recognize CCodex native fingerprints"
@@ -1742,7 +1746,8 @@ status = "pending"
 [issue.2269]
 title = "bug: forwarded continuations can lose required conversation history"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Classifying dependent tool-result deltas needs consistent anchor handling across fresh reattach, owner takeover and owner-forward recovery. Scheduled after the release."
 
 [issue.2270]
 title = "bug: retry cleanup can delete state changed by a newer request"
@@ -1862,7 +1867,8 @@ reason = "Converging a forked lane means repointing the parent thread's turn-sta
 [issue.2409]
 title = "bug(proxy): intermittent cache misses on Astra/SOL with the same Pro account across HTTP and WebSocket (195k–777k input)"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "For native Codex clients, misses after a replayed image came from the bridge bypass and are fixed; other clients' image threads still bypass the bridge. Requests without session identity mint a new cache key by design, and the remaining same-account misses are upstream cache behavior."
 
 [issue.2413]
 title = "feat: Luna Reserve (gpt-reserve) fallback when chat quota is exhausted"
@@ -1880,7 +1886,8 @@ reason = "The plan capacity constants also weight routing across mixed pools; re
 [issue.2425]
 title = "bug: input_image requests still fail ~35% during overload on beta.8 — the HTTP bridge bypass, not the upstream transport, is the cause (follow-up to #2363/#2386)"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "For native Codex clients, replayed history images stay on the bridge. A turn that adds a new inline image, and every image request from other clients, still bypasses it."
 
 [issue.2426]
 title = "bug(metrics): populate account counts and expose availability for alerting"
