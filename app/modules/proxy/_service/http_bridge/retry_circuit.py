@@ -117,6 +117,17 @@ def _http_bridge_poison_quarantine_minimum_seconds(cooldown_remaining: float) ->
     return max(0.0, cooldown_remaining) + _HTTP_BRIDGE_RETRY_CIRCUIT_HALF_OPEN_LEASE_SECONDS
 
 
+def _http_bridge_retry_circuit_cooldown_deadline(now_monotonic: float, remaining_seconds: float) -> float:
+    """Map a persisted cooldown's remaining seconds onto the monotonic clock.
+
+    An absent, zero or elapsed cooldown is no cooldown at all. A positive
+    deadline that has passed is the admission gate's half-open transition
+    marker, so manufacturing one here would arm a probe lease and suppress
+    every sibling for a cooldown that ended before this worker saw it.
+    """
+    return now_monotonic + remaining_seconds if remaining_seconds > 0 else 0.0
+
+
 def _http_bridge_retry_circuit_suppression_message(block_reason: str, retry_after_seconds: int) -> str:
     """Describe the timer that is actually refusing a suppressed submission.
 
@@ -727,8 +738,9 @@ class _HTTPBridgeRetryCircuitMixin:
                             )
                 return True
 
-        cooldown_remaining = max(0.0, persisted.cooldown_until_epoch - now_epoch)
-        persisted_cooldown_until = now_monotonic + cooldown_remaining
+        persisted_cooldown_until = _http_bridge_retry_circuit_cooldown_deadline(
+            now_monotonic, persisted.cooldown_until_epoch - now_epoch
+        )
         arm_poison_quarantine = False
         poison_cooldown_remaining = 0.0
         async with self._http_bridge_retry_circuit_lock:
@@ -797,7 +809,12 @@ class _HTTPBridgeRetryCircuitMixin:
                     state.poison_anchor_cleared = False
                     state.owed_poison_detail = None
                 state.consecutive_failures = max(0, persisted.consecutive_failures)
-                state.cooldown_until = persisted_cooldown_until
+                if persisted_cooldown_until > 0.0 or episode_replaced:
+                    state.cooldown_until = persisted_cooldown_until
+                # Otherwise the unchanged episode's cooldown has elapsed and
+                # the local deadline stays: a positive one is the real expiry
+                # this worker watched run (or a handed-back probe's marker)
+                # and admits exactly one probe; a consumed one stays zero.
                 state.last_detail = persisted.last_detail
                 if state.consecutive_failures == 0:
                     # A zero-failure row is a durable reset: the episode the
@@ -1003,7 +1020,9 @@ class _HTTPBridgeRetryCircuitMixin:
                     ),
                 )
             if persisted is not None:
-                persisted_cooldown_until = now_monotonic + max(0.0, persisted.cooldown_until_epoch - now_wall)
+                persisted_cooldown_until = _http_bridge_retry_circuit_cooldown_deadline(
+                    now_monotonic, persisted.cooldown_until_epoch - now_wall
+                )
                 async with self._http_bridge_retry_circuit_lock:
                     current = self._http_bridge_retry_circuits.get(session.key)
                     if current is state:

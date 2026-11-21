@@ -84,6 +84,7 @@ replaying that body.
 - HTTP bridge settlement ownership is explicit: `closed` rejects new work but does not imply that a submitter owns existing siblings. Only a liveness-failed send claims whole-deque settlement under the lifecycle lock; otherwise the reader remains responsible for settling pending requests when the transport dies.
 - A DRAINING durable row with a live lease is still owned. Foreign `claim_live_session` and local session create must not steal it, including when forced recovery would otherwise run because the owner endpoint is missing; expired or ownerless DRAINING rows remain recoverable.
 - Hard-affinity retry-circuit evidence is request-lifecycle evidence: retirement counts only while the bridge still owns an eventless pending request. Idle no-pending retirement remains observable but neutral, so routine socket churn cannot manufacture the first strike for a later real timeout.
+- A retry-circuit probe follows only a cooldown expiry the worker observed. A durable row whose cooldown is absent, zero or already elapsed maps to no cooldown, so a settled key's zero row, or an old cooldown first seen after it ended, admits requests normally instead of leasing one probe and suppressing every sibling for up to the whole lease (issue 2272).
 
 ## Fast Mode and Service Tiers
 

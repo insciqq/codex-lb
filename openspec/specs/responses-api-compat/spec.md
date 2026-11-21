@@ -584,7 +584,18 @@ reports the same way.
 
 When the cooldown expires, each worker process MUST admit exactly one probe
 request and MUST keep suppressing its other non-bypassed requests for that
-key while that probe may still be running. Probe admission is process-local:
+key while that probe may still be running. Only a cooldown that has not
+ended can produce that expiry: mapping a durable row onto the worker's clock,
+on a load or on a persist reconciliation, MUST turn an absent, zero or
+already elapsed cooldown into no cooldown at all, never into a deadline that
+ends at the mapping instant, because the admission gate reads any expired
+positive deadline as the half-open transition and would arm a lease and
+suppress the key's siblings for a cooldown that already ended. A load that
+re-observes the unchanged episode after its cooldown elapsed MUST keep the
+worker's local deadline instead, so a cooldown the worker saw running (or
+the transition marker a handed-back probe restored) still admits exactly
+one probe, and a transition a probe already consumed is not re-armed by the
+next reload. Probe admission is process-local:
 the half-open lease is not persisted, and replicas do not coordinate probe
 admission (an accepted residual recorded in this change's `design.md`). When the circuit opens on an eventless
 poison-class failure (`stream_incomplete` or `stream_idle_timeout` with no
@@ -911,13 +922,28 @@ and durable circuit state.
 - **GIVEN** another replica opened the circuit long enough ago that its cooldown deadline is already in the past
 - **WHEN** this worker's durable write merges that state and raises it to the threshold with no cooldown remaining
 - **THEN** the key is still quarantined with reason `retry_circuit_poisoned_anchor`
-- **AND** the quarantine covers the half-open lease, because the next request on that key is the probe
+- **AND** the quarantine covers the half-open lease window, because the next request on that key is admitted and must be planned without the anchor
 
 #### Scenario: circuit opened by clean closes does not quarantine the key
 
 - **GIVEN** a hard-affinity key has one recorded `clean_close` failure
 - **WHEN** a second `clean_close` failure opens the circuit
 - **THEN** the session key is not quarantined
+
+#### Scenario: a reloaded circuit whose cooldown already ended arms no probe
+
+- **GIVEN** a hard-affinity key's durable circuit row is at the threshold with a zero or already elapsed cooldown
+- **AND** the worker has not observed that cooldown running
+- **WHEN** two requests for that key reach the admission gate while the first is still in flight
+- **THEN** both requests are admitted
+- **AND** no half-open lease is armed and no `half_open` circuit event is logged
+
+#### Scenario: an observed cooldown expiry still admits exactly one probe
+
+- **GIVEN** a worker loaded a hard-affinity key's durable circuit while its cooldown was active
+- **WHEN** the cooldown expires and two requests for that key reach the admission gate while the first is still in flight
+- **THEN** the first request is admitted as the half-open probe
+- **AND** the second request is suppressed while that probe holds the lease
 
 #### Scenario: suppression reports the half-open lease after the cooldown expires
 
