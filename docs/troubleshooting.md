@@ -4,7 +4,7 @@
 
 **Why does codex-lb still say `rate_limited` when Codex Desktop says the window reset?**
 codex-lb refreshes usage on its own schedule and treats upstream samples conservatively. The full policy — refresh cadence, expiry, and why displays can briefly disagree with upstream — is documented in the
-[usage refresh policy context](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/usage-refresh-policy/context.md).
+[usage refresh policy context](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/usage-refresh-policy/context.md).
 
 ## Streaming
 
@@ -14,7 +14,7 @@ Run the [WebSocket verification steps](client-setup.md#verify-websocket-transpor
 ## Fast Mode, Ultrafast, and service tiers
 
 Fast Mode, Ultrafast, and service-tier behavior is documented in the
-[Responses API compatibility context](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/responses-api-compat/context.md#fast-mode-and-service-tiers).
+[Responses API compatibility context](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/responses-api-compat/context.md#fast-mode-and-service-tiers).
 
 ## Old Codex sessions missing after migrating
 
@@ -44,4 +44,4 @@ puts it before the migration Job.
 
 ---
 
-*Spec: [usage-refresh-policy](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/usage-refresh-policy)*
+*Spec: [usage-refresh-policy](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/usage-refresh-policy)*

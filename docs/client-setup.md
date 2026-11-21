@@ -8,7 +8,7 @@ Images use a separate compatibility route: `gpt-image-*` models may be absent
 from that catalog even when `POST /v1/images/generations` and
 `POST /v1/images/edits` are available. Do not use catalog absence alone to
 diagnose missing image support. See the
-[Images API example and troubleshooting notes](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/images-api-compat/context.md#model-discovery-and-direct-api-example).
+[Images API example and troubleshooting notes](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/images-api-compat/context.md#model-discovery-and-direct-api-example).
 
 The examples use `gpt-6-astra` for complex reasoning and coding, following [OpenAI's model guidance](https://developers.openai.com/api/docs/guides/latest-model). `gpt-5.6-terra` and `gpt-5.6-luna` remain alternative examples. Confirm that your live model catalog includes each selected model before using these configs.
 
@@ -62,7 +62,7 @@ The examples include both settings. Keep each catalog URL on the same host
 and port as its provider's `base_url`; update both when using a remote
 installation. Merge these keys into existing `[features]` and provider
 tables rather than duplicating the tables, then fully quit and reopen the
-Codex app. See the [model discovery context](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/model-catalog-compat/context.md#codex-client-discovery)
+Codex app. See the [model discovery context](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/model-catalog-compat/context.md#codex-client-discovery)
 for the client-side conditions and verification scope.
 
 ### Native web search
@@ -76,7 +76,7 @@ preference. This provider capability is separate from the experimental
 `[features].standalone_web_search` flag; enabling that feature flag is not part
 of this setup. The Codex version and selected model must also support standalone
 search. See [OpenAI's web-search documentation](https://learn.chatgpt.com/docs/web-search)
-and the [standalone search proxy specification](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/responses-api-compat/spec.md#requirement-standalone-codex-web-search-is-forwarded-faithfully).
+and the [standalone search proxy specification](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/responses-api-compat/spec.md#requirement-standalone-codex-web-search-is-forwarded-faithfully).
 
 ### Opting into the 872k context window
 
@@ -187,7 +187,7 @@ pipeline. Consequently `$imagegen` fails closed inside the Daybreak profile;
 do not remove the carrier to make it work during a restricted task. Use the
 ordinary provider only for separate work that does not require Daybreak
 routing. Provider configurations that intentionally skip OpenAI login have a
-different eligibility path; see the [Images compatibility context](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/images-api-compat/context.md#codex-provider-eligibility).
+different eligibility path; see the [Images compatibility context](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/images-api-compat/context.md#codex-provider-eligibility).
 
 ### WebSocket transport
 
@@ -252,7 +252,7 @@ If you run `codex-lb` behind a reverse proxy, make sure it forwards WebSocket up
 
 ### Migrating from direct OpenAI (session retagging)
 
-`codex resume` filters by `model_provider`; old sessions won't appear until you re-tag them. Use the built-in retag command instead of editing Codex files by hand; see [Codex session retagging](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/runtime-portability/context.md#codex-session-retagging) for backups, Docker, WSL, and rollback details.
+`codex resume` filters by `model_provider`; old sessions won't appear until you re-tag them. Use the built-in retag command instead of editing Codex files by hand; see [Codex session retagging](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/runtime-portability/context.md#codex-session-retagging) for backups, Docker, WSL, and rollback details.
 
 ```bash
 # Preview what will change first.
@@ -439,4 +439,4 @@ print(response.choices[0].message.content)
 
 ---
 
-*Specs: [responses-api-compat](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/responses-api-compat) · [images-api-compat](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/images-api-compat) · [chat-completions-compat](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/chat-completions-compat) · [realtime-api-compat](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/realtime-api-compat) · [proxy-admission-control](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/proxy-admission-control) · [proxy-warmup](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/proxy-warmup) · [files-upload-protocol](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/files-upload-protocol) · [audio-transcriptions-compat](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/audio-transcriptions-compat) · [model-catalog-compat](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/model-catalog-compat) · [runtime-portability](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/runtime-portability)*
+*Specs: [responses-api-compat](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/responses-api-compat) · [images-api-compat](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/images-api-compat) · [chat-completions-compat](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/chat-completions-compat) · [realtime-api-compat](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/realtime-api-compat) · [proxy-admission-control](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/proxy-admission-control) · [proxy-warmup](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/proxy-warmup) · [files-upload-protocol](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/files-upload-protocol) · [audio-transcriptions-compat](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/audio-transcriptions-compat) · [model-catalog-compat](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/model-catalog-compat) · [runtime-portability](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/runtime-portability)*

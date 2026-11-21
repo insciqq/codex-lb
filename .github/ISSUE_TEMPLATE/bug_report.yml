@@ -60,7 +60,7 @@ body:
       options:
         - Codex CLI
         - Codex app (desktop / web)
-        - ОpenCode
+        - OpenCode
         - Direct HTTP (curl / SDK)
         - Other (describe below)
     validations:

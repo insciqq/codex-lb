@@ -15,7 +15,7 @@ contact_links:
       Advisories — do NOT open a public issue. See SECURITY.md.
 
   - name: 📚 Documentation (this fork)
-    url: https://github.com/insciqq/codex-lb/blob/patched/docs/index.md
+    url: https://insciqq.github.io/codex-lb/
     about: |
       Setup, client configuration, deployment, account quota and dashboard
       topics for this fork's releases — check there first.
@@ -25,9 +25,3 @@ contact_links:
     about: |
       What the fork takes from upstream, how it is released, and how to
       deploy and verify its images.
-
-  - name: 🌐 Upstream documentation site
-    url: https://soju06.github.io/codex-lb/
-    about: |
-      The upstream Soju06/codex-lb documentation. It describes upstream's
-      releases, images and Helm chart, not this fork's.

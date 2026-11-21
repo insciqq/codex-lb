@@ -51,8 +51,11 @@ gh workflow run CI --ref <branch>
 gh run list --workflow CI --branch <branch> --limit 1
 ```
 
-Only CI, the patched CI guard and Fork image run in the fork. Release, publishing, release guard,
-simplicity budget, docs, labeler, stale and metadata workflows are disabled
+Only CI, the patched CI guard, Fork image and Docs run in the fork. Docs
+publishes the site at <https://insciqq.github.io/codex-lb/> from `patched`;
+the `github-pages` environment accepts only `patched`, so a push to the
+`main` mirror cannot deploy upstream's docs. Release, publishing, release
+guard, simplicity budget, labeler, stale and metadata workflows are disabled
 in the Actions settings; they serve upstream's `main`, pull requests and
 releases.
 

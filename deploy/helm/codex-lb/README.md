@@ -1,6 +1,6 @@
 # codex-lb Helm Chart
 
-Production-ready Helm chart for [codex-lb](https://github.com/soju06/codex-lb), an OpenAI API load balancer with account pooling, usage tracking, and dashboard.
+Production-ready Helm chart for [codex-lb](https://github.com/insciqq/codex-lb) (a maintained fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb)), an OpenAI API load balancer with account pooling, usage tracking, and dashboard.
 
 ## Installing from this fork
 

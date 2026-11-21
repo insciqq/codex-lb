@@ -25,7 +25,7 @@ The hash is the first 16 lowercase hexadecimal characters of SHA-256 over the UT
 
 Each row keeps its existing meaning: direct streams can emit attempt rows; compact, native WebSocket, and bridge rows describe their final request state. A final row does not enumerate every retry. Existing recovery can clear a key, leaving a null hash with the original source classification. These fields do not by themselves explain account-owner precedence or why an account was skipped.
 
-The columns follow existing request-log retention and never store raw keys or prompts. See the [affinity observation contract](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/proxy-runtime-observability/spec.md) and [query example and privacy notes](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/proxy-runtime-observability/context.md#affinity-decisions-in-request-logs).
+The columns follow existing request-log retention and never store raw keys or prompts. See the [affinity observation contract](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/proxy-runtime-observability/spec.md) and [query example and privacy notes](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/proxy-runtime-observability/context.md#affinity-decisions-in-request-logs).
 
 ## Routing, quotas, and eligibility explainer
 
@@ -68,11 +68,11 @@ Limit warm-up sends **one small real request** (using the configured warm-up mod
 
 ---
 
-*Specs: [account-routing](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/account-routing) · [frontend-architecture](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/frontend-architecture) · [usage-refresh-policy](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/usage-refresh-policy)*
+*Specs: [account-routing](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/account-routing) · [frontend-architecture](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/frontend-architecture) · [usage-refresh-policy](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/usage-refresh-policy)*
 
 ## HTTP to WebSocket promotion
 
-Owning spec: [Responses API compatibility](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/responses-api-compat).
+Owning spec: [Responses API compatibility](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/responses-api-compat).
 
 With automatic upstream transport and the default `smart` HTTP policy, Responses
 and subscription-backed Chat Completions can reuse upstream WebSocket connections

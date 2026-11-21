@@ -16,7 +16,7 @@ Backup this directory to preserve your data (database, encryption key, archives)
 The Docker Compose `postgres` profile uses the Postgres 18 image and mounts the named data volume at
 `/var/lib/postgresql`, the parent of the image's versioned `PGDATA` directory. The `postgres` and
 `postgres-upgrade` profiles live in the root
-[`docker-compose.yml`](https://github.com/Soju06/codex-lb/blob/main/docker-compose.yml)
+[`docker-compose.yml`](https://github.com/insciqq/codex-lb/blob/patched/docker-compose.yml)
 (`docker-compose.prod.yml` only defines the `server` service, for external PostgreSQL).
 
 ## Upgrading Postgres 16 → 18
@@ -46,6 +46,6 @@ layouts need an explicit pg_upgrade before the Postgres 18 container can safely 
 
 ## Advisory migration measurements
 
-Developers can measure selected Alembic revisions with deterministic synthetic accounts and request logs on an empty, owned PostgreSQL database. The explicitly invoked benchmark produces JSON and Markdown reports; durations do not determine pass or fail. Follow the [benchmark guide](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/migration-benchmark/context.md) for target isolation, fixture parameters and transaction limits.
+Developers can measure selected Alembic revisions with deterministic synthetic accounts and request logs on an empty, owned PostgreSQL database. The explicitly invoked benchmark produces JSON and Markdown reports; durations do not determine pass or fail. Follow the [benchmark guide](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/migration-benchmark/context.md) for target isolation, fixture parameters and transaction limits.
 
-*Specs: [database-backends](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/database-backends) · [database-migrations](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/database-migrations) · [migration-benchmark](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/migration-benchmark)*
+*Specs: [database-backends](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/database-backends) · [database-migrations](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/database-migrations) · [migration-benchmark](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/migration-benchmark)*

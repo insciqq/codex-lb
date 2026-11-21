@@ -45,8 +45,8 @@ codex-lb retries only when the transport can prove that the request failed befor
 
 For laptops that switch networks frequently:
 
-- **Simplest on Linux, macOS, and Windows:** run `uvx codex-lb` directly on the host. This avoids Docker's additional DNS layer.
-- **Docker Engine on Linux (verified with `systemd-resolved`):** use host networking so the container shares the host resolver path. This survives network switches only when the host exposes a stable resolver address, such as the `127.0.0.53` `systemd-resolved` stub. If the host's `/etc/resolv.conf` points directly to a DNS server supplied by Wi-Fi or other DHCP, that address can still become stale. In that case, configure a stable host resolver, follow the [bridge-listener runbook](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/deployment-networking/context.md#diagnostics-and-recovery), or prefer `uvx`. Use the following command instead of the portable Docker command above.
+- **Simplest on Linux, macOS, and Windows:** run `uvx codex-lb` (upstream's PyPI release; the fork publishes no Python package) directly on the host. This avoids Docker's additional DNS layer.
+- **Docker Engine on Linux (verified with `systemd-resolved`):** use host networking so the container shares the host resolver path. This survives network switches only when the host exposes a stable resolver address, such as the `127.0.0.53` `systemd-resolved` stub. If the host's `/etc/resolv.conf` points directly to a DNS server supplied by Wi-Fi or other DHCP, that address can still become stale. In that case, configure a stable host resolver, follow the [bridge-listener runbook](https://github.com/insciqq/codex-lb/blob/patched/openspec/specs/deployment-networking/context.md#diagnostics-and-recovery), or prefer `uvx`. Use the following command instead of the portable Docker command above.
 - **Docker Desktop on macOS or Windows:** Docker Desktop 4.34 and later offers opt-in host networking, but containers still run through Docker Desktop's virtual machine and its DNS behavior can vary by version and configuration. This setup has not been verified as a reliable fix for switching networks. Keep Docker Desktop current; if failures persist, prefer the native `uvx` installation.
 
 ```bash
@@ -62,9 +62,9 @@ In the verified Docker Engine setup on Linux, host networking does not use `-p`;
 ## Docker Compose
 
 For a production-shaped Compose setup (watchtower-friendly tags, external PostgreSQL via env), start from
-[`docker-compose.prod.yml`](https://github.com/Soju06/codex-lb/blob/main/docker-compose.prod.yml) — it defines
+[`docker-compose.prod.yml`](https://github.com/insciqq/codex-lb/blob/patched/docker-compose.prod.yml) — it defines
 only the `server` service. The optional `postgres` / `postgres-upgrade` profiles live in the root
-[`docker-compose.yml`](https://github.com/Soju06/codex-lb/blob/main/docker-compose.yml) (see [Database](../database.md)):
+[`docker-compose.yml`](https://github.com/insciqq/codex-lb/blob/patched/docker-compose.yml) (see [Database](../database.md)):
 
 ```bash
 cp .env.example .env.local   # required: the compose file references .env.local via env_file — an unedited copy still runs with zero config
@@ -86,7 +86,7 @@ Compose files set `stop_grace_period: 65s`, matching the Helm chart's
 `terminationGracePeriodSeconds`. With plain `docker run`, add
 `--stop-timeout 65`, or stop it with `docker stop -t 65 codex-lb`. Raise the
 value together with the drain timeout. Contract:
-[deployment-installation](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/deployment-installation).
+[deployment-installation](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/deployment-installation).
 
 ## Auth mode examples
 
@@ -117,4 +117,4 @@ For Helm, pass the same values through `extraEnv`. What these modes mean and whe
 
 ---
 
-*Specs: [deployment-installation](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/deployment-installation) · [deployment-networking](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/deployment-networking)*
+*Specs: [deployment-installation](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/deployment-installation) · [deployment-networking](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/deployment-networking)*
