@@ -973,15 +973,33 @@ async def lifespan(app: FastAPI):
         await svc.heartbeat(iid, endpoint_base_url=bridge_endpoint_base_url)
         startup_module.mark_bridge_registration_complete()
 
-    async def _heartbeat_only(svc: RingMembershipService, iid: str) -> None:
+    async def _heartbeat_loop(svc: RingMembershipService, iid: str) -> None:
+        # Only the ring-row upsert runs here: a maintenance pass blocked on
+        # the database must not age this replica's row out of the ring.
         while True:
             await asyncio.sleep(RING_HEARTBEAT_INTERVAL_SECONDS)
             try:
                 await svc.heartbeat(iid, endpoint_base_url=bridge_endpoint_base_url)
             except Exception:
                 logger.warning("Ring heartbeat failed", exc_info=True)
+
+    async def _maintenance_loop(svc: RingMembershipService, iid: str) -> None:
+        # One pass at a time on the heartbeat cadence; a slow pass delays the
+        # next one instead of stacking another on top of it.
+        while True:
+            await asyncio.sleep(RING_HEARTBEAT_INTERVAL_SECONDS)
             await run_http_bridge_heartbeat_maintenance(getattr(app.state, "proxy_service", None))
-            await refresh_cap_partition(svc.list_active, iid)
+            try:
+                await refresh_cap_partition(svc.list_active, iid)
+            except Exception:
+                logger.warning("Cap partition refresh failed", exc_info=True)
+
+    async def _heartbeat_and_maintain(svc: RingMembershipService, iid: str) -> None:
+        # Both loops are owned by this task: cancelling it cancels and awaits
+        # both, and neither loop lets an ordinary exception escape.
+        async with asyncio.TaskGroup() as group:
+            group.create_task(_heartbeat_loop(svc, iid), name="bridge-ring-heartbeat")
+            group.create_task(_maintenance_loop(svc, iid), name="bridge-ring-maintenance")
 
     async def _register_and_heartbeat(svc: RingMembershipService, iid: str) -> None:
         attempt = 0
@@ -996,7 +1014,7 @@ async def lifespan(app: FastAPI):
                 logger.warning("Ring registration attempt %d failed, retrying in %.0fs", attempt, delay, exc_info=True)
                 await asyncio.sleep(delay)
         await refresh_cap_partition(svc.list_active, iid)
-        await _heartbeat_only(svc, iid)
+        await _heartbeat_and_maintain(svc, iid)
 
     async def _activate_bridge_membership(svc: RingMembershipService, iid: str) -> None:
         if bridge_endpoint_base_url is None:
@@ -1061,7 +1079,8 @@ async def lifespan(app: FastAPI):
             failure_message="Failed to drain proxy persistence tasks during shutdown",
         )
         database_tasks_drained = database_tasks_drained and final_proxy_persistence_drained
-        # Cancel heartbeat and age the shared ring row near expiry.
+        # Cancel the heartbeat and maintenance loops, then age the shared
+        # ring row near expiry.
         if heartbeat_task is not None:
             heartbeat_task.cancel()
             try:

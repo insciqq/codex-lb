@@ -24,6 +24,19 @@ Each registered replica MUST refresh its ring row via an upsert heartbeat every 
 - **WHEN** a replica's ring row was deleted or aged by another process
 - **THEN** the replica's next heartbeat re-upserts the row with a fresh timestamp
 
+### Requirement: Ring heartbeat is independent of bridge maintenance
+The per-replica bridge maintenance passes (durable ownership reconciliation, stale operation abandonment, idle session sweep) and the cap-partition refresh MUST run in a loop separate from the ring heartbeat, on the heartbeat cadence, so a slow or blocked maintenance pass cannot delay the next heartbeat. The maintenance loop MUST run one pass at a time: a pass that has not finished MUST NOT have another pass started alongside it. A failing maintenance pass or cap-partition refresh MUST be logged and MUST NOT stop either loop.
+
+#### Scenario: Blocked maintenance pass does not age the ring row
+- **WHEN** a maintenance pass blocks without returning
+- **THEN** the replica keeps heartbeating its ring row every heartbeat interval
+- **AND** no second maintenance pass starts while the blocked pass is still running
+
+#### Scenario: Shutdown stops both loops before aging the ring row
+- **WHEN** a replica shuts down gracefully while a maintenance pass is in progress
+- **THEN** the heartbeat loop and the maintenance loop are both cancelled and awaited before the ring row is aged
+- **AND** no heartbeat is written after the ring row is aged
+
 ### Requirement: Shutdown ages the ring row instead of deleting it
 On graceful shutdown a replica MUST age its ring row's heartbeat close to the stale threshold rather than deleting the row, leaving a short grace window (heartbeat interval plus 5 seconds) during which sibling workers sharing the same instance id can refresh the row while a fully terminating pod still ages out quickly.
 

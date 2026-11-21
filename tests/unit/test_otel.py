@@ -1284,6 +1284,176 @@ async def test_lifespan_marks_bridge_membership_stale_for_hostname_shared_ids(
     ring_service.unregister.assert_not_called()
 
 
+_BRIDGE_RING_LOOP_TASK_NAMES = frozenset({"bridge-ring-heartbeat", "bridge-ring-maintenance"})
+
+
+def _install_bridge_ring_lifespan_doubles(
+    monkeypatch: pytest.MonkeyPatch,
+    ring_service: SimpleNamespace,
+) -> None:
+    import app.main as main
+
+    settings = Settings(
+        otel_enabled=False,
+        otel_exporter_endpoint="",
+        metrics_enabled=False,
+        shutdown_drain_timeout_seconds=1,
+        http_responses_session_bridge_instance_id="pod-a",
+    )
+    settings_cache = SimpleNamespace(
+        invalidate=AsyncMock(),
+        refresh=AsyncMock(return_value=SimpleNamespace(password_hash=None)),
+        get=AsyncMock(return_value=SimpleNamespace(password_hash=None)),
+    )
+    cache_poller = SimpleNamespace(
+        on_invalidation=Mock(),
+        prime=AsyncMock(),
+        start=AsyncMock(),
+        stop=AsyncMock(),
+    )
+
+    class _AccountsRepository:
+        def __init__(self, _session: object) -> None:
+            pass
+
+        async def seed_hard_sticky_outage_grace_on_startup(self) -> int:
+            return 0
+
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    monkeypatch.setattr(main, "get_settings_cache", lambda: settings_cache)
+    monkeypatch.setattr(main, "ensure_auto_bootstrap_token", AsyncMock(return_value=None))
+    monkeypatch.setattr(main, "get_rate_limit_headers_cache", lambda: SimpleNamespace(invalidate=AsyncMock()))
+    monkeypatch.setattr(main, "reload_additional_quota_registry", lambda: None)
+    monkeypatch.setattr(main, "init_db", AsyncMock())
+    monkeypatch.setattr(main, "init_background_db", Mock())
+    monkeypatch.setattr(main, "init_http_client", AsyncMock())
+    monkeypatch.setattr(main, "_ensure_bridge_durable_schema_ready", AsyncMock())
+    monkeypatch.setattr(main, "verify_encryption_key_fingerprint", AsyncMock(return_value=None))
+    monkeypatch.setattr(main, "close_http_client", AsyncMock())
+    monkeypatch.setattr(main, "close_db", AsyncMock())
+    monkeypatch.setattr(main, "build_usage_refresh_scheduler", lambda: _DummyScheduler())
+    monkeypatch.setattr(main, "build_api_key_limit_reset_scheduler", lambda: _DummyScheduler())
+    monkeypatch.setattr(main, "build_model_refresh_scheduler", lambda: _DummyScheduler())
+    monkeypatch.setattr(main, "build_sticky_session_cleanup_scheduler", lambda: _DummyScheduler())
+    monkeypatch.setattr(main, "AccountsRepository", _AccountsRepository)
+    monkeypatch.setattr(main, "RingMembershipService", lambda session_factory: ring_service)
+    monkeypatch.setattr(main, "_wait_for_bridge_advertise_endpoint", AsyncMock())
+    monkeypatch.setattr(main, "_validate_bridge_advertise_endpoint_for_multi_replica", AsyncMock())
+    monkeypatch.setattr(main, "mark_process_dead", Mock())
+    monkeypatch.setattr(main, "RING_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(
+        "app.core.cache.invalidation.CacheInvalidationPoller",
+        lambda session_factory: cache_poller,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy.account_cache.get_routing_availability_cache",
+        lambda: SimpleNamespace(refresh_from_db=AsyncMock()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_keeps_ring_heartbeat_running_while_bridge_maintenance_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import app.main as main
+
+    maintenance_entered = asyncio.Event()
+    heartbeats_after_block = asyncio.Event()
+    maintenance_calls = 0
+    heartbeats_since_block = 0
+
+    async def blocked_maintenance(_proxy_service: object) -> None:
+        nonlocal maintenance_calls
+        maintenance_calls += 1
+        maintenance_entered.set()
+        # A pass wedged on the database never returns on its own.
+        await asyncio.Event().wait()
+
+    async def heartbeat(_instance_id: str, *, endpoint_base_url: str | None = None) -> None:
+        nonlocal heartbeats_since_block
+        if maintenance_entered.is_set():
+            heartbeats_since_block += 1
+            if heartbeats_since_block >= 3:
+                heartbeats_after_block.set()
+
+    ring_service = SimpleNamespace(
+        register=AsyncMock(),
+        mark_stale=AsyncMock(),
+        unregister=AsyncMock(),
+        heartbeat=AsyncMock(side_effect=heartbeat),
+        list_active=AsyncMock(return_value=["pod-a"]),
+    )
+    _install_bridge_ring_lifespan_doubles(monkeypatch, ring_service)
+    monkeypatch.setattr(main, "run_http_bridge_heartbeat_maintenance", blocked_maintenance)
+
+    async with asyncio.timeout(5):
+        async with main.lifespan(main.app):
+            await maintenance_entered.wait()
+            await heartbeats_after_block.wait()
+            # The blocked pass is never stacked by a second one.
+            assert maintenance_calls == 1
+
+    ring_service.heartbeat.assert_awaited_with("pod-a", endpoint_base_url=None)
+    ring_service.mark_stale.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_stops_ring_heartbeat_and_maintenance_before_marking_stale(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import app.main as main
+
+    events: list[str] = []
+    maintenance_entered = asyncio.Event()
+    heartbeat_seen = asyncio.Event()
+
+    async def blocked_maintenance(_proxy_service: object) -> None:
+        maintenance_entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            events.append("maintenance_cancelled")
+            raise
+
+    async def heartbeat(_instance_id: str, *, endpoint_base_url: str | None = None) -> None:
+        events.append("heartbeat")
+        heartbeat_seen.set()
+
+    async def mark_stale(_instance_id: str, **_kwargs: object) -> None:
+        running = {task.get_name() for task in asyncio.all_tasks() if not task.done()}
+        assert not running & _BRIDGE_RING_LOOP_TASK_NAMES
+        events.append("mark_stale")
+
+    ring_service = SimpleNamespace(
+        register=AsyncMock(),
+        mark_stale=AsyncMock(side_effect=mark_stale),
+        unregister=AsyncMock(),
+        heartbeat=AsyncMock(side_effect=heartbeat),
+        list_active=AsyncMock(return_value=["pod-a"]),
+    )
+    _install_bridge_ring_lifespan_doubles(monkeypatch, ring_service)
+    monkeypatch.setattr(main, "run_http_bridge_heartbeat_maintenance", blocked_maintenance)
+
+    async with asyncio.timeout(5):
+        async with main.lifespan(main.app):
+            await maintenance_entered.wait()
+            await heartbeat_seen.wait()
+        # Several heartbeat intervals pass after shutdown: an orphaned loop
+        # would heartbeat again and revive the aged ring row.
+        await asyncio.sleep(0.05)
+
+    stale_index = events.index("mark_stale")
+    assert "maintenance_cancelled" in events[:stale_index]
+    assert events[stale_index + 1 :] == []
+    ring_service.mark_stale.assert_awaited_once_with(
+        "pod-a",
+        stale_threshold_seconds=main.RING_STALE_THRESHOLD_SECONDS,
+        grace_seconds=main.RING_STALE_GRACE_SECONDS,
+    )
+    running = {task.get_name() for task in asyncio.all_tasks() if not task.done()}
+    assert not running & _BRIDGE_RING_LOOP_TASK_NAMES
+
+
 @pytest.mark.asyncio
 async def test_lifespan_registers_bridge_without_waiting_for_advertise_self_probe(
     monkeypatch: pytest.MonkeyPatch,
