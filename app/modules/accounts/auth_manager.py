@@ -1179,6 +1179,9 @@ class AuthManager:
                         operation="token_refresh",
                         scope="account",
                         encryptor=self._encryptor,
+                        # The refresh token in hand belongs to a loaded row; a
+                        # deletion since then must not unbind the account.
+                        require_account=True,
                     )
                 except UpstreamProxyRouteError as exc:
                     raise RefreshError(

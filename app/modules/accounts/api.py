@@ -22,7 +22,7 @@ from app.core.exceptions import (
 from app.core.middleware.multipart_content_encoding import raise_for_unsupported_multipart_content_encoding
 from app.core.multipart import ACCOUNT_IMPORT_MULTIPART_POLICY, bounded_multipart_form, read_bounded_upload
 from app.core.multipart_fields import required_upload
-from app.core.upstream_proxy import UpstreamProxyRouteError
+from app.core.upstream_proxy import ACCOUNT_NOT_FOUND_REASON, UpstreamProxyRouteError
 from app.dependencies import AccountsContext, get_accounts_context, get_proxy_service_for_app
 from app.modules.accounts.repository import AccountIdentityConflictError
 from app.modules.accounts.schemas import (
@@ -56,6 +56,18 @@ from app.modules.accounts.service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _route_error(exc: UpstreamProxyRouteError, action: str) -> DashboardNotFoundError | DashboardUpstreamError:
+    # ``account_not_found`` means the account was deleted while the operation
+    # ran; answer like the request had arrived after the deletion.
+    if exc.reason == ACCOUNT_NOT_FOUND_REASON:
+        return DashboardNotFoundError("Account not found", code="account_not_found")
+    return DashboardUpstreamError(
+        f"Unable to resolve upstream proxy route for {action}: {exc.reason}",
+        code="upstream_proxy_unavailable",
+    )
+
 
 router = APIRouter(
     prefix="/api/accounts",
@@ -128,10 +140,7 @@ async def get_account_usage_reset_credits(
     except AccountUsageResetCreditsUnavailableError as exc:
         raise DashboardConflictError(str(exc), code="account_usage_reset_credits_unavailable") from exc
     except UpstreamProxyRouteError as exc:
-        raise DashboardUpstreamError(
-            f"Unable to resolve upstream proxy route for usage reset credits: {exc.reason}",
-            code="upstream_proxy_unavailable",
-        ) from exc
+        raise _route_error(exc, "usage reset credits") from exc
     except UsageFetchError as exc:
         raise DashboardUpstreamError(
             f"Usage reset credits fetch failed: {exc.message}",
@@ -158,10 +167,7 @@ async def consume_account_usage_reset_credit(
     except AccountUsageResetConsumeUnavailableError as exc:
         raise DashboardConflictError(str(exc), code="account_usage_reset_consume_unavailable") from exc
     except UpstreamProxyRouteError as exc:
-        raise DashboardUpstreamError(
-            f"Unable to resolve upstream proxy route for usage reset: {exc.reason}",
-            code="upstream_proxy_unavailable",
-        ) from exc
+        raise _route_error(exc, "usage reset") from exc
     except UsageFetchError as exc:
         raise DashboardUpstreamError(
             f"Usage reset consume failed: {exc.message}",
@@ -318,10 +324,7 @@ async def probe_account(
             code="account_probe_refresh_failed",
         ) from exc
     except UpstreamProxyRouteError as exc:
-        raise DashboardUpstreamError(
-            f"Unable to resolve upstream proxy route for account probe: {exc.reason}",
-            code="upstream_proxy_unavailable",
-        ) from exc
+        raise _route_error(exc, "account probe") from exc
     if result is None:
         raise DashboardNotFoundError("Account not found", code="account_not_found")
     probe_succeeded = 200 <= result.probe_status_code < 300

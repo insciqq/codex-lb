@@ -372,6 +372,8 @@ async def test_refresh_once_caches_snapshots_on_each_replica(monkeypatch: pytest
     monkeypatch.setattr(scheduler_module, "SettingsRepository", lambda session: _FakeSettingsRepository())
     monkeypatch.setattr(scheduler_module, "TokenEncryptor", lambda: StubEncryptor())
     monkeypatch.setattr(scheduler_module, "get_rate_limit_reset_credits_store", lambda: store)
+    # The fake accounts have no rows in the database the route lookup reads.
+    monkeypatch.setattr(scheduler_module, "_resolve_upstream_route_for_account", AsyncMock(return_value=None))
 
     async def fetch_fn(access_token: str, account_id: str | None, **kwargs: Any) -> ResetCreditsResponse:
         captured.append(("fetch", access_token, account_id))
@@ -421,6 +423,8 @@ async def test_refresh_once_closes_account_read_session_before_fetch(monkeypatch
     monkeypatch.setattr(scheduler_module, "SettingsRepository", lambda session: _FakeSettingsRepository())
     monkeypatch.setattr(scheduler_module, "TokenEncryptor", lambda: StubEncryptor())
     monkeypatch.setattr(scheduler_module, "get_rate_limit_reset_credits_store", lambda: store)
+    # The fake accounts have no rows in the database the route lookup reads.
+    monkeypatch.setattr(scheduler_module, "_resolve_upstream_route_for_account", AsyncMock(return_value=None))
     monkeypatch.setattr(scheduler_module, "fetch_reset_credits", fetch_fn)
 
     scheduler = RateLimitResetCreditsRefreshScheduler(interval_seconds=60, dashboard_enabled=_always_enabled)

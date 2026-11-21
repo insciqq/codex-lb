@@ -45210,6 +45210,8 @@ async def test_ensure_fresh_same_stale_account_joins_singleflight_before_refresh
 
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
     monkeypatch.setattr(auth_manager_module, "refresh_access_token", fake_refresh_access_token)
+    # The in-memory account has no row in the database the route lookup reads.
+    monkeypatch.setattr(auth_manager_module, "resolve_upstream_route", AsyncMock(return_value=None))
 
     first = asyncio.create_task(service._ensure_fresh(account_a, force=True))
     await started.wait()

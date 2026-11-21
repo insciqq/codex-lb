@@ -32,6 +32,10 @@ from app.modules.usage.updater import AccountRefreshResult, UsageUpdater
 
 pytestmark = pytest.mark.integration
 
+# The ``transports`` fixture stubs the post-probe usage refresh; tests of that
+# refresh put the real method back.
+_REAL_FORCE_REFRESH_RESULT = UsageUpdater.force_refresh_result
+
 
 async def _seed(*, broken: str | None = None) -> None:
     token = TokenEncryptor().encrypt("synthetic-token")
@@ -410,3 +414,172 @@ async def test_force_probe_reaches_the_bound_proxy_with_real_codex_client(async_
     assert response.status_code == 200, response.text
     assert response.json()["probeStatusCode"] == 429
     assert received == [b"POST http://upstream.example.test/backend-api/codex/responses HTTP/1.1"]
+
+
+async def _delete_account(account_id: str, stage: str) -> None:
+    """Run the deletion worker's steps on ``account_id`` from another session.
+
+    ``pending`` stops after the dashboard's ``begin_delete`` mark; ``finalized``
+    also runs the worker's final delete, whose cascade removes the binding.
+    """
+    from app.modules.accounts.repository import AccountsRepository
+
+    async with SessionLocal() as writer:
+        repo = AccountsRepository(writer)
+        assert await repo.begin_delete(account_id)
+        if stage == "finalized":
+            assert await repo.delete(account_id, only_pending=True)
+
+
+def _delete_before(monkeypatch, module, account_id: str, stage: str) -> None:
+    """Delete the account right before ``module``'s next route lookup runs."""
+    resolve = module.resolve_upstream_route
+    pending = [account_id]
+
+    async def resolve_after_deletion(session, **kwargs):
+        if pending and kwargs.get("account_id") == pending[0]:
+            await _delete_account(pending.pop(), stage)
+        return await resolve(session, **kwargs)
+
+    monkeypatch.setattr(module, "resolve_upstream_route", resolve_after_deletion)
+
+
+_DELETION_STAGES = pytest.mark.parametrize("stage", ["pending", "finalized"])
+
+
+@_DELETION_STAGES
+async def test_force_probe_deleted_during_route_resolution_never_dispatches(
+    async_client, transports, monkeypatch, stage
+):
+    """The account is loaded before its route is read; a deletion in between
+    must not turn the bound seat into an unbound one with direct egress."""
+    await _seed()
+    _delete_before(monkeypatch, accounts_service, "bound-seat", stage)
+
+    response = await async_client.post("/api/accounts/bound-seat/probe")
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "account_not_found"
+    assert transports.requests == []
+
+
+@_DELETION_STAGES
+@pytest.mark.parametrize(
+    ("method", "path", "dispatch"),
+    [
+        ("GET", "usage-reset-credits", "fetch_usage"),
+        ("POST", "usage-reset-credits/consume", "consume_rate_limit_reset_credit"),
+    ],
+    ids=["read", "consume"],
+)
+async def test_reset_credits_deleted_during_route_resolution_answer_not_found(
+    async_client, transports, monkeypatch, stage, method, path, dispatch
+):
+    await _seed()
+    sent = AsyncMock()
+    monkeypatch.setattr(accounts_service, dispatch, sent)
+    _delete_before(monkeypatch, accounts_service, "bound-seat", stage)
+
+    response = await async_client.request(method, f"/api/accounts/bound-seat/{path}")
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "account_not_found"
+    sent.assert_not_awaited()
+
+
+@_DELETION_STAGES
+async def test_force_probe_stale_token_deleted_before_refresh_never_exchanges_direct(async_client, monkeypatch, stage):
+    """The real AuthManager refreshes a stale token before the probe; the
+    refresh token it holds must not leave directly once the account is gone."""
+    from datetime import timedelta
+
+    from app.modules.accounts import auth_manager
+
+    await _seed()
+    async with SessionLocal() as session:
+        account = await session.get(Account, "bound-seat")
+        assert account is not None
+        account.last_refresh = utcnow() - timedelta(days=90)
+        await session.commit()
+    dispatched = []
+
+    async def refresh(*args, **kwargs):
+        dispatched.append(("refresh", kwargs.get("route")))
+        raise AssertionError("token refresh must not be dispatched")
+
+    @asynccontextmanager
+    async def lease():
+        dispatched.append(("direct", None))
+        raise AssertionError("probe must not dispatch directly")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(auth_manager, "refresh_access_token", refresh)
+    monkeypatch.setattr(accounts_service, "lease_http_session", lease)
+    _delete_before(monkeypatch, auth_manager, "bound-seat", stage)
+
+    response = await async_client.post("/api/accounts/bound-seat/probe")
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "account_not_found"
+    assert dispatched == []
+
+
+@_DELETION_STAGES
+async def test_force_probe_usage_refresh_after_deletion_never_fetches_direct(
+    async_client, transports, monkeypatch, stage
+):
+    """Deletion completes while the routed probe is in flight; the follow-up
+    usage refresh still holds the access token and must not go direct."""
+    from app.modules.usage import updater
+
+    await _seed()
+    fetch = AsyncMock()
+
+    class DeletingClient:
+        def __init__(self, session):
+            pass
+
+        async def request(self, method, url, *, route, **kwargs):
+            transports.requests.append(("bound", route, kwargs))
+            await _delete_account("bound-seat", stage)
+            return SimpleNamespace(status=200, release=lambda: None)
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(accounts_service, "CodexClient", DeletingClient)
+    monkeypatch.setattr(UsageUpdater, "force_refresh_result", _REAL_FORCE_REFRESH_RESULT)
+    monkeypatch.setattr(updater, "fetch_usage", fetch)
+
+    response = await async_client.post("/api/accounts/bound-seat/probe")
+
+    assert response.status_code == 200, response.text
+    assert [kind for kind, _, _ in transports.requests] == ["bound"]
+    fetch.assert_not_awaited()
+
+
+@_DELETION_STAGES
+async def test_quota_warmup_deleted_during_route_resolution_settles_failed(db_setup, transports, monkeypatch, stage):
+    await _seed()
+    seen = []
+
+    async def stream(*args, **kwargs):
+        seen.append(kwargs)
+        yield 'data: {"type":"response.completed","response":{}}\n\n'
+
+    monkeypatch.setattr(warmup, "stream_responses", stream)
+    _delete_before(monkeypatch, warmup, "bound-seat", stage)
+    async with SessionLocal() as session:
+        result = await warmup.QuotaWarmupService(session).warm_now(
+            account_id="bound-seat", model="gpt-5.4-mini", force_probe=True
+        )
+
+    assert seen == []
+    assert result.status == "failed", result
+    async with SessionLocal() as session:
+        row = await session.scalar(select(RequestLog).where(RequestLog.request_id == result.request_id))
+        decision = await session.get(QuotaPlannerDecision, result.decision_id)
+        assert row is not None and row.status == "error"
+        assert row.account_id is None
+        assert row.upstream_proxy_fail_closed_reason == "account_not_found"
+        assert decision is not None and decision.status == "failed"

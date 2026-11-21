@@ -276,6 +276,38 @@ An upstream proxy endpoint whose scheme is `http`, `socks5`, or `socks5h` and wh
 - **THEN** exactly one warning is logged for it
 - **AND** the warning contains neither the username nor the password
 
+### Requirement: Operations on a loaded account fail closed when it is deleted
+
+An operation that already loaded an account and holds its credentials MUST read that account's row and its active binding in one statement when it resolves the account's route, and MUST fail with `account_not_found` before any upstream request when the row is gone or marked for deletion. This applies to Force Probe (including the token refresh before the probe and the usage refresh after it), quota warmup, targeted OAuth, the dashboard reset-credit read and consume, background usage refreshes and token refreshes. A missing row MUST NOT be treated as an unbound account, because deleting an account removes its binding by cascade.
+
+#### Scenario: Deletion between account load and route lookup
+- **GIVEN** an operation has loaded an account that has an active binding
+- **AND** global proxy routing is disabled
+- **WHEN** the account is marked for deletion, or its deletion is finalized, before the operation resolves its route
+- **THEN** no request MUST be dispatched, directly or through any pool
+
+#### Scenario: Deleted account answers like a missing account
+- **GIVEN** the account was deleted while Force Probe, a stale-token refresh before it, or a dashboard reset-credit read or consume was running
+- **WHEN** route resolution reports `account_not_found`
+- **THEN** the endpoint MUST answer 404 `account_not_found`, as it does when the account is already gone on arrival
+
+#### Scenario: Post-probe usage refresh after deletion
+- **GIVEN** the account was deleted while its routed Force Probe was in flight
+- **WHEN** Force Probe refreshes usage with the access token it holds
+- **THEN** the usage request MUST NOT be dispatched
+
+#### Scenario: Quota warmup for a deleted account settles as failed
+- **WHEN** quota warmup's route resolution reports `account_not_found`
+- **THEN** the decision MUST be marked failed
+- **AND** the failure request log MUST be written without an account id and with the `account_not_found` fail-closed reason
+- **AND** no warmup-effect observation MUST be written for the account
+
+#### Scenario: Targeted OAuth target deleted after the flow started
+- **GIVEN** a targeted OAuth flow passed its start-time account check
+- **WHEN** the target is marked for deletion or deleted before the device-code request or the code exchange resolves its route
+- **THEN** the flow MUST fail with `oauth_account_not_found` (404 at start)
+- **AND** no device-code or token request MUST be dispatched
+
 ### Requirement: Diagnostic probes use the selected local account route
 
 Force Probe and quota-planner warmup MUST resolve an upstream route using the selected local account ID before dispatching their model request. An active bound route MUST NOT fall back to direct egress, an environment proxy, or the default pool when route resolution or transport fails. Unbound accounts MUST retain the existing default/direct routing policy.

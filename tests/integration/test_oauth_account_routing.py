@@ -301,3 +301,55 @@ async def test_real_store_replacement_preserves_account_identity_and_other_crede
     else:
         assert encryptor.decrypt(after["proxied"][0]) == "new-access"
         assert encryptor.decrypt(after["proxied"][1]) == "new-refresh"
+
+
+def _delete_target_before_route_lookup(monkeypatch, stage: str) -> None:
+    """Delete the bound target after the start-time check, right before the
+    route lookup: ``pending`` marks it, ``finalized`` also cascades its binding."""
+    resolve = oauth.resolve_upstream_route
+    pending = ["proxied"]
+
+    async def resolve_after_deletion(session, **kwargs):
+        if pending and kwargs.get("account_id") == pending[0]:
+            async with SessionLocal() as writer:
+                repo = AccountsRepository(writer)
+                assert await repo.begin_delete(pending.pop())
+                if stage == "finalized":
+                    assert await repo.delete("proxied", only_pending=True)
+        return await resolve(session, **kwargs)
+
+    monkeypatch.setattr(oauth, "resolve_upstream_route", resolve_after_deletion)
+
+
+@pytest.mark.parametrize("stage", ["pending", "finalized"])
+async def test_target_deleted_during_route_resolution_never_opens_device_connection(async_client, monkeypatch, stage):
+    await _seed_accounts(default_pool=False)
+    device = AsyncMock()
+    monkeypatch.setattr(oauth, "request_device_code", device)
+    _delete_target_before_route_lookup(monkeypatch, stage)
+
+    response = await async_client.post("/api/oauth/start", json={"forceMethod": "device", "accountId": "proxied"})
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "oauth_account_not_found"
+    device.assert_not_awaited()
+
+
+@pytest.mark.parametrize("stage", ["pending", "finalized"])
+async def test_target_deleted_before_browser_callback_never_exchanges_code(async_client, monkeypatch, stage):
+    await _seed_accounts(default_pool=False)
+    exchange = AsyncMock(return_value=OAuthTokens(access_token="access", refresh_token="refresh", id_token="id"))
+    monkeypatch.setattr(oauth, "exchange_authorization_code", exchange)
+    start = await async_client.post("/api/oauth/start", json={"forceMethod": "browser", "accountId": "proxied"})
+    assert start.status_code == 200, start.text
+    payload = start.json()
+    state = parse_qs(urlparse(payload["authorizationUrl"]).query)["state"][0]
+    _delete_target_before_route_lookup(monkeypatch, stage)
+
+    response = await async_client.post(
+        "/api/oauth/manual-callback",
+        json={"flowId": payload["flowId"], "callbackUrl": f"http://localhost:1455/?code=test-code&state={state}"},
+    )
+
+    assert response.json()["status"] == "error", response.text
+    exchange.assert_not_awaited()

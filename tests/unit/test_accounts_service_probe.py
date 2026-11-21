@@ -129,6 +129,9 @@ def _build_service(
         return_value=AccountRefreshResult(usage_written=True, fetch_succeeded=True)
     )
     service._usage_updater = usage_updater
+    # The repositories are mocks with no account rows; route resolution for
+    # real rows is covered by tests/integration/test_account_diagnostic_routing.py.
+    service._resolve_account_route = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return service
 
 

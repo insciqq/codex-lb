@@ -276,3 +276,47 @@ async def test_get_returns_null_on_cache_miss_without_upstream_fetch(async_clien
     response = await async_client.get(f"/api/accounts/{account_id}/rate-limit-reset-credits")
     assert response.status_code == 200, response.text
     assert response.json() is None
+
+
+@pytest.mark.parametrize("stage", ["pending", "finalized"])
+@pytest.mark.asyncio
+async def test_consume_account_deleted_before_route_lookup_returns_404_without_upstream(
+    async_client, monkeypatch, stage
+) -> None:
+    from app.modules.accounts.repository import AccountsRepository
+
+    sent: list[str] = []
+
+    async def _should_not_fetch(*args: Any, **kwargs: Any) -> ResetCreditsResponse:
+        sent.append("fetch")
+        raise AssertionError("a deleted account must not reach upstream")
+
+    async def _should_not_consume(*args: Any, **kwargs: Any) -> ConsumeResetCreditResponse:
+        sent.append("consume")
+        raise AssertionError("a deleted account must not reach upstream")
+
+    account_id = await _import_test_account(
+        async_client,
+        email="reset-deleted@example.com",
+        account_id="acc_reset_deleted",
+    )
+    await get_rate_limit_reset_credits_store().set(account_id, _snapshot([_credit("credit-1")]))
+    resolve = reset_credits_api._resolve_upstream_route_for_account
+
+    async def _resolve_after_deletion(account, **kwargs: Any):  # noqa: ANN001
+        async with SessionLocal() as writer:
+            repo = AccountsRepository(writer)
+            assert await repo.begin_delete(account.id)
+            if stage == "finalized":
+                assert await repo.delete(account.id, only_pending=True)
+        return await resolve(account, **kwargs)
+
+    monkeypatch.setattr(reset_credits_api, "fetch_reset_credits", _should_not_fetch)
+    monkeypatch.setattr(reset_credits_api, "consume_reset_credit", _should_not_consume)
+    monkeypatch.setattr(reset_credits_api, "_resolve_upstream_route_for_account", _resolve_after_deletion)
+
+    response = await async_client.post(f"/api/accounts/{account_id}/rate-limit-reset-credits/consume")
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "account_not_found"
+    assert sent == []

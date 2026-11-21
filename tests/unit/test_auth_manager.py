@@ -33,6 +33,17 @@ def _clear_refresh_state() -> None:
     auth_manager_module._clear_refresh_singleflight_state()
 
 
+@pytest.fixture(autouse=True)
+def _unbound_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These accounts live in in-memory repositories, not in the database the
+    # route lookup reads; refresh routing over real rows is covered by
+    # tests/integration/test_account_diagnostic_routing.py.
+    async def no_binding(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(auth_manager_module, "resolve_upstream_route", no_binding)
+
+
 class _DummyRepo:
     def __init__(self) -> None:
         self.tokens_payload: dict[str, object] | None = None

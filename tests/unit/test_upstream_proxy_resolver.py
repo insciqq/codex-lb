@@ -237,3 +237,52 @@ async def test_account_bound_pool_does_not_fall_back_to_default(
 
     assert exc_info.value.reason == "pool_has_no_active_endpoints"
     assert exc_info.value.pool_id == "empty_bound"
+
+
+async def test_require_account_reads_binding_with_account_row(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    encryptor = _encryptor()
+    async with session_factory() as session:
+        bound = _account(encryptor, "bound")
+        pending = _account(encryptor, "pending")
+        pending.delete_requested_at = datetime(2026, 1, 2)
+        await _pool_with_endpoints(session, encryptor, "bound_pool")
+        session.add_all(
+            [
+                bound,
+                pending,
+                _account(encryptor, "unbound"),
+                AccountProxyBinding(id="binding", account=bound, pool_id="bound_pool"),
+                AccountProxyBinding(id="pending_binding", account=pending, pool_id="bound_pool"),
+                AccountProxyBinding(id="inactive", account_id="unbound", pool_id="bound_pool", is_active=False),
+                DashboardSettings(id=1, upstream_proxy_routing_enabled=False),
+            ]
+        )
+        await session.commit()
+
+    async def strict(account_id: str, *, allow_pending_deletion: bool = False):
+        return await resolve_upstream_route(
+            session,
+            account_id=account_id,
+            operation="test",
+            encryptor=encryptor,
+            require_account=True,
+            allow_pending_deletion=allow_pending_deletion,
+        )
+
+    async with session_factory() as session:
+        route = await strict("bound")
+        assert route is not None and route.mode == "account_bound" and route.pool_id == "bound_pool"
+        assert await strict("unbound") is None
+        # Without require_account an unknown id still reads as "no binding".
+        assert await resolve_upstream_route(session, account_id="gone", operation="test") is None
+        for account_id in ("gone", "pending"):
+            with pytest.raises(UpstreamProxyRouteError) as exc_info:
+                await strict(account_id)
+            assert exc_info.value.reason == "account_not_found"
+        # A seat being deleted keeps its binding until the row is removed.
+        pending_route = await strict("pending", allow_pending_deletion=True)
+        assert pending_route is not None and pending_route.pool_id == "bound_pool"
+        with pytest.raises(UpstreamProxyRouteError):
+            await strict("gone", allow_pending_deletion=True)

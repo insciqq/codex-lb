@@ -39,6 +39,14 @@ def _clear_refresh_cache():
     usage_updater_module._clear_usage_refresh_state()
 
 
+@pytest.fixture(autouse=True)
+def _unbound_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The accounts here live in stub repositories, not in the database the
+    # route lookup reads; usage-refresh routing over real rows is covered by
+    # tests/integration/test_account_diagnostic_routing.py.
+    monkeypatch.setattr(usage_updater_module, "resolve_upstream_route", AsyncMock(return_value=None))
+
+
 @pytest.mark.asyncio
 async def test_clear_usage_refresh_state_clears_singleflight_cache() -> None:
     started = asyncio.Event()
@@ -947,6 +955,7 @@ async def test_usage_updater_passes_resolved_route_to_fetch_usage(monkeypatch: p
     assert calls[0]["account_id"] == "chatgpt_acc_route"
     assert resolve_upstream_route.await_args is not None
     assert resolve_upstream_route.await_args.kwargs["account_id"] == "acc_route"
+    assert resolve_upstream_route.await_args.kwargs["require_account"] is True
 
 
 @pytest.mark.asyncio
@@ -2708,6 +2717,8 @@ def _replica_module() -> Any:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Like the autouse stub for this module: stub accounts have no rows.
+    setattr(module, "resolve_upstream_route", AsyncMock(return_value=None))
     return module
 
 

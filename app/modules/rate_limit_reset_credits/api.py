@@ -42,7 +42,7 @@ from app.core.exceptions import (
     DashboardPermissionError,
     DashboardServiceUnavailableError,
 )
-from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError
+from app.core.upstream_proxy import ACCOUNT_NOT_FOUND_REASON, ResolvedUpstreamRoute, UpstreamProxyRouteError
 from app.core.utils.shared_future import _await_cleanup_deferring_cancellation
 from app.db.models import Account, AccountStatus
 from app.dependencies import AccountsContext, get_accounts_context
@@ -186,6 +186,9 @@ async def consume_rate_limit_reset_credit(
             redeem_request_id=payload.redeem_request_id if payload is not None else None,
         )
     except RefreshError as exc:
+        if exc.upstream_proxy_fail_closed_reason == ACCOUNT_NOT_FOUND_REASON:
+            # Deleted while the redeem ran, as the route lookup below reports.
+            raise DashboardNotFoundError("Account not found", code="account_not_found") from exc
         if exc.is_permanent:
             get_account_selection_cache().invalidate()
         raise DashboardConflictError(
@@ -193,6 +196,8 @@ async def consume_rate_limit_reset_credit(
             code="account_reset_credit_refresh_failed",
         ) from exc
     except UpstreamProxyRouteError as exc:
+        if exc.reason == ACCOUNT_NOT_FOUND_REASON:
+            raise DashboardNotFoundError("Account not found", code="account_not_found") from exc
         raise DashboardServiceUnavailableError(
             f"Reset credit consume upstream proxy route unavailable: {exc.reason}",
             code="account_reset_credit_upstream_route_unavailable",

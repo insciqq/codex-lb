@@ -36,7 +36,12 @@ from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.openai.host_models import resolve_default_host_model
 from app.core.plan_types import coerce_account_plan_type
-from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
+from app.core.upstream_proxy import (
+    ACCOUNT_NOT_FOUND_REASON,
+    ResolvedUpstreamRoute,
+    UpstreamProxyRouteError,
+    resolve_upstream_route,
+)
 from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.core.upstream_proxy.resolver import _is_missing_upstream_proxy_schema
 from app.core.usage.models import UsagePayload
@@ -281,6 +286,7 @@ class AccountsService:
             try:
                 account = await self._auth_manager.ensure_fresh(account)
             except RefreshError as exc:
+                _raise_if_account_gone(exc, account.id)
                 raise AccountUsageResetCreditsUnavailableError(
                     f"Account credentials could not be refreshed: {exc.message}",
                 ) from exc
@@ -313,6 +319,7 @@ class AccountsService:
             try:
                 account = await self._auth_manager.ensure_fresh(account, force=True)
             except RefreshError as refresh_exc:
+                _raise_if_account_gone(refresh_exc, account.id)
                 raise AccountUsageResetCreditsUnavailableError(
                     f"Account credentials could not be refreshed: {refresh_exc.message}",
                 ) from refresh_exc
@@ -344,6 +351,7 @@ class AccountsService:
             try:
                 account = await self._auth_manager.ensure_fresh(account)
             except RefreshError as exc:
+                _raise_if_account_gone(exc, account.id)
                 raise AccountUsageResetConsumeUnavailableError(
                     f"Account credentials could not be refreshed: {exc.message}",
                 ) from exc
@@ -423,6 +431,7 @@ class AccountsService:
             try:
                 account = await self._auth_manager.ensure_fresh(account, force=True)
             except RefreshError as refresh_exc:
+                _raise_if_account_gone(refresh_exc, account.id)
                 raise AccountUsageResetConsumeUnavailableError(
                     f"Account credentials could not be refreshed: {refresh_exc.message}",
                 ) from refresh_exc
@@ -452,6 +461,9 @@ class AccountsService:
                 operation=operation,
                 scope="account",
                 encryptor=self._encryptor,
+                # The account was loaded before this lookup; a deletion in
+                # between must fail the operation, not unbind the account.
+                require_account=True,
             )
 
     async def _get_visible_account(self, account_id: str) -> Account | None:
@@ -732,7 +744,11 @@ class AccountsService:
 
         probe_account = account
         if self._auth_manager is not None:
-            probe_account = await self._auth_manager.ensure_fresh(account, force=False)
+            try:
+                probe_account = await self._auth_manager.ensure_fresh(account, force=False)
+            except RefreshError as exc:
+                _raise_if_account_gone(exc, account.id)
+                raise
 
         access_token = self._encryptor.decrypt(probe_account.access_token_encrypted)
         probe_model = model or resolve_default_host_model()
@@ -848,6 +864,17 @@ class AccountsService:
                 exc,
             )
             return PROBE_NETWORK_FAILURE_STATUS
+
+
+def _raise_if_account_gone(exc: RefreshError, account_id: str) -> None:
+    """Report a refresh that found its account deleted as a missing account.
+
+    AuthManager wraps the resolver's ``account_not_found`` in a RefreshError;
+    the dashboard must answer it like the route lookup does, not as a
+    credential failure.
+    """
+    if exc.upstream_proxy_fail_closed_reason == ACCOUNT_NOT_FOUND_REASON:
+        raise UpstreamProxyRouteError(ACCOUNT_NOT_FOUND_REASON, account_id=account_id) from exc
 
 
 def _opencode_auth_export_filename(account: Account) -> str:

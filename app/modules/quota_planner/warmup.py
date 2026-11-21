@@ -22,7 +22,7 @@ from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import ResponsesRequest
 from app.core.resilience.toggles import bind_resilience_toggles
-from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
+from app.core.upstream_proxy import ACCOUNT_NOT_FOUND_REASON, UpstreamProxyRouteError, resolve_upstream_route
 from app.core.utils.shared_future import _await_cleanup_deferring_cancellation
 from app.core.utils.time import naive_utc_to_epoch, utcnow
 from app.db.models import Account, AccountStatus, DashboardSettings, QuotaPlannerDecision
@@ -377,6 +377,9 @@ class QuotaWarmupService:
                 )
             raise
         except Exception as exc:
+            # The account was deleted after it was loaded: nothing was sent,
+            # and rows referencing it can no longer be written.
+            account_gone = isinstance(exc, UpstreamProxyRouteError) and exc.reason == ACCOUNT_NOT_FOUND_REASON
             if reservation_id is not None:
                 await self._api_keys.fail_usage_reservation(
                     reservation_id,
@@ -386,7 +389,7 @@ class QuotaWarmupService:
                     cached_input_tokens=0,
                 )
             await self._request_logs.add_log(
-                account_id=account_id,
+                account_id=None if account_gone else account_id,
                 api_key_id=api_key_id,
                 request_id=request_id,
                 model=resolved_model,
@@ -404,12 +407,13 @@ class QuotaWarmupService:
                 upstream_proxy_fallback_used=route_trace.fallback_used,
                 upstream_proxy_fail_closed_reason=exc.reason if isinstance(exc, UpstreamProxyRouteError) else None,
             )
-            await self._try_record_warmup_effect(
-                account,
-                resolved_model,
-                source="warmup_probe",
-                confidence="failed",
-            )
+            if not account_gone:
+                await self._try_record_warmup_effect(
+                    account,
+                    resolved_model,
+                    source="warmup_probe",
+                    confidence="failed",
+                )
             row = await self._planner.update_decision_status(
                 decision.id,
                 status="failed",
@@ -667,6 +671,7 @@ class QuotaWarmupService:
                 operation="quota_warmup",
                 scope="account",
                 encryptor=self._encryptor,
+                require_account=True,
             )
         if route_trace is not None:
             if route is None:

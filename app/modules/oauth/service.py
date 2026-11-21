@@ -39,7 +39,12 @@ from app.core.clients.oauth import (
 from app.core.config.settings import OAUTH_CALLBACK_PORT, OAUTH_REDIRECT_URI, get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
-from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
+from app.core.upstream_proxy import (
+    ACCOUNT_NOT_FOUND_REASON,
+    ResolvedUpstreamRoute,
+    UpstreamProxyRouteError,
+    resolve_upstream_route,
+)
 from app.core.upstream_proxy.resolver import _is_missing_upstream_proxy_schema
 from app.core.utils.time import naive_utc_to_epoch, utcnow
 from app.db.models import Account, AccountProxyBinding, AccountStatus
@@ -117,13 +122,22 @@ async def _oauth_route(*, account_id: str | None = None) -> ResolvedUpstreamRout
                 # A bound target uses its own pool, with or without a default.
                 # strict=False stops the lookup at the binding: an unbound
                 # target falls through to the bootstrap policy below.
-                bound = await resolve_upstream_route(
-                    session,
-                    account_id=account_id,
-                    operation="oauth",
-                    scope="account",
-                    strict=False,
-                )
+                # require_account re-reads the target row with its binding, so
+                # a target deleted or marked for deletion after the check above
+                # is rejected instead of resolving like an unbound account.
+                try:
+                    bound = await resolve_upstream_route(
+                        session,
+                        account_id=account_id,
+                        operation="oauth",
+                        scope="account",
+                        strict=False,
+                        require_account=True,
+                    )
+                except UpstreamProxyRouteError as exc:
+                    if exc.reason == ACCOUNT_NOT_FOUND_REASON:
+                        raise _oauth_target_not_found() from exc
+                    raise
                 if bound is not None:
                     return bound
             # Untargeted flows and unbound targets keep the bootstrap guard:

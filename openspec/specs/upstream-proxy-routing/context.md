@@ -46,3 +46,29 @@ surface as an upstream-unavailable response after fallback is exhausted, but
 operators should see the classified connection failure rather than a cleanup
 crash. That distinction allows existing network-recovery and route-health
 diagnostics to operate on the actual failure.
+
+## Operations on an account that may be deleted meanwhile
+
+Deleting an account removes its `account_proxy_bindings` row by cascade. An
+operation that loaded the account, and holds its tokens in memory, used to
+look up the binding afterwards; when the deletion finished in between it saw
+no binding and, with global routing off, sent the tokens over direct egress.
+
+`resolve_upstream_route(..., require_account=True)` closes that window. It
+reads the account row and its active binding in one statement and raises
+`account_not_found` when the row is gone or marked for deletion
+(`allow_pending_deletion=True` keeps a deleting row, whose binding still
+exists). Force Probe and the dashboard reset-credit endpoints, quota warmup,
+targeted OAuth, `AuthManager` token refreshes and `UsageUpdater` usage
+fetches use it. The dashboard endpoints answer
+404, as when the account was gone on arrival. Quota warmup logs the failure
+without an account id, because the request-log foreign key can no longer
+point at the row, and skips the account observation.
+
+The default stays lenient (an unknown id reads as "no binding"). The proxy
+request path and its per-account route cache, automations, limit warmup, the
+cache-isolation probe and model discovery still use it directly; their unit
+suites resolve routes for in-memory accounts without rows, and the request
+path's failure handling is a separate change. Their token refreshes and usage
+fetches go through `AuthManager` and `UsageUpdater` and are strict.
+

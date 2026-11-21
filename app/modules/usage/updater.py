@@ -1575,6 +1575,9 @@ async def _resolve_upstream_route_for_account(account: Account, *, operation: st
             account_id=account.id,
             operation=operation,
             scope="account",
+            # The caller holds this account's token; a deletion since it was
+            # loaded must fail the fetch, not unbind the account.
+            require_account=True,
         )
 
 

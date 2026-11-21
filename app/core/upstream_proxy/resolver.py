@@ -3,16 +3,19 @@ from __future__ import annotations
 import logging
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.crypto import TokenEncryptor
 from app.core.upstream_proxy.types import ResolvedProxyEndpoint, ResolvedUpstreamRoute, sends_plaintext_credentials
-from app.db.models import AccountProxyBinding, DashboardSettings, ProxyEndpoint, ProxyPool, ProxyPoolMember
+from app.db.models import Account, AccountProxyBinding, DashboardSettings, ProxyEndpoint, ProxyPool, ProxyPoolMember
 
 _ACCOUNT_BOUND_MODE = "account_bound"
+#: Fail-closed reason of ``require_account`` when the account row is gone (or
+#: pending deletion, unless that is explicitly allowed).
+ACCOUNT_NOT_FOUND_REASON = "account_not_found"
 _DEFAULT_POOL_MODE = "default_pool"
 _SUPPORTED_SCHEMES = frozenset({"http", "https", "socks5", "socks5h"})
 
@@ -40,10 +43,29 @@ async def resolve_upstream_route(
     scope: str = "account",
     strict: bool | None = None,
     encryptor: TokenEncryptor | None = None,
+    require_account: bool = False,
+    allow_pending_deletion: bool = False,
 ) -> ResolvedUpstreamRoute | None:
+    """Resolve the egress route for ``account_id``.
+
+    ``require_account`` is for an operation on an account the caller already
+    loaded and whose credentials it holds. The account row and its active
+    binding are then read in one statement, and a missing row, or one marked
+    for deletion unless ``allow_pending_deletion``, raises
+    ``account_not_found``. Without it, a deletion finalized after the caller
+    loaded the account removes the binding by cascade, and the account would
+    resolve like an unbound one, to direct egress when global routing is off.
+    """
     del operation
+    if require_account and not account_id:
+        raise ValueError("require_account needs an account_id")
     try:
-        binding = await _lookup_account_binding(session, account_id) if account_id else None
+        if require_account:
+            binding = await _lookup_existing_account_binding(
+                session, account_id, allow_pending_deletion=allow_pending_deletion
+            )
+        else:
+            binding = await _lookup_account_binding(session, account_id) if account_id else None
     except OperationalError as exc:
         if strict is True or not _is_missing_upstream_proxy_schema(exc):
             raise
@@ -108,6 +130,28 @@ async def _lookup_account_binding(session: AsyncSession, account_id: str | None)
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def _lookup_existing_account_binding(
+    session: AsyncSession,
+    account_id: str | None,
+    *,
+    allow_pending_deletion: bool,
+) -> AccountProxyBinding | None:
+    statement = (
+        select(Account.id, AccountProxyBinding)
+        .outerjoin(
+            AccountProxyBinding,
+            and_(AccountProxyBinding.account_id == Account.id, AccountProxyBinding.is_active.is_(True)),
+        )
+        .where(Account.id == account_id)
+    )
+    if not allow_pending_deletion:
+        statement = statement.where(Account.delete_requested_at.is_(None))
+    row = (await session.execute(statement.limit(1))).first()
+    if row is None:
+        raise UpstreamProxyRouteError(ACCOUNT_NOT_FOUND_REASON, account_id=account_id)
+    return row[1]
 
 
 async def _lookup_dashboard_settings(session: AsyncSession) -> DashboardSettings | None:
