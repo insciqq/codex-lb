@@ -20,9 +20,11 @@ import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-_CORE = r"(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
-_RELEASE_TAG_RE = re.compile(rf"^v{_CORE}(?:-fork\.(?P<fork>[1-9]\d*))?$")
-_RUNNING_VERSION_RE = re.compile(rf"^v?{_CORE}(?:\+fork\.(?P<fork>[1-9]\d*))?$")
+# ASCII digits only and whole-string matches: `\d` and `int()` would accept other
+# Unicode digits, and `$` would accept a trailing newline.
+_CORE = r"(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\.(?P<patch>0|[1-9][0-9]*)"
+_RELEASE_TAG_RE = re.compile(rf"v{_CORE}(?:-fork\.(?P<fork>[1-9][0-9]*))?", re.ASCII)
+_RUNNING_VERSION_RE = re.compile(rf"v?{_CORE}(?:\+fork\.(?P<fork>[1-9][0-9]*))?", re.ASCII)
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -63,12 +65,12 @@ def _from_match(match: re.Match[str] | None) -> ReleaseVersion | None:
 
 def parse_release_tag(tag: str) -> ReleaseVersion | None:
     """Parse ``vX.Y.Z`` or ``vX.Y.Z-fork.N``; anything else is not a release tag."""
-    return _from_match(_RELEASE_TAG_RE.match(tag))
+    return _from_match(_RELEASE_TAG_RE.fullmatch(tag))
 
 
 def parse_running_version(version: str) -> ReleaseVersion | None:
     """Parse the running ``X.Y.Z`` or ``X.Y.Z+fork.N``; anything else is unknown."""
-    return _from_match(_RUNNING_VERSION_RE.match(version.strip()))
+    return _from_match(_RUNNING_VERSION_RE.fullmatch(version))
 
 
 def is_newer_release(tag: str, running_version: str) -> bool:
@@ -81,7 +83,7 @@ def is_newer_release(tag: str, running_version: str) -> bool:
 
 def highest_release(tags: Iterable[str]) -> ReleaseVersion | None:
     """The highest release among ``tags``; tags of any other shape are ignored."""
-    releases = [release for tag in tags if (release := parse_release_tag(tag.strip())) is not None]
+    releases = [release for tag in tags if (release := parse_release_tag(tag)) is not None]
     return max(releases, default=None)
 
 

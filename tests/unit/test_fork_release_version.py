@@ -46,12 +46,29 @@ def test_release_tag_spellings(tag: str, semver: str, pep440: str) -> None:
         "v1.26",
         "v01.26.0",
         "v1.26.0 ",
+        " v1.26.0",
+        "v1.26.0\n",
+        "v+1.26.0",
+        "v1.26.+0",
+        "v1.25.0-fork.+2",
+        # Non-ASCII digits: fullwidth 5, Arabic-Indic 2, a superscript 2.
+        "v1.2\uff15.0",
+        "v1.\u06622.0",
+        "v1.25.0-fork.\u00b2",
         "rebuild/2026-11-21-abc1234",
         "latest",
     ],
 )
 def test_parse_release_tag_rejects_other_shapes(tag: str) -> None:
     assert parse_release_tag(tag) is None
+
+
+@pytest.mark.parametrize("tag", ["v0.0.0", "v1.25.0", "v1.25.0-fork.1", "v1.25.0-fork.10", "v10.200.3000-fork.40000"])
+def test_accepted_release_tags_round_trip(tag: str) -> None:
+    release = parse_release_tag(tag)
+    assert release is not None
+    assert release.tag == tag
+    assert parse_running_version(release.pep440) == release
 
 
 @pytest.mark.parametrize(
@@ -61,6 +78,11 @@ def test_parse_release_tag_rejects_other_shapes(tag: str) -> None:
         ("1.26.0", ReleaseVersion(1, 26, 0, 0)),
         ("1.25.0-fork.2", None),
         ("1.25.0b2", None),
+        ("1.2\uff15.0", None),
+        ("1.25.0+fork.\uff12", None),
+        (" 1.25.0", None),
+        ("1.25.0\n", None),
+        ("+1.25.0", None),
     ],
 )
 def test_parse_running_version(version: str, expected: ReleaseVersion | None) -> None:

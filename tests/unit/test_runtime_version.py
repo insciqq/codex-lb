@@ -63,6 +63,7 @@ async def test_runtime_version_reports_newer_fork_release() -> None:
         # A running version that is not a release spelling never shows a notice.
         ("1.25.0-beta.9", "v1.25.0-fork.2", False),
         ("1.25.0-fork.2", "v1.26.0", False),
+        ("1.2\uff15.0", "v1.26.0", False),
     ],
 )
 async def test_runtime_version_compares_fork_numbers(
@@ -81,7 +82,17 @@ async def test_runtime_version_compares_fork_numbers(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "latest_tag",
-    ["v1.25.0-beta.1", "v1.25.0-fork.0", "v1.25.0+fork.1", "1.26.0", "v1.26", "v01.26.0", "latest"],
+    [
+        "v1.25.0-beta.1",
+        "v1.25.0-fork.0",
+        "v1.25.0+fork.1",
+        "1.26.0",
+        "v1.26",
+        "v01.26.0",
+        "v1.2\uff16.0",
+        " v1.26.0",
+        "latest",
+    ],
 )
 async def test_runtime_version_ignores_tags_that_are_not_fork_releases(latest_tag: str) -> None:
     service = RuntimeVersionService(current_version="1.25.0+fork.1", ttl_seconds=60)

@@ -109,7 +109,7 @@ class RuntimeVersionService:
         raw_version = data.get("tag_name") if isinstance(data, dict) else None
         if not isinstance(raw_version, str):
             raise RuntimeError(f"GitHub release tag_name is not a string: {raw_version!r}")
-        release = parse_release_tag(raw_version.strip())
+        release = parse_release_tag(raw_version)
         if release is None:
             raise RuntimeError(f"GitHub release tag_name is not a fork release tag: {raw_version!r}")
         return release
