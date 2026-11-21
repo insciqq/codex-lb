@@ -10,8 +10,8 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 
 | Status | Pull requests | Meaning |
 |---|---|---|
-| taken | 46 | ported from the upstream PR into the fork |
-| taken with changes | 5 | ported, with the fork's changes noted |
+| taken | 43 | ported from the upstream PR into the fork |
+| taken with changes | 8 | ported, with the fork's changes noted |
 | own-fix | 0 | not taken; the problem is fixed by the fork's own commits |
 | rejected | 30 | reviewed and not taken, for the reason given |
 | superseded | 46 | replaced by another PR |
@@ -44,9 +44,9 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [1938](https://github.com/Soju06/codex-lb/pull/1938) | feat(accounts): add encrypted portable account bundles | open | out-of-scope | Encrypted portable multi-account bundle export and import, with new Alembic revisions.; issues [850](https://github.com/Soju06/codex-lb/issues/850) |
 | [1952](https://github.com/Soju06/codex-lb/pull/1952) | fix(proxy): preserve tool search pairs through replay | open | pending | - |
 | [1962](https://github.com/Soju06/codex-lb/pull/1962) | fix(proxy): preserve half-open probe ownership during cleanup | open | pending | - |
-| [2001](https://github.com/Soju06/codex-lb/pull/2001) | fix(proxy): release payload owner after pre-visible quota rejection | open | taken | issues [1924](https://github.com/Soju06/codex-lb/issues/1924) |
+| [2001](https://github.com/Soju06/codex-lb/pull/2001) | fix(proxy): release payload owner after pre-visible quota rejection | open | taken with changes | changes: Ownership is released only for supported reasoning and compaction item shapes; any other item carrying encrypted content keeps the first dispatch account.; issues [1924](https://github.com/Soju06/codex-lb/issues/1924) |
 | [2048](https://github.com/Soju06/codex-lb/pull/2048) | fix(proxy): preserve exhausted sticky failover | open | rejected | The sticky failover bug it targets is already fixed on main by PR 2078; what remains relaxes early recovery of rate-limited accounts through a large rewrite of the balancer recovery helpers that was not re-reviewed. |
-| [2069](https://github.com/Soju06/codex-lb/pull/2069) | fix(proxy): recover unanchored quota replay | open | taken with changes | changes: Rebased on PR 2001: ciphertext-only bodies fail over unchanged there, and the spec delta is reconciled with that requirement.; issues [2068](https://github.com/Soju06/codex-lb/issues/2068) |
+| [2069](https://github.com/Soju06/codex-lb/pull/2069) | fix(proxy): recover unanchored quota replay | open | taken with changes | changes: Rebased on PR 2001 with the spec delta reconciled; the post-refresh quota rejection also projects the soft owner before the failover decision.; issues [2068](https://github.com/Soju06/codex-lb/issues/2068) |
 | [2075](https://github.com/Soju06/codex-lb/pull/2075) | fix(proxy): keep frameless bridge drops account neutral | open | pending | - |
 | [2085](https://github.com/Soju06/codex-lb/pull/2085) | feat(models): add gpt-6 astra catalog support | open | taken | - |
 | [2088](https://github.com/Soju06/codex-lb/pull/2088) | fix(http-bridge): wait for aborted bridge owner before retrying admission | open | pending | - |
@@ -83,7 +83,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2324](https://github.com/Soju06/codex-lb/pull/2324) | feat(proxy): forward explicit compact requests to model sources | open | out-of-scope | Forwards explicit compact requests to model sources, a new capability.; issues [2318](https://github.com/Soju06/codex-lb/issues/2318) |
 | [2325](https://github.com/Soju06/codex-lb/pull/2325) | feat(cli): bound whole-home retag planning and report progress | open | out-of-scope | CLI retag performance work and a new progress flag.; issues [1636](https://github.com/Soju06/codex-lb/issues/1636) |
 | [2326](https://github.com/Soju06/codex-lb/pull/2326) | fix(warmup): preserve live reset evidence across skipped polls | open | pending | - |
-| [2332](https://github.com/Soju06/codex-lb/pull/2332) | fix(proxy): fail over account-local model rejection | open | taken | - |
+| [2332](https://github.com/Soju06/codex-lb/pull/2332) | fix(proxy): fail over account-local model rejection | open | taken with changes | changes: The HTTP bridge sends model_not_found through the same bounded model fallback as the legacy entitlement rejection. |
 | [2344](https://github.com/Soju06/codex-lb/pull/2344) | feat(health): expose request-persistence ownership during drain | open | out-of-scope | New request-persistence ownership fields in the drain status.; issues [2343](https://github.com/Soju06/codex-lb/issues/2343) |
 | [2345](https://github.com/Soju06/codex-lb/pull/2345) | fix(proxy): preserve local quarantine evidence during completion | open | pending | - |
 | [2377](https://github.com/Soju06/codex-lb/pull/2377) | fix(dashboard): calm the telemetry consent dialog | open | out-of-scope | A redesign of the telemetry consent dialog; no defect is fixed. |
@@ -170,7 +170,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2623](https://github.com/Soju06/codex-lb/pull/2623) | chore(deps): bump the python-minor-patch group across 1 directory with 22 updates | closed | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
 | [2624](https://github.com/Soju06/codex-lb/pull/2624) | fix(proxy): record the resolved upstream transport, not auto | closed | rejected | Changes a telemetry label contract that awaits a maintainer decision; recording auto matches the existing spec scenario. |
 | [2625](https://github.com/Soju06/codex-lb/pull/2625) | fix(api-keys): expire elapsed samples in the /v1/usage aggregate | open | taken with changes | changes: Only the reset_at expiry fix is taken; the bundled pool rate limits and backend relay are a feature and are left out. |
-| [2626](https://github.com/Soju06/codex-lb/pull/2626) | fix(proxy): preserve quota reset evidence in retry health | closed | taken with changes | changes: Only the direct WebSocket call sites, using the rejection-time deadline normalizer from PR 2728; the HTTP bridge part is covered by PR 2728. |
+| [2626](https://github.com/Soju06/codex-lb/pull/2626) | fix(proxy): preserve quota reset evidence in retry health | closed | taken with changes | changes: Only the direct WebSocket call sites, using the rejection-time normalizer from PR 2728; keyed owner-pinned terminals queue the penalty until settlement. |
 | [2627](https://github.com/Soju06/codex-lb/pull/2627) | fix(proxy): recover owned HTTP sessions during transient backoff | closed | pending | - |
 | [2628](https://github.com/Soju06/codex-lb/pull/2628) | fix(proxy): honor poisoned fallback keys before bridge anchor planning | open | pending | - |
 | [2630](https://github.com/Soju06/codex-lb/pull/2630) | fix(shutdown): bound managed HTTP client close | open | taken | - |
@@ -258,7 +258,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2725](https://github.com/Soju06/codex-lb/pull/2725) | feat(accounts): redeem all eligible reset credits in one action | open | out-of-scope | A new bulk action to redeem all eligible reset credits.; issues [2514](https://github.com/Soju06/codex-lb/issues/2514) |
 | [2726](https://github.com/Soju06/codex-lb/pull/2726) | chore(deps): bump opentelemetry-api from 1.44.0 to 1.45.2 | open | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
 | [2727](https://github.com/Soju06/codex-lb/pull/2727) | chore(deps): bump dnspython from 2.8.0 to 2.9.2 | open | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
-| [2728](https://github.com/Soju06/codex-lb/pull/2728) | fix(proxy): retain upstream usage-limit reset deadline in deferred keyed health penalties | open | taken | - |
+| [2728](https://github.com/Soju06/codex-lb/pull/2728) | fix(proxy): retain upstream usage-limit reset deadline in deferred keyed health penalties | open | taken with changes | changes: Raw HTTP stream penalties are anchored at rejection time too, and a deadline that elapses before the deferred write keeps only the minimum cooldown. |
 | [2729](https://github.com/Soju06/codex-lb/pull/2729) | fix(core): harden proxy trust and restore client compatibility | closed | superseded | superseded by [2632](https://github.com/Soju06/codex-lb/pull/2632); Bundles PRs 2512, 2632, 2633, 2638, 2654, 2682 and 2692, which are taken individually. |
 | [2731](https://github.com/Soju06/codex-lb/pull/2731) | fix(proxy): do not replay an unknown WebSocket anchor's delta without the anchor | open | pending | - |
 | [2732](https://github.com/Soju06/codex-lb/pull/2732) | fix(proxy): bounded inline images on the HTTP responses bridge | open | out-of-scope | Inline images on the HTTP bridge, on by default, with a new setting; the narrower PRs 2503 and 2539 address the related defects. |
@@ -450,3 +450,8 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(proxy): keep the effort pin across source overrides and compact | [2664](https://github.com/Soju06/codex-lb/issues/2664) | - |
 | fix(proxy): keep the service facade within its line ratchet | - | line-ratchet fit for the upstream PR 2728 |
 | fix(reset-credits): let the fresh fetch decide when no snapshot is cached | [2693](https://github.com/Soju06/codex-lb/issues/2693) | - |
+| fix(proxy): validate every field of an encrypted item before quota failover | - | hardening of the upstream PR 2001 ciphertext-only fence |
+| fix(proxy): project the soft owner before the post-refresh quota decision | [2068](https://github.com/Soju06/codex-lb/issues/2068) | hardening of the upstream PR 2069 post-refresh path |
+| fix(proxy): anchor deferred HTTP stream penalties at rejection time | - | hardening of the upstream PR 2728 deferred reset deadline |
+| fix(proxy): defer keyed owner-pinned WebSocket quota penalties to settlement | - | hardening of the upstream PR 2626 WebSocket settlement order |
+| fix(proxy): give HTTP bridge model\_not\_found the bounded model fallback | - | hardening of the upstream PR 2332 HTTP bridge path |

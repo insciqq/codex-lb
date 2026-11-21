@@ -54,6 +54,7 @@ status = "pending"
 title = "fix(proxy): release payload owner after pre-visible quota rejection"
 state = "open"
 status = "pending"
+rework = "Ownership is released only for supported reasoning and compaction item shapes; any other item carrying encrypted content keeps the first dispatch account."
 
 [pr.2048]
 title = "fix(proxy): preserve exhausted sticky failover"
@@ -66,7 +67,7 @@ title = "fix(proxy): recover unanchored quota replay"
 state = "open"
 status = "pending"
 issues = [2068]
-rework = "Rebased on PR 2001: ciphertext-only bodies fail over unchanged there, and the spec delta is reconciled with that requirement."
+rework = "Rebased on PR 2001 with the spec delta reconciled; the post-refresh quota rejection also projects the soft owner before the failover decision."
 
 [pr.2075]
 title = "fix(proxy): keep frameless bridge drops account neutral"
@@ -275,6 +276,7 @@ status = "pending"
 title = "fix(proxy): fail over account-local model rejection"
 state = "open"
 status = "pending"
+rework = "The HTTP bridge sends model_not_found through the same bounded model fallback as the legacy entitlement rejection."
 
 [pr.2344]
 title = "feat(health): expose request-persistence ownership during drain"
@@ -772,7 +774,7 @@ rework = "Only the reset_at expiry fix is taken; the bundled pool rate limits an
 title = "fix(proxy): preserve quota reset evidence in retry health"
 state = "closed"
 status = "pending"
-rework = "Only the direct WebSocket call sites, using the rejection-time deadline normalizer from PR 2728; the HTTP bridge part is covered by PR 2728."
+rework = "Only the direct WebSocket call sites, using the rejection-time normalizer from PR 2728; keyed owner-pinned terminals queue the penalty until settlement."
 
 [pr.2627]
 title = "fix(proxy): recover owned HTTP sessions during transient backoff"
@@ -1313,6 +1315,7 @@ reason = "PR 2690 carries the same or newer versions."
 title = "fix(proxy): retain upstream usage-limit reset deadline in deferred keyed health penalties"
 state = "open"
 status = "pending"
+rework = "Raw HTTP stream penalties are anchored at rejection time too, and a deadline that elapses before the deferred write keeps only the minimum cooldown."
 
 [pr.2729]
 title = "fix(core): harden proxy trust and restore client compatibility"
