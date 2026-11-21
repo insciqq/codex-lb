@@ -60,3 +60,16 @@ serialized output and not inside a string literal that the length shortcuts
 (`instructions` >= 8192 chars, or a single chunk that alone covers the
 remaining budget) prove the cap without encoding. Surrogates skipped that way
 yield the 8192 cap like any other large payload.
+
+## Quota privacy: known limitation for rate-limit errors
+
+`hide_upstream_quota_from_api_keys` hides the pooled quota headers and the
+native `codex.rate_limits` stream events from API-key clients. It does not yet
+cover rate-limit error bodies: a 429 for an exhausted account still carries the
+upstream `plan_type`, `resets_at` and `resets_in_seconds` fields, for example on
+`/backend-api/codex/responses/compact` and on HTTP bridge startup errors, and
+the same fields reach in-stream `response.failed` events and WebSocket error
+events. Covering them needs one downstream rule for every error surface, which
+keeps the original error for account health and retry decisions and decides
+whether a hidden client still gets a reset hint it can act on; a fix limited to
+two routes would leave the others open.
