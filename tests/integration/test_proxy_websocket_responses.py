@@ -1040,7 +1040,97 @@ def test_backend_responses_websocket_selection_bound_model_not_found_surfaces_or
     assert event["error"]["code"] == "model_not_found"
 
 
-def test_backend_responses_websocket_selection_bound_proxy_pre_dispatch_failure_still_fails_over(
+@pytest.mark.parametrize("namespaced", [True, False], ids=["namespaced", "plain"])
+def test_backend_responses_websocket_handshake_model_not_found_keeps_unanchored_namespaced_history(
+    app_instance,
+    monkeypatch,
+    namespaced,
+):
+    """A handshake model rejection keeps a namespaced unanchored history.
+
+    The history's wire text is account-neutral, so selection does not bind
+    it; only the portability recorded from the client's request, with the
+    tool-call namespace intact, keeps it on the rejecting account. The same
+    history without a namespace still moves to the next account.
+    """
+    accounts = [
+        SimpleNamespace(id="acct_ws_handshake_ns_a", security_work_authorized=False),
+        SimpleNamespace(id="acct_ws_handshake_ns_b", security_work_authorized=False),
+    ]
+    opened_accounts: list[str] = []
+    upstream = _FakeUpstreamWebSocket(_websocket_response_batch("resp_ws_handshake_ns_moved"))
+
+    async def select_first_eligible(self, *args, **kwargs):
+        del self, args
+        excluded = set(kwargs["exclude_account_ids"])
+        eligible = [account for account in accounts if account.id not in excluded]
+        return proxy_module.AccountSelection(
+            account=cast(Account, eligible[0]) if eligible else None,
+            error_message=None,
+        )
+
+    async def reject_model_on_first(self, selected_account, headers, **kwargs):
+        del self, headers, kwargs
+        opened_accounts.append(selected_account.id)
+        if selected_account.id == accounts[0].id:
+            raise proxy_module.ProxyResponseError(
+                404,
+                proxy_module.openai_error(
+                    "model_not_found",
+                    "The model `gpt-5.4` does not exist or you do not have access to it.",
+                    error_type="invalid_request_error",
+                ),
+                failure_phase="connect",
+            )
+        return selected_account, upstream
+
+    async def classify_connect_error(self, selected_account, exc):
+        del self, selected_account, exc
+        return {"failure_class": "retryable_transient"}
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(_authorization: str | None, *, request: object | None = None):
+        return None
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget_compatible", select_first_eligible)
+    monkeypatch.setattr(proxy_module.ProxyService, "_try_open_websocket_connect_attempt", reject_model_on_first)
+    monkeypatch.setattr(proxy_module.ProxyService, "_handle_websocket_connect_error", classify_connect_error)
+
+    tool_call = dict(_NAMESPACED_SPAWN_CALL)
+    if not namespaced:
+        tool_call.pop("namespace")
+    response_create = {
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+            tool_call,
+            _NAMESPACED_SPAWN_OUTPUT,
+        ],
+        "stream": True,
+    }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect("/backend-api/codex/responses") as websocket:
+            websocket.send_text(json.dumps(response_create))
+            event = json.loads(websocket.receive_text())
+
+    if namespaced:
+        assert opened_accounts == [accounts[0].id]
+        assert event["type"] == "error"
+        assert event["status"] == 404
+        assert event["error"]["code"] == "model_not_found"
+        assert upstream.sent_text == []
+    else:
+        assert opened_accounts == [accounts[0].id, accounts[1].id]
+        assert event["type"] == "response.created"
+
+
+def test_backend_responses_websocket_selection_bound_proxy_pre_dispatch_failure_still_excludes_and_backs_off(
     app_instance,
     monkeypatch,
 ):
