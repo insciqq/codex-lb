@@ -43,6 +43,7 @@ from app.db.models import (
     HttpBridgeSessionState,
     RequestLog,
     StickySession,
+    UsageHistory,
 )
 from app.db.session import SessionLocal
 from app.dependencies import get_proxy_service_for_app
@@ -17358,6 +17359,131 @@ class _DeniesAnchoredTurnUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
                 ),
             )
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/responses", "/backend-api/codex/responses"])
+@pytest.mark.parametrize("quota_exceeded", [False, True], ids=["transient-backoff", "real-quota"])
+async def test_http_bridge_recovers_owned_full_resend_during_owner_backoff(
+    async_client, app_instance, monkeypatch, path, quota_exceeded
+):
+    """A sibling stays usable while an owned retry recovers without losing context.
+
+    Native Codex history is never anchored by the proxy, so the owned turn is a
+    complete resend that only its first account can serve. Transient error
+    backoff on that owner must not turn into ``previous_response_owner_unavailable``.
+    """
+    dashboard = _make_dashboard_settings()
+    dashboard.api_key_auth_enabled = True
+    _install_proxy_settings(monkeypatch, app_settings=_make_app_settings(enabled=True), dashboard_settings=dashboard)
+    key_response = await async_client.post("/api/api-keys/", json={"name": "owned-backoff"})
+    assert key_response.status_code == 200
+    auth = {
+        "Authorization": f"Bearer {key_response.json()['key']}",
+        "User-Agent": "codex-tui/0.163.0 (Ubuntu 24.4.0; x86_64)",
+        "originator": "codex_cli_rs",
+    }
+    owner_id = await _import_account(async_client, "acc_owned_backoff", "owned-backoff@example.com")
+    owner = await _get_account(owner_id)
+    initial_upstream = _FakeBridgeUpstreamWebSocket("resp_owned")
+    recovered_upstreams: list[_FakeBridgeUpstreamWebSocket] = []
+    sibling_upstream = _FakeBridgeUpstreamWebSocket("resp_sibling")
+    connected_accounts: list[str] = []
+
+    async def fresh_account(self, target, *, force=False, timeout_seconds):
+        return target
+
+    async def connect(headers, access_token, account_id_header, *, base_url=None, session=None):
+        connected_accounts.append(account_id_header)
+        if account_id_header != owner.chatgpt_account_id:
+            return sibling_upstream
+        if connected_accounts.count(account_id_header) == 1:
+            return initial_upstream
+        upstream = _FakeBridgeUpstreamWebSocket(f"resp_recovered_{len(recovered_upstreams)}")
+        recovered_upstreams.append(upstream)
+        return upstream
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fresh_account)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", connect)
+    headers = {**auth, "session_id": "owned-backoff-session", "thread-id": "owned-backoff-thread"}
+
+    def user(text: str) -> dict[str, Any]:
+        return {"role": "user", "content": [{"type": "input_text", "text": text}]}
+
+    first_input = [user("turn one")]
+    body = {"model": "gpt-5.1", "instructions": "Return exactly OK.", "stream": True}
+    first, first_headers = await _collect_sse_events_with_headers(
+        async_client, path, json_body={**body, "input": first_input}, headers=headers
+    )
+    headers["x-codex-turn-state"] = first_headers["x-codex-turn-state"]
+    assert not _anchored_bridge_frames(initial_upstream)
+    async with SessionLocal() as db:
+        db.add_all(
+            [
+                UsageHistory(account_id=owner_id, window="primary", used_percent=5.0, window_minutes=300),
+                UsageHistory(account_id=owner_id, window="secondary", used_percent=39.0, window_minutes=10080),
+            ]
+        )
+        await db.commit()
+
+    sibling_id = await _import_account(async_client, "acc_backoff_sibling", "backoff-sibling@example.com")
+    sibling = await _get_account(sibling_id)
+    service = get_proxy_service_for_app(app_instance)
+    selection_clock = Mock(wraps=service._load_balancer._clock)
+    selection_clock.time.return_value = time.time()
+    monkeypatch.setattr(service._load_balancer, "_clock", selection_clock)
+    async with service._http_bridge_lock:
+        owner_sessions = [s for s in service._http_bridge_sessions.values() if s.account.id == owner_id]
+    for owner_session in owner_sessions:
+        await service._close_http_bridge_session(owner_session)
+    for _ in range(3):
+        await service._handle_stream_error(owner, {"message": "Transient upstream failure"}, "server_error")
+    assert service._load_balancer._runtime[owner_id].error_count >= 3
+    sibling_events = await _collect_sse_events(
+        async_client,
+        path,
+        json_body={**body, "input": "independent sibling thread"},
+        headers={**auth, "session_id": "healthy-sibling-session", "thread-id": "healthy-sibling-thread"},
+    )
+    assert sibling_events[-1]["response"]["id"] == "resp_sibling_1"
+    assert connected_accounts[-1] == sibling.chatgpt_account_id
+    if quota_exceeded:
+        await service._load_balancer.mark_quota_exceeded(
+            owner, {"message": "Usage limit reached", "resets_at": int(time.time()) + 3600}
+        )
+
+    full_input = [
+        *first_input,
+        {"type": "reasoning", "id": "rs_owned", "encrypted_content": "owner-only-ciphertext", "summary": []},
+        first[-1]["response"]["output"][0],
+        {"type": "function_call", "call_id": "call_done", "name": "lookup", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "call_done", "output": "already completed"},
+        user("turn three"),
+    ]
+    if quota_exceeded:
+        refused = await async_client.post(path, json={**body, "input": full_input}, headers=headers)
+        assert refused.status_code == 502
+        assert refused.json()["error"]["code"] == "previous_response_owner_unavailable"
+        assert all(not upstream.sent_text for upstream in recovered_upstreams)
+    else:
+        resumed, resumed_headers = await _collect_sse_events_with_headers(
+            async_client, path, json_body={**body, "input": full_input}, headers=headers
+        )
+        recovered_upstream = recovered_upstreams[-1]
+        assert resumed[-1]["response"]["id"] == f"{recovered_upstream.response_id_prefix}_1"
+        assert sum(event.get("type") == "response.created" for event in resumed) == 1
+        assert sum(event.get("type") == "response.completed" for event in resumed) == 1
+        assert connected_accounts[-1] == owner.chatgpt_account_id
+        assert len(recovered_upstream.sent_text) == 1
+        forwarded = json.loads(recovered_upstream.sent_text[0])
+        assert "previous_response_id" not in forwarded
+        assert forwarded["input"] == full_input
+        headers["x-codex-turn-state"] = resumed_headers["x-codex-turn-state"]
+        later = await _collect_sse_events(async_client, path, json_body={**body, "input": "turn four"}, headers=headers)
+        assert later[-1]["response"]["id"] == f"{recovered_upstream.response_id_prefix}_2"
+        assert len(recovered_upstream.sent_text) == 2
+    assert len(sibling_upstream.sent_text) == 1
+    assert "owner-only-ciphertext" not in sibling_upstream.sent_text[0]
 
 
 @pytest.mark.asyncio

@@ -84,6 +84,12 @@ class UnboundSelectionRequest(Generic[SelectionInputsT]):
     api_key_stream_fair_share_threshold_pct: int = 0
     # Requested model; scopes the per-model latency cohort weight of fresh draws.
     model: str | None = None
+    # ``required_account_id`` is the request's proven continuity owner (for
+    # example its previous-response or file owner). Only then may it serve its
+    # own transient error backoff. A soft preference, single-account routing,
+    # or a reuse probe that merely disables fallback keeps the backoff, so its
+    # caller handles the miss.
+    required_continuity_owner: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +223,15 @@ async def run_unbound_selection_path(
                 def _select_from(candidates: list[AccountState]) -> SelectionResult:
                     return _select_account_preferring_budget_safe(
                         candidates,
+                        # ``_prepare_sticky_selection_states`` above narrowed
+                        # ``states`` to ``required_account_id``. When that
+                        # account is the request's continuity owner there is no
+                        # sibling to fail over to, and its bounded transient
+                        # backoff would empty the pool and fail the turn as
+                        # ``continuity_owner_unavailable``. Any other required
+                        # account keeps its error backoff: the caller falls back
+                        # or fails as before.
+                        hard_owner_pool=request.required_continuity_owner,
                         prefer_earlier_reset=prefer_earlier_reset_accounts,
                         prefer_earlier_reset_window=prefer_earlier_reset_window,
                         routing_strategy=routing_strategy,

@@ -870,6 +870,7 @@ class LoadBalancer:
                     relative_availability_power=relative_availability_power,
                     relative_availability_top_k=relative_availability_top_k,
                     required_account_id=required_account_id,
+                    required_continuity_owner=required_continuity_owner,
                     budget_threshold_pct=budget_threshold_pct,
                     secondary_budget_threshold_pct=secondary_budget_threshold_pct,
                     routing_costs_by_account_id=routing_costs_by_account_id,
@@ -947,6 +948,7 @@ class LoadBalancer:
                     relative_availability_power=relative_availability_power,
                     relative_availability_top_k=relative_availability_top_k,
                     required_account_id=required_account_id,
+                    required_continuity_owner=required_continuity_owner,
                     budget_threshold_pct=budget_threshold_pct,
                     secondary_budget_threshold_pct=secondary_budget_threshold_pct,
                     routing_costs_by_account_id=routing_costs_by_account_id,
@@ -1660,6 +1662,7 @@ class LoadBalancer:
         allow_usage_exhaustion_error: bool = True,
         usage_exhaustion_states: Iterable[AccountState] | None = None,
         sticky_refresh_skip_deadline: datetime | None = None,
+        hard_owner_pool: bool = False,
         redact_sensitive_details: bool = False,
     ) -> _StickySelectionOutcome:
         return await _run_select_with_stickiness(
@@ -1687,6 +1690,7 @@ class LoadBalancer:
             allow_usage_exhaustion_error=allow_usage_exhaustion_error,
             usage_exhaustion_states=usage_exhaustion_states,
             sticky_refresh_skip_deadline=sticky_refresh_skip_deadline,
+            hard_owner_pool=hard_owner_pool,
             overload_backoff_runtime=self._runtime,
             clock=self._clock,
             redact_sensitive_details=redact_sensitive_details,

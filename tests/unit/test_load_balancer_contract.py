@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator, Collection
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -11,6 +12,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 import app.modules.proxy.load_balancer as load_balancer_module
+import app.modules.proxy.service as proxy_service
+from app.core.balancer.logic import RoutingStrategy
 from app.db.models import Account, AccountStatus, StickySession, StickySessionKind, UsageHistory
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -347,6 +350,126 @@ async def test_required_continuity_owner_miss_does_not_mark_healthy_pool_degrade
     assert selection.error_code == load_balancer_module.CONTINUITY_OWNER_UNAVAILABLE
     assert degraded_reasons == []
     assert normal_calls == []
+
+
+def _in_transient_backoff(balancer: LoadBalancer, account: Account) -> None:
+    balancer._runtime[account.id] = load_balancer_module.RuntimeState(
+        error_count=5,
+        last_error_at=time.time() - 1.0,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sticky", [False, True], ids=["unbound", "soft-sticky"])
+async def test_required_continuity_owner_in_transient_backoff_is_still_admitted(
+    selection_cache: AccountSelectionCache,
+    sticky: bool,
+) -> None:
+    """A pool narrowed to the request's owner has no sibling to fail over to.
+
+    ``_prepare_sticky_selection_states`` narrows to ``required_account_id``, so
+    a bounded transient backoff on that owner empties the pool and the turn
+    dies as ``continuity_owner_unavailable`` even though the account is ACTIVE
+    and merely serving a backoff it would leave in seconds.
+    """
+    owner = _account("contract-backoff-owner")
+    available_alternate = _account("contract-backoff-alternate")
+    balancer, _, _, _ = _balancer([owner, available_alternate], selection_cache)
+    _in_transient_backoff(balancer, owner)
+
+    selection = await balancer.select_account(
+        "contract-backoff-session" if sticky else None,
+        sticky_kind=StickySessionKind.PROMPT_CACHE if sticky else None,
+        required_account_id=owner.id,
+        lease_kind="stream",
+        required_account_is_ownership_constraint=True,
+        required_continuity_owner=True,
+    )
+
+    assert selection.account is not None
+    assert selection.account.id == owner.id
+    assert selection.error_code is None
+    # Selection alone keeps the health evidence.
+    assert balancer._runtime[owner.id].error_count == 5
+
+
+@pytest.mark.asyncio
+async def test_hard_sticky_owner_in_transient_backoff_is_still_admitted(
+    selection_cache: AccountSelectionCache,
+) -> None:
+    owner = _account("contract-hard-backoff-owner")
+    available_alternate = _account("contract-hard-backoff-alternate")
+    balancer, _, _, sticky_repo = _balancer([owner, available_alternate], selection_cache)
+    sticky_repo.account_id = owner.id
+    _in_transient_backoff(balancer, owner)
+
+    selection = await balancer.select_account(
+        "contract-hard-backoff-turn-state",
+        sticky_kind=StickySessionKind.CODEX_SESSION,
+        lease_kind="stream",
+    )
+
+    assert selection.account is not None
+    assert selection.account.id == owner.id
+    assert sticky_repo.account_id == owner.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sticky", [False, True], ids=["unbound", "soft-sticky"])
+@pytest.mark.parametrize(
+    ("routing_strategy", "fallback_disabled"),
+    [("capacity_weighted", False), ("single_account", False), ("capacity_weighted", True)],
+    ids=["soft-preference", "single-account", "reuse-probe"],
+)
+async def test_non_owner_required_account_in_transient_backoff_keeps_its_error_backoff(
+    selection_cache: AccountSelectionCache,
+    sticky: bool,
+    routing_strategy: RoutingStrategy,
+    fallback_disabled: bool,
+) -> None:
+    """Only a continuity owner may serve its own error backoff.
+
+    The service also passes a soft preferred account, the configured single
+    account, and a reuse probe (fallback disabled only to test whether the
+    current account may be reused) as ``required_account_id``. None of them
+    proves ownership, so none may bypass the account's error backoff: the
+    caller falls back to the pool or handles the miss.
+    """
+    preferred = _account("contract-soft-backoff-preferred")
+    healthy = _account("contract-soft-backoff-healthy")
+    balancer, _, _, _ = _balancer([preferred, healthy], selection_cache)
+    _in_transient_backoff(balancer, preferred)
+
+    selection = await balancer.select_account(
+        "contract-soft-backoff-session" if sticky else None,
+        sticky_kind=StickySessionKind.PROMPT_CACHE if sticky else None,
+        required_account_id=preferred.id,
+        required_account_is_ownership_constraint=fallback_disabled,
+        routing_strategy=routing_strategy,
+        lease_kind="stream",
+    )
+
+    assert selection.account is None
+    assert balancer._runtime[preferred.id].error_count == 5
+
+
+@pytest.mark.asyncio
+async def test_required_continuity_owner_paused_still_fails_closed(
+    selection_cache: AccountSelectionCache,
+) -> None:
+    owner = _account("contract-paused-owner")
+    owner.status = AccountStatus.PAUSED
+    available_alternate = _account("contract-paused-alternate")
+    balancer, _, _, _ = _balancer([owner, available_alternate], selection_cache)
+
+    selection = await balancer.select_account(
+        required_account_id=owner.id,
+        required_continuity_owner=True,
+        lease_kind="stream",
+    )
+
+    assert selection.account is None
+    assert selection.error_code == load_balancer_module.CONTINUITY_OWNER_UNAVAILABLE
 
 
 @pytest.mark.asyncio
@@ -981,3 +1104,158 @@ async def test_non_sticky_cache_generation_change_reselects_and_releases_once(
 
     await balancer.release_account_lease(selection.lease)
     assert await balancer.account_pressure_snapshot(account.id) == (0, 0, 0.0)
+
+
+def _service_with_balancer(
+    balancer: LoadBalancer,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    routing_strategy: str = "capacity_weighted",
+    single_account_id: str | None = None,
+) -> proxy_service.ProxyService:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    service._load_balancer = balancer
+    settings = SimpleNamespace(
+        routing_strategy=routing_strategy,
+        single_account_id=single_account_id,
+        sticky_reallocation_budget_threshold_pct=95.0,
+    )
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=settings)),
+    )
+    return service
+
+
+@pytest.mark.asyncio
+async def test_service_soft_preferred_account_in_backoff_falls_back_to_healthy_sibling(
+    selection_cache: AccountSelectionCache,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preferred = _account("service-soft-preferred")
+    healthy = _account("service-soft-healthy")
+    balancer, _, _, _ = _balancer([preferred, healthy], selection_cache)
+    _in_transient_backoff(balancer, preferred)
+    service = _service_with_balancer(balancer, monkeypatch)
+
+    selection = await service._select_account_with_budget(
+        time.monotonic() + 60.0,
+        request_id="req-soft-preferred-backoff",
+        kind="stream",
+        prefer_earlier_reset_window="secondary",
+        preferred_account_id=preferred.id,
+        fallback_on_preferred_account_unavailable=True,
+    )
+
+    assert selection.account is not None
+    assert selection.account.id == healthy.id
+
+
+@pytest.mark.asyncio
+async def test_service_required_owner_in_backoff_is_served_on_its_owner(
+    selection_cache: AccountSelectionCache,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = _account("service-required-owner")
+    healthy = _account("service-required-healthy")
+    balancer, _, _, _ = _balancer([owner, healthy], selection_cache)
+    _in_transient_backoff(balancer, owner)
+    service = _service_with_balancer(balancer, monkeypatch)
+
+    selection = await service._select_account_with_budget(
+        time.monotonic() + 60.0,
+        request_id="req-required-owner-backoff",
+        kind="stream",
+        prefer_earlier_reset_window="secondary",
+        preferred_account_id=owner.id,
+        preferred_account_is_continuity_owner=True,
+        fallback_on_preferred_account_unavailable=False,
+    )
+
+    assert selection.account is not None
+    assert selection.account.id == owner.id
+
+
+@pytest.mark.asyncio
+async def test_service_single_account_routing_keeps_error_backoff(
+    selection_cache: AccountSelectionCache,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = _account("service-single-selected")
+    other = _account("service-single-other")
+    balancer, _, _, _ = _balancer([selected, other], selection_cache)
+    _in_transient_backoff(balancer, selected)
+    service = _service_with_balancer(
+        balancer,
+        monkeypatch,
+        routing_strategy="single_account",
+        single_account_id=selected.id,
+    )
+
+    selection = await service._select_account_with_budget(
+        time.monotonic() + 60.0,
+        request_id="req-single-account-backoff",
+        kind="stream",
+        prefer_earlier_reset_window="secondary",
+    )
+
+    assert selection.account is None
+    assert balancer._runtime[selected.id].error_count == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bridge", [False, True], ids=["websocket-revalidate", "http-bridge-reconnect"])
+async def test_movable_reuse_probe_keeps_error_backoff(
+    selection_cache: AccountSelectionCache,
+    monkeypatch: pytest.MonkeyPatch,
+    bridge: bool,
+) -> None:
+    """A reuse probe disables fallback only to test the current account.
+
+    The open-WebSocket revalidation and the HTTP bridge reconnect that reuses
+    its stream lease both ask for the current account with fallback disabled.
+    A backed-off account must miss there, so the WebSocket moves the turn and
+    the bridge falls through to a fresh selection on the healthy sibling.
+    """
+    from tests.unit.test_proxy_http_bridge import _make_bridge_session
+
+    current, sibling = (_account(account_id, security_work_authorized=True) for account_id in ("A", "B"))
+    balancer, _, _, _ = _balancer([current, sibling], selection_cache)
+    service = _service_with_balancer(balancer, monkeypatch)
+    state = proxy_service._WebSocketRequestState(
+        "req-movable-reuse",
+        "gpt-5.1",
+        None,
+        None,
+        None,
+        time.monotonic(),
+        require_security_work_authorized=not bridge,
+    )
+    lease = (await balancer.select_account(required_account_id=current.id, lease_kind="stream")).lease
+    await balancer.record_errors(current, 3)
+    if not bridge:
+        selected, _, _ = await service._revalidate_open_websocket_account(current, request_state=state, api_key=None)
+        assert selected is None
+        return
+
+    session = _make_bridge_session(key=proxy_service._HTTPBridgeSessionKey("prompt_cache", "pc", None))
+    session.headers = {}
+    session.account = current
+    session.account_lease = lease
+    session.affinity = proxy_service._AffinityPolicy(key="pc", kind=StickySessionKind.PROMPT_CACHE)
+
+    class _Selected(Exception):
+        pass
+
+    async def stop_at_selection(account: Account, **kwargs: object) -> Account:
+        del kwargs
+        raise _Selected(account.id)
+
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", stop_at_selection)
+    with pytest.raises(_Selected, match="^B$"):
+        await service._reconnect_http_bridge_session(
+            session,
+            request_state=state,
+            dashboard_settings=cast(Any, SimpleNamespace(prefer_earlier_reset_accounts=False)),
+        )

@@ -74,3 +74,33 @@ Source-qualified markers leave the legacy timestamp NULL, so an older binary
 safely restores conservative hard ownership during rollback. Dropping the scope
 column loses only restart-recovery state; it does not make the retained owner
 mobile.
+
+## Required-owner recovery during transient backoff
+
+A hard continuation narrows selection to its resolved owner. Its transient
+error backoff must not be mistaken for a missing owner: the usual fallback's
+comparison with other pool members cannot work when no other member exists.
+The explicit hard-owner capability admits that same account without erasing
+its health evidence. Persisted unavailability, caps, scope, security policy,
+and caller exclusions still apply.
+See `spec.md`, "Transient backoff preserves required owner availability".
+
+The capability keys on ownership evidence, not on `required_account_id`
+alone and not on a disabled fallback. The service also passes a soft
+preferred account (with a pool fallback) and the single-account routing
+target as `required_account_id`. Reuse probes, such as the open-WebSocket
+revalidation of a movable turn and the HTTP bridge reconnect that reuses its
+stream lease, disable fallback only to test whether the current account can
+serve, which also sets `required_account_is_ownership_constraint`. None of
+these is an owner. If they bypassed backoff, a backed-off soft preference
+would keep receiving traffic, single-account routing would lose error backoff
+entirely, and a reuse probe would reopen on the backed-off account instead of
+letting its caller pick a healthy sibling. Only a resolved hard sticky owner
+or `required_continuity_owner` set the capability.
+
+For example, account A serves transient backoff while a conversation's
+complete history can only be served by A. A separate thread may use B, while a
+complete resend on the original thread recovers on A with its encrypted
+reasoning and completed tool history unchanged. This neither reconstructs
+missing history nor makes that body portable to B. Real quota exhaustion still
+refuses the owned turn. The behavior requires no new setting or migration.
