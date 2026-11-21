@@ -20,7 +20,8 @@ reason = "Replaces the one-response buffer of a paused stream with back-pressure
 [pr.1905]
 title = "fix(proxy): preserve continuation ownership across source routing"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "The fork took the narrow echoed-anchor part of issue 2274 as its own fix; owner counting for unknown anchors and turn-state checks before model-source routing need a design that accounts for quota-routed models, API-key reassignment and source-issued turn tokens, scheduled after the first release."
 
 [pr.1922]
 title = "chore(main): release 1.25.0"
@@ -357,6 +358,7 @@ reason = "Transcript storage that nothing calls yet, with three Alembic revision
 title = "fix(proxy): preserve upstream quota reset metadata on terminal errors"
 state = "open"
 status = "pending"
+rework = "Only the streaming retry terminals keep the upstream reset time; the HTTP bridge branch that surfaces the first account's usage limit after a transient replacement failure is left out."
 
 [pr.2444]
 title = "fix(metrics): separate observed generation timing from request latency"
@@ -1775,7 +1777,8 @@ reason = "Upstream has not been shown to send a response.incomplete with reason 
 [issue.2274]
 title = "bug: continuations can be routed to the wrong account"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "An upstream failure that echoes the request's own anchor no longer records a new owner; owner counting for unknown anchors and turn-state checks before model-source routing are deferred past the release, because they need quota-aware candidate pools and source-issued turn-state handling."
 
 [issue.2290]
 title = "feat(model-sources): discover CLIProxyAPI catalogs and retain unavailable ownership"
