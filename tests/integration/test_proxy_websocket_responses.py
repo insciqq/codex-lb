@@ -10735,6 +10735,9 @@ def test_backend_responses_websocket_retries_model_not_found_after_temporary_pre
     upstreams = [auth_rejection, model_rejection, recovered]
     account_ids = ["acct_ws_refresh_a", "acct_ws_refresh_b"]
     accounts = [SimpleNamespace(id=account_id, security_work_authorized=False) for account_id in account_ids]
+    # The connector checks that the selected account still exists before it
+    # dispatches, so the selected accounts get database rows.
+    asyncio.run(_seed_websocket_failover_accounts(account_ids))
     selections: list[tuple[str, str | None, str | None, set[str], bool]] = []
     refreshes: list[tuple[str, bool]] = []
     opened_accounts: list[str] = []
@@ -15088,6 +15091,29 @@ _PRECREATED_MODEL_REJECTIONS = [
 ]
 
 
+async def _seed_websocket_failover_accounts(account_ids: list[str]) -> None:
+    from app.core.crypto import TokenEncryptor
+    from app.core.utils.time import utcnow
+
+    token = TokenEncryptor().encrypt("synthetic-token")
+    async with SessionLocal() as session:
+        for account_id in account_ids:
+            session.add(
+                Account(
+                    id=account_id,
+                    email=f"{account_id}@example.test",
+                    plan_type="plus",
+                    chatgpt_account_id=account_id,
+                    access_token_encrypted=token,
+                    refresh_token_encrypted=token,
+                    id_token_encrypted=token,
+                    last_refresh=utcnow(),
+                    status=AccountStatus.ACTIVE,
+                )
+            )
+        await session.commit()
+
+
 @pytest.mark.parametrize("production_connector", [False, True], ids=["fake_connector", "production_connector"])
 @pytest.mark.parametrize(("status", "error"), _PRECREATED_MODEL_REJECTIONS)
 def test_backend_responses_websocket_retries_anchored_precreated_model_rejection_with_the_fresh_body(
@@ -15121,6 +15147,10 @@ def test_backend_responses_websocket_retries_anchored_precreated_model_rejection
     if production_connector:
         # Keep both the connector and its account-selection policy real; only
         # replace the load-balancer boundary and credential/network I/O.
+        # The production connector checks that the selected account still
+        # exists before it dispatches, so both accounts get database rows.
+        asyncio.run(_seed_websocket_failover_accounts(list(failover.upstreams_by_account)))
+
         async def select_account(self, deadline, **kwargs):
             del self, deadline
             excluded = set(kwargs["exclude_account_ids"])
