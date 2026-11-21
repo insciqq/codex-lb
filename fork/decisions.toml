@@ -222,6 +222,7 @@ status = "pending"
 title = "fix(proxy): project pooled quotas into Codex rate-limit events"
 state = "closed"
 status = "pending"
+rework = "With the reviewed forward-hop fix: an owner-to-origin hop passes the quota event through unchanged, and only the origin projects or suppresses it."
 
 [pr.2310]
 title = "docs: align agent instructions with Astra prompt guidance"
@@ -1006,6 +1007,7 @@ reason = "The owner-bound replay proof can accept incomplete history and relocat
 title = "fix(proxy): classify controlled interruptions as cancelled"
 state = "open"
 status = "pending"
+rework = "Only newly recorded interruptions are classified as cancelled; legacy rows are not remapped at read time, and the bundled lockfile updates are left out."
 
 [pr.2668]
 title = "chore(async): own OAuth and refresh completion tasks"
