@@ -459,8 +459,7 @@ reason = "A new MySQL/MariaDB database backend that also changes the Alembic mig
 [pr.2503]
 title = "fix(http-bridge): keep replayed history images on the bridge"
 state = "open"
-status = "deferred"
-reason = "Changes bridge routing for image threads while two upstream proposals (PRs 2503 and 2508) compete without a maintainer decision; scheduled after the first release."
+status = "pending"
 
 [pr.2504]
 title = "fix(usage): account for cache-write tokens"
@@ -1547,7 +1546,7 @@ status = "pending"
 title = "bug: existing Codex thread can remain unusable on dead hard-affinity owner while fresh/side chat works"
 state = "open"
 status = "partial"
-reason = "Native Codex HTTP history is no longer anchored by the proxy and owner-bound history stays on its owner after a model rejection; moving a thread off an unavailable hard-affinity owner is not addressed yet."
+reason = "Native Codex HTTP history is no longer anchored by the proxy, owner-bound history stays on its owner after a model rejection, and a full resend that settles a completed tool batch and adds fresh user input can leave an unavailable owner (PR 2121); moving any other thread off an unavailable hard-affinity owner, including one that carries encrypted compaction state, is not addressed yet."
 
 [issue.1708]
 title = "ux/docs: make routing, sticky affinity, quota thresholds, warm-up, and account eligibility understandable in the dashboard"
