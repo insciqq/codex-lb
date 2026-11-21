@@ -42245,6 +42245,9 @@ def test_a_completion_clear_spares_a_strike_armed_during_settlement() -> None:
     # probe with the newly poisoned anchor.
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     session = _make_bridge_session(key_value="bridge-clear-window-strike")
+    # Registered, so the clear is refused by the generation fence alone and
+    # not by the completing session's ownership of the key.
+    service._http_bridge_sessions[session.key] = session
     captured_fence = http_bridge_quarantine_module._http_bridge_quarantine_clear_fence(service, session.key)
     assert captured_fence is None
     http_bridge_quarantine_module._quarantine_http_bridge_session(
