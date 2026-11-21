@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from app.core.clients.proxy import ProxyResponseError, is_confirmed_pre_dispatch_transport_error
+from app.core.clock import scheduler_for
 from app.core.upstream_proxy import UpstreamProxyRouteError
+from app.core.utils.shared_future import _await_cleanup_deferring_cancellation
 from app.db.models import Account
 from app.modules.proxy._service.http_bridge.protocol import _HTTPBridgeServiceProtocol
 from app.modules.proxy._service.support import (
@@ -106,3 +110,35 @@ class _HTTPBridgePreDispatchFailover:
         self.excluded_account_ids.add(account.id)
         self.preferred_account_id = None
         self.reallocate_sticky = True
+
+
+async def release_bridge_reconnect_lease(
+    service: _HTTPBridgeServiceProtocol,
+    session: Any,
+    lease: AccountLease,
+    *,
+    on_failure: Callable[[], None],
+) -> None:
+    """Release a bridge reconnect's selected lease even under cancellation.
+
+    The caller has already dropped its reference, so a cancellation that an
+    active cancel scope re-delivers while the session lock is acquired must
+    not skip the release. It is deferred until the release finished and then
+    raised; ``on_failure`` (completing the failed handoff) runs before any
+    error leaves.
+    """
+
+    async def release() -> None:
+        async with session.pending_lock:
+            if session.account_lease is not None and lease.lease_id == session.account_lease.lease_id:
+                session.account_lease = None
+        await service._load_balancer.release_account_lease(lease)
+
+    try:
+        cancellation = await _await_cleanup_deferring_cancellation(release(), scheduler=scheduler_for(service))
+    except BaseException:
+        on_failure()
+        raise
+    if cancellation is not None:
+        on_failure()
+        raise cancellation

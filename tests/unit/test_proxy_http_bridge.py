@@ -12150,6 +12150,53 @@ async def test_create_http_bridge_session_releases_lease_when_forced_refresh_tim
 
 
 @pytest.mark.asyncio
+async def test_create_http_bridge_session_releases_lease_before_cancelled_auth_health_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second 401 gives the startup lease back before its health write runs."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    account = cast(Any, SimpleNamespace(id="acc-auth-write-cancelled", status=AccountStatus.ACTIVE, plan_type="plus"))
+    lease = proxy_service.AccountLease("lease-auth-write-cancelled", account.id, "stream", time.monotonic())
+    released_leases: list[proxy_service.AccountLease] = []
+
+    async def release_account_lease(candidate: proxy_service.AccountLease | None) -> None:
+        if candidate is not None:
+            released_leases.append(candidate)
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=_bridge_selection_settings())),
+    )
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget_compatible",
+        AsyncMock(return_value=proxy_service.AccountSelection(account=account, error_message=None, lease=lease)),
+    )
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=ProxyResponseError(401, openai_error("invalid_api_key", "expired"))),
+    )
+    monkeypatch.setattr(service, "_handle_proxy_error", AsyncMock(side_effect=asyncio.CancelledError()))
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", release_account_lease)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service._create_http_bridge_session(
+            proxy_service._HTTPBridgeSessionKey("session_header", "sid-auth-write-cancelled", None),
+            headers={},
+            affinity=proxy_service._AffinityPolicy(key="sid-auth-write-cancelled"),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+        )
+
+    assert released_leases == [lease]
+
+
+@pytest.mark.asyncio
 async def test_create_http_bridge_session_preserves_proxy_failure_when_no_replacement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -13285,6 +13332,115 @@ async def test_reconnect_releases_replacement_lease_when_forced_refresh_fails(
     assert session.handoff_in_progress is False
     assert session.handoff_future is None
     assert session.key not in service._http_bridge_inflight_sessions
+
+
+def _install_reconnect_after_401(
+    monkeypatch: pytest.MonkeyPatch,
+    service: proxy_service.ProxyService,
+    *,
+    refresh: AsyncMock,
+    released_leases: list[proxy_service.AccountLease],
+) -> tuple[Any, proxy_service.AccountLease]:
+    replacement = cast(Any, SimpleNamespace(id="acc-reconnect-auth", status=AccountStatus.ACTIVE, plan_type="plus"))
+    replacement_lease = proxy_service.AccountLease("lease-reconnect-auth", replacement.id, "stream", time.monotonic())
+
+    async def select_account(_deadline: float, **_: object) -> proxy_service.AccountSelection:
+        return proxy_service.AccountSelection(account=replacement, error_message=None, lease=replacement_lease)
+
+    async def release_lease(lease: proxy_service.AccountLease | None) -> None:
+        # A checkpoint, so a cancellation re-delivered here would skip the release.
+        await asyncio.sleep(0)
+        if lease is not None:
+            released_leases.append(lease)
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=_bridge_selection_settings())),
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_for_stream", select_account)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", refresh)
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=ProxyResponseError(401, openai_error("invalid_api_key", "expired"))),
+    )
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", release_lease)
+    return replacement, replacement_lease
+
+
+def _reconnect_request_state(request_id: str) -> proxy_service._WebSocketRequestState:
+    return proxy_service._WebSocketRequestState(
+        request_id=request_id,
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+    )
+
+
+def _assert_reconnect_handoff_failed(service: proxy_service.ProxyService, session: Any) -> None:
+    assert session.closed is True
+    assert session.handoff_in_progress is False
+    assert session.handoff_future is None
+    assert session.key not in service._http_bridge_inflight_sessions
+
+
+@pytest.mark.asyncio
+async def test_reconnect_releases_replacement_lease_before_cancelled_auth_health_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second 401 gives the replacement lease back before its health write runs."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session()
+    released_leases: list[proxy_service.AccountLease] = []
+
+    async def refresh(account: Any, **_: object) -> Any:
+        return account
+
+    _, replacement_lease = _install_reconnect_after_401(
+        monkeypatch, service, refresh=AsyncMock(side_effect=refresh), released_leases=released_leases
+    )
+    monkeypatch.setattr(service, "_handle_proxy_error", AsyncMock(side_effect=asyncio.CancelledError()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await service._reconnect_http_bridge_session(session, request_state=_reconnect_request_state("req-auth-write"))
+
+    assert released_leases == [replacement_lease]
+    _assert_reconnect_handoff_failed(service, session)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_releases_replacement_lease_when_cancel_scope_cancels_forced_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A level-cancelled scope cannot skip the release of an already dropped lease."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session()
+    released_leases: list[proxy_service.AccountLease] = []
+    scope = anyio.CancelScope()
+    refreshes = 0
+
+    async def refresh(account: Any, **_: object) -> Any:
+        nonlocal refreshes
+        refreshes += 1
+        if refreshes > 1:
+            scope.cancel()
+            await asyncio.sleep(0)
+        return account
+
+    _, replacement_lease = _install_reconnect_after_401(
+        monkeypatch, service, refresh=AsyncMock(side_effect=refresh), released_leases=released_leases
+    )
+
+    with scope:
+        await service._reconnect_http_bridge_session(session, request_state=_reconnect_request_state("req-scope"))
+
+    assert scope.cancelled_caught
+    assert released_leases == [replacement_lease]
+    _assert_reconnect_handoff_failed(service, session)
 
 
 @pytest.mark.asyncio

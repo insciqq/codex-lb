@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import logging
 from collections import deque
-from collections.abc import Collection
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import replace
 from typing import Any, Literal, TypeVar, overload
 from uuid import uuid4
@@ -134,7 +134,10 @@ from app.modules.proxy._service.http_bridge.helpers import (
 )
 from app.modules.proxy._service.http_bridge.owner_forwarding import _HTTPBridgeOwnerForwardingMixin
 from app.modules.proxy._service.http_bridge.protocol import _HTTPBridgeServiceProtocol
-from app.modules.proxy._service.http_bridge.proxy_failover import _HTTPBridgePreDispatchFailover
+from app.modules.proxy._service.http_bridge.proxy_failover import (
+    _HTTPBridgePreDispatchFailover,
+    release_bridge_reconnect_lease,
+)
 from app.modules.proxy._service.http_bridge.quarantine import (
     _http_bridge_session_key_quarantined,
 )
@@ -1842,27 +1845,25 @@ class _HTTPBridgeMixin(
                     ):
                         selected_account_lease = None
                         continue
+                    # The lease goes back before any health write, so a failed
+                    # or cancelled write cannot strand it.
+                    await self._load_balancer.release_account_lease(selected_account_lease)
+                    selected_account_lease = None
                     if retry_exc.status_code != 401:
-                        await self._load_balancer.release_account_lease(selected_account_lease)
-                        selected_account_lease = None
                         raise
                     await self._handle_proxy_error(account, retry_exc)
                     if require_preferred_account and selected_is_preferred:
-                        await self._load_balancer.release_account_lease(selected_account_lease)
-                        selected_account_lease = None
                         raise
-                    await proxy_connect_failover.release_and_exclude(self, account, selected_account_lease)
-                    selected_account_lease = None
+                    await proxy_connect_failover.release_and_exclude(self, account, None)
                     continue
                 except RefreshError as refresh_exc:
+                    await self._load_balancer.release_account_lease(selected_account_lease)
+                    selected_account_lease = None
                     if refresh_exc.is_permanent:
                         await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
                     if require_preferred_account and selected_is_preferred:
-                        await self._load_balancer.release_account_lease(selected_account_lease)
-                        selected_account_lease = None
                         raise
-                    await proxy_connect_failover.release_and_exclude(self, account, selected_account_lease)
-                    selected_account_lease = None
+                    await proxy_connect_failover.release_and_exclude(self, account, None)
                     continue
                 except BaseException as err:
                     required = require_preferred_account and selected_is_preferred
@@ -1871,17 +1872,16 @@ class _HTTPBridgeMixin(
                         raise
                     continue
             except RefreshError as exc:
+                # Every outcome gives the lease back; do it before the health write.
+                await self._load_balancer.release_account_lease(selected_account_lease)
+                selected_account_lease = None
                 if exc.is_permanent:
                     await self._load_balancer.mark_permanent_failure(account, exc.code)
                 if selected_is_preferred and self._remaining_budget_seconds(deadline) > 0:
                     if retry_same_account_once and not exc.is_permanent:
                         retry_same_account_once = False
-                        await self._load_balancer.release_account_lease(selected_account_lease)
-                        selected_account_lease = None
                         continue
                     if require_preferred_account:
-                        await self._load_balancer.release_account_lease(selected_account_lease)
-                        selected_account_lease = None
                         raise ProxyResponseError(
                             503,
                             openai_error(
@@ -1890,12 +1890,9 @@ class _HTTPBridgeMixin(
                                 error_type="server_error",
                             ),
                         ) from exc
-                    await proxy_connect_failover.release_and_exclude(self, account, selected_account_lease)
-                    selected_account_lease = None
+                    await proxy_connect_failover.release_and_exclude(self, account, None)
                     continue
                 if exc.is_permanent:
-                    await self._load_balancer.release_account_lease(selected_account_lease)
-                    selected_account_lease = None
                     raise ProxyResponseError(
                         401,
                         openai_error(
@@ -1906,8 +1903,6 @@ class _HTTPBridgeMixin(
                     ) from exc
                 if request_stage == "first_turn":
                     _record_bridge_first_turn_timeout()
-                await self._load_balancer.release_account_lease(selected_account_lease)
-                selected_account_lease = None
                 _raise_proxy_unavailable(exc.message or "Temporary upstream refresh failure")
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if selected_is_preferred and self._remaining_budget_seconds(deadline) > 0:
@@ -2089,13 +2084,14 @@ class _HTTPBridgeMixin(
         async def release_selected_account_lease() -> None:
             nonlocal selected_account_lease
             lease, selected_account_lease = selected_account_lease, None
-            if lease is None:
-                return
-            async with session.pending_lock:
-                if session.account_lease is not None and lease.lease_id == session.account_lease.lease_id:
-                    session.account_lease = None
+            if lease is not None:
+                await release_bridge_reconnect_lease(self, session, lease, on_failure=complete_failed_handoff)
+
+        async def release_before_health_write(write: Callable[..., Awaitable[object]], *args: object) -> None:
+            # A failed or cancelled health write must not strand the lease.
+            await release_selected_account_lease()
             try:
-                await self._load_balancer.release_account_lease(lease)
+                await write(*args)
             except BaseException:
                 complete_failed_handoff()
                 raise
@@ -2301,12 +2297,14 @@ class _HTTPBridgeMixin(
                         await release_selected_account_lease()
                         complete_failed_handoff()
                         raise _http_bridge_reconnect_connect_failure(retry_exc, required_preferred_account_id)
-                    await self._handle_proxy_error(account, retry_exc)
+                    await release_before_health_write(self._handle_proxy_error, account, retry_exc)
                     await abandon_selected_account_retry(account)
                     continue
                 except RefreshError as refresh_exc:
                     if refresh_exc.is_permanent:
-                        await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
+                        await release_before_health_write(
+                            self._load_balancer.mark_permanent_failure, account, refresh_exc.code
+                        )
                     await abandon_selected_account_retry(account)
                     continue
                 except BaseException:
@@ -2315,7 +2313,7 @@ class _HTTPBridgeMixin(
                     raise
             except RefreshError as exc:
                 if exc.is_permanent:
-                    await self._load_balancer.mark_permanent_failure(account, exc.code)
+                    await release_before_health_write(self._load_balancer.mark_permanent_failure, account, exc.code)
                 if selected_is_preferred and self._remaining_budget_seconds(deadline) > 0:
                     if retry_same_account_once and not exc.is_permanent:
                         retry_same_account_once = False
