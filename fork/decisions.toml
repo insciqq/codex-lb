@@ -49,7 +49,9 @@ status = "pending"
 [pr.1962]
 title = "fix(proxy): preserve half-open probe ownership during cleanup"
 state = "open"
-status = "pending"
+status = "own-fix"
+issues = [2272]
+reason = "Replaced by a narrow own fix: an absent, zero or elapsed persisted cooldown no longer loads as an expired deadline that arms a half-open lease and suppresses sibling requests; a cooldown that really expired in the same episode still admits exactly one probe."
 
 [pr.2001]
 title = "fix(proxy): release payload owner after pre-visible quota rejection"
@@ -301,7 +303,9 @@ reason = "New request-persistence ownership fields in the drain status."
 [pr.2345]
 title = "fix(proxy): preserve local quarantine evidence during completion"
 state = "open"
-status = "pending"
+status = "own-fix"
+issues = [2268]
+reason = "Replaced by a narrow own fix: quarantine generations come from one service-lifetime counter, a completion clears only the entry of the session currently registered for its key, and a strike recorded after the captured fence survives the clear."
 
 [pr.2377]
 title = "fix(dashboard): calm the telemetry consent dialog"
@@ -462,6 +466,7 @@ reason = "A new MySQL/MariaDB database backend that also changes the Alembic mig
 title = "fix(http-bridge): keep replayed history images on the bridge"
 state = "open"
 status = "pending"
+rework = "Replayed-history images stay on the bridge only for native Codex full histories, which the fork never proxy-anchors; other clients keep the image bypass, because a session-injected anchor would resend their previous answer."
 
 [pr.2504]
 title = "fix(usage): account for cache-write tokens"
