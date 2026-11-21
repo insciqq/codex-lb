@@ -44,7 +44,9 @@ None.
 - Replay and continuity decisions (`app/modules/proxy`: WebSocket and HTTP bridge classifiers, stored-context
   recording and matching, prefix trims, durable and compact proofs, cross-transport replay, tool-call dedupe) judge
   the base-equivalent input, the list the old hoist produced, so replay behaviour stays as it was; the
-  account-neutrality gate accepts Codex developer metadata. See the ADDED requirement.
-- One prompt-cache miss per existing thread after the change, a compact budget that now counts developer text, a
-  developer message inserted ahead of a trimmed stored prefix not being sent on that anchored request, and `system`
-  messages that are still hoisted: see `context.md`.
+  account-neutrality gate judges item shapes on that list too. See the ADDED requirement.
+- Anchored requests that trim a stored prefix still send new or changed developer messages from that range; durable
+  operation keys from before the change still match; developer item ids the hoist dropped are not forwarded.
+- One prompt-cache miss per existing thread after the change, a compact budget that now counts developer text, one
+  repeat of the trimmed range's developer messages after a durable reattach, and `system` messages that are still
+  hoisted: see `context.md`.

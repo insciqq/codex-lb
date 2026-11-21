@@ -10,8 +10,14 @@
 - [x] 1.3 One base-equivalent input view (`base_equivalent_input` in `app/core/openai/requests.py`, the old hoist rule
   reused) drives every replay and continuity decision: the WebSocket and bridge full-resend classifiers, stored-context
   recording and matching, stored-prefix and prior-output trims (mapped back to wire positions), the durable and compact
-  proofs, cross-transport replay eligibility, and replayed tool-call dedupe. The account-neutrality gate accepts Codex
-  developer metadata outside Lite; compact strips developer item ids from replacement payloads.
+  proofs, cross-transport replay eligibility, and replayed tool-call dedupe. The account-neutrality gate judges item shapes on
+  the same view and rejects account-owned references anywhere.
+- [x] 1.4 The stored context records the fingerprints of the stored turn's developer messages; the bridge
+  store-context and recovery trims and the WebSocket session-anchor trim send new or changed developer messages from
+  the trimmed range and skip ones already sent (all of them when the set is unknown).
+- [x] 1.5 The old hoist's Lite classification and JSON-mode decisions are recorded on the raw request
+  (`BaseHoist`), so trimmed copies and sanitized parts are judged as before; operation and recovery-attempt lookups
+  also try the pre-change frame key; developer item ids the hoist dropped are not forwarded.
 
 ## 2. Verification
 
@@ -37,3 +43,7 @@
   developer messages), `tests/unit/test_openai_requests.py` (the base-equivalent view), the compact owner-loss and
   developer-id failover tests, and the `messages` alias route tests in `tests/integration/test_openai_compat_features.py`
   and `tests/integration/test_proxy_compact.py`.
+- [x] 2.5 `tests/integration/test_http_bridge_developer_messages.py` (seven insert/change/trailing/removed cases on a
+  warm bridge across three turns; developer attachment still promotes history), the WebSocket changed-developer and
+  Lite-dedupe tests, the sanitized-JSON recovery case, the pre-upgrade operation retry, the developer-id failover, the
+  compact trailing-developer terminal case and the goal marker on a later developer line.

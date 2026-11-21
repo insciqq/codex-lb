@@ -40,13 +40,15 @@ question about it):
 - Replay and continuity: every decision judges the base-equivalent input, the list the old hoist produced (see the
   `responses-api-compat` requirement "Replay and continuity decisions judge the base-equivalent input"), so replay
   behaviour, stored contexts and tool-call dedupe match the behaviour before this change, and stored contexts
-  recorded before it stay valid. Where a decision trims a stored prefix, developer messages inside the trimmed wire
-  range go with it; a developer message a client inserts ahead of the stored history is therefore not sent on that
-  anchored request (before, it reached that request's `instructions` only).
-- Account neutrality: the gate on the forwarded payload accepts Codex developer metadata (`turn_id`,
-  `content_item_kinds`) and blank text parts beside others outside Lite. Proxy-built replacement payloads carry no
-  developer item id (compact strips it, the bridge projection strips all ids); a WebSocket or cross-transport fresh
-  replay of a client body whose developer message carries an id stays owner-bound.
+  recorded before it stay valid. An anchored request that trims a stored prefix still sends a new or changed
+  developer message from that range (before, the current developer text reached every request through
+  `instructions`) and skips one the stored turn already sent. After a reattach from a durable row the stored turn's
+  developer messages are unknown, so that one request sends the developer messages of the trimmed range again.
+- Operation keys: durable operation and recovery-attempt records from before the change still match an identical
+  retry, through a second lookup of the key with the developer text in `instructions`.
+- Account neutrality: the gate judges item shapes on the base-equivalent input and still rejects account-owned
+  references anywhere in the forwarded input. A developer message the hoist would have moved whole is forwarded
+  without its client item id, as the hoist dropped it.
 - Compact budget: developer messages now count toward the compact input budget and are trim anchors, so a compact
   request with a single very large developer message can now fail with `responses_compact_input_too_large`, where the
   same text in `instructions` was not counted.

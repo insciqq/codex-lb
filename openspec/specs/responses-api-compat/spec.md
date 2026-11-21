@@ -4192,7 +4192,10 @@ upstream rejects them on every message role. A `developer` message with no
 content left after part sanitization (`content` omitted or `null`, blank text,
 no parts, or only parts the reasoning sanitizer removes) carries no
 instruction and MUST be dropped rather than forwarded, including after the
-`messages` alias turns empty content into a blank text part. `system` messages
+`messages` alias turns empty content into a blank text part. A `developer`
+message the old hoist would have moved whole (no non-text parts, no JSON-mode
+mention) MUST be forwarded without its client item `id`, because the hoist
+dropped that id and it would tie the body to one account. `system` messages
 are still hoisted, because upstream rejects them in `input`, so a `system`
 message on a request chained through `previous_response_id` applies to that
 request only. Any `system`/`developer`-role input item carrying any other `type`
