@@ -1,8 +1,9 @@
 # Fork policy
 
 This fork tracks [Soju06/codex-lb](https://github.com/Soju06/codex-lb) and
-applies selected upstream pull requests that upstream has not merged. It adds
-no functionality of its own.
+applies selected upstream pull requests that upstream has not merged. Until the
+fork has settled with a few stable releases it adds no functionality of its
+own; feature work may be considered after that.
 
 ## Branches
 
@@ -124,11 +125,12 @@ settings that it is public before relying on anonymous pulls.
 
 * Pull requests opened in upstream Soju06/codex-lb within the fork's scope:
   bug fixes, security, compatibility with current Codex clients and the OpenAI
-  backend, dependency updates. No features; the registry records feature PRs
-  as `out-of-scope`.
+  backend, dependency updates. No features for now; the registry records
+  feature PRs as `out-of-scope`. This is revisited once the fork has a few
+  stable releases.
 * Own fixes for bugs observed in production, with `Upstream-PR: none` and
   `Upstream-Issue` when an upstream report exists.
-* No functionality from other forks and no fork-specific features.
+* No functionality from other forks and, for now, no fork-specific features.
 * One fork commit per upstream PR, keeping the PR author as the commit
   author. Squash the PR's commits when it has several.
 * No new Alembic revisions: the database schema stays identical to upstream,
