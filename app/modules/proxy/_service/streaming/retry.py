@@ -608,9 +608,20 @@ class _StreamingRetryMixin:
         payload_replay_required_account_id: str | None = None
         quota_failover_source_account_id: str | None = None
         quota_failover_rejection_logged = False
-        payload_has_only_encrypted_account_scoped_state = responses_payload_has_only_encrypted_account_scoped_state(
-            payload.to_replay_safety_payload()
-        )
+        # Scanned at first use, not per request: only a pre-visible failure
+        # needs it, and the scan walks the whole client body. The client's
+        # payload is captured here because later replays rebind ``payload``.
+        account_scoped_state_payload = payload
+        account_scoped_state_only: bool | None = None
+
+        def payload_has_only_encrypted_account_scoped_state() -> bool:
+            nonlocal account_scoped_state_only
+            if account_scoped_state_only is None:
+                account_scoped_state_only = responses_payload_has_only_encrypted_account_scoped_state(
+                    account_scoped_state_payload.to_replay_safety_payload()
+                )
+            return account_scoped_state_only
+
         file_preferred_account_id: str | None = rewritten_file_account_id
         require_preferred_account = False
         last_retryable_stream_error: _RetryableStreamError | None = None
@@ -1384,10 +1395,10 @@ class _StreamingRetryMixin:
             nonlocal quota_failover_rejection_logged
             if (
                 quota_failover_rejection_logged
-                or not payload_has_only_encrypted_account_scoped_state
                 or quota_failover_source_account_id is None
                 or quota_failover_source_account_id == account_id
                 or not _is_encrypted_content_rejection(exc)
+                or not payload_has_only_encrypted_account_scoped_state()
             ):
                 return
             upstream_code, _, _ = _stream_failure_details(exc)
@@ -2540,16 +2551,17 @@ class _StreamingRetryMixin:
                                         payload_replay_required_account_id = account.id
                                 except BaseException as exc:
                                     if register_payload_owner:
-                                        if (
-                                            payload_has_only_encrypted_account_scoped_state
-                                            and _failure_is_rate_limit_or_quota_rejection(exc)
-                                        ):
+                                        # The body is scanned only for a rate-limit or
+                                        # quota rejection, the one failure it can decide.
+                                        quota_rejected_scoped_state = (
+                                            _failure_is_rate_limit_or_quota_rejection(exc)
+                                            and payload_has_only_encrypted_account_scoped_state()
+                                        )
+                                        if quota_rejected_scoped_state:
                                             quota_failover_source_account_id = account.id
                                         elif not _failure_allows_payload_owner_reselection(
                                             exc,
-                                            payload_has_only_encrypted_account_scoped_state=(
-                                                payload_has_only_encrypted_account_scoped_state
-                                            ),
+                                            payload_has_only_encrypted_account_scoped_state=quota_rejected_scoped_state,
                                         ):
                                             payload_replay_required_account_id = account.id
                                     _log_cross_account_encrypted_reasoning_rejection(
