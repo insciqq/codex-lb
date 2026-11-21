@@ -447,9 +447,10 @@ def parse_forwarded_request(
     else:
         return None, _invalid_bridge_forward_signature_error()
     try:
+        # Raw values: the canonical check must see exactly what was sent, so
+        # an empty or whitespace-padded key is refused instead of normalised.
         original_affinity_key = _decode_bridge_affinity_key(
-            _optional_header(headers.get(HTTP_BRIDGE_AFFINITY_KEY_HEADER)),
-            # Absent and present-but-empty markers differ: only absence means raw.
+            headers.get(HTTP_BRIDGE_AFFINITY_KEY_HEADER),
             headers.get(HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER),
         )
     except ValueError:

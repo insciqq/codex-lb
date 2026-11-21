@@ -1958,3 +1958,29 @@ def test_forwarded_session_key_header_fallback_decodes_strictly(headers: dict[st
     key = _forwarded_http_bridge_session_key(headers, None)
     assert key is not None
     assert key.affinity_key == expected
+
+
+@pytest.mark.parametrize(("key", "wire_value"), [("demo", "demo "), (None, "")])
+def test_parse_forwarded_request_rejects_affinity_key_it_would_have_to_normalise(
+    key: str | None, wire_value: str
+) -> None:
+    payload = _payload()
+    context = (
+        _affinity_context(key)
+        if key is not None
+        else HTTPBridgeForwardContext(
+            origin_instance="instance-a",
+            target_instance="instance-b",
+            codex_session_affinity=True,
+            downstream_turn_state=None,
+        )
+    )
+    headers = build_owner_forward_headers(headers={}, payload=payload, context=context)
+    headers[HTTP_BRIDGE_AFFINITY_KEY_HEADER] = wire_value
+
+    parsed, error = parse_forwarded_request(headers, payload=payload, current_instance="instance-b")
+
+    assert parsed is None
+    assert error is not None
+    assert error.status_code == 400
+    assert error.payload["error"]["code"] == "bridge_forward_invalid"

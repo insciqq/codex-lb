@@ -1389,8 +1389,8 @@ base64url`; every other key MUST be sent unchanged without the encoding
 header. The forward signatures MUST cover the decoded key, and the owner MUST
 decode the key before it verifies them and before it derives the bridge session
 key. Each key MUST have exactly one accepted wire form: the owner MUST
-accept a received value and encoding marker only when they equal the
-encoding of the decoded key, so a printable key is never accepted
+accept a received value and encoding marker, compared as received without
+trimming, only when they equal the encoding of the decoded key, so a printable key is never accepted
 base64-encoded. Only an absent marker means a raw key; a present empty
 marker is invalid. Keys and decoded values MUST be strict UTF-8. A
 malformed value, a non-canonical form, an unknown encoding, or a key that is
