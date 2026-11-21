@@ -21,10 +21,13 @@ from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import app.core.utils.payload_size as payload_size_module
+import app.modules.proxy._service.http_bridge.request_submit as request_submit_module
+import app.modules.proxy._service.response_create as response_create_module
 from app.core.clients import native_egress as native_egress_module
 from app.core.clients import proxy as proxy_module
 from app.core.clients.native_egress import SubprocessNativeEgressClient
@@ -32,7 +35,10 @@ from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
 from app.core.utils.payload_size import compact_json_length, utf8_length
 from app.modules.proxy import service as proxy_service
-from app.modules.proxy._service.response_create import _fingerprint_input_items
+from app.modules.proxy._service.response_create import (
+    _fingerprint_input_items,
+    _response_create_text_with_size_guard,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -217,10 +223,71 @@ async def test_oversized_websocket_response_create_is_slimmed_without_full_copie
     # Historical screenshots were replaced by omission notices.
     assert len(prepared.text_data) < proxy_module.UPSTREAM_RESPONSE_CREATE_MAX_BYTES
     assert json.loads(prepared.text_data)["input"][-1]["content"][0]["text"] == "and now?"
-    # Sizing walks the body one input item at a time and only the slimmed
-    # frame is serialized; a full dump plus its encoding (and a whole-input
-    # fingerprint dump) peaked at twice the body.
-    assert peak() < body_bytes // 2
+    # Sizing encodes the body one input item at a time and keeps the pieces
+    # only until they pass the websocket budget, then only the slimmed frame is
+    # serialized: the peak is the budget plus the item that crosses it (which
+    # older encoders build twice), not a multiple of the body. A full dump plus
+    # its encoding (and a whole-input fingerprint dump) peaked at twice the body.
+    largest_item = max(compact_json_length(item) for item in cast(list[JsonValue], frame["input"]))
+    assert peak() < proxy_module.UPSTREAM_RESPONSE_CREATE_MAX_BYTES + 2 * largest_item + 1024 * 1024
+    assert peak() < body_bytes
+
+
+class _CountingEncoder:
+    def __init__(self, encoder: json.JSONEncoder) -> None:
+        self._encoder = encoder
+        self.encoded_chars = 0
+
+    def encode(self, value: object) -> str:
+        text = self._encoder.encode(value)
+        self.encoded_chars += len(text)
+        return text
+
+
+@pytest.mark.parametrize("path", ["bridge", "size-guard"])
+def test_routine_response_create_is_serialized_in_the_pass_that_measures_it(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    encoder = _CountingEncoder(payload_size_module._COMPACT_ENCODER)
+    monkeypatch.setattr(payload_size_module, "_COMPACT_ENCODER", encoder)
+    module_json = {module: MagicMock(wraps=json) for module in (request_submit_module, response_create_module)}
+    for module, spy in module_json.items():
+        monkeypatch.setattr(module, "json", spy)
+    payload = ResponsesRequest.model_validate(_image_heavy_payload(2 * 1024 * 1024))
+
+    if path == "bridge":
+        service = proxy_service.ProxyService(cast(Any, None))
+        _, text = service._prepare_http_bridge_request(payload, {}, api_key=None, api_key_reservation=None)
+    else:
+        request_state = proxy_service._WebSocketRequestState(
+            request_id="req_size_guard",
+            model=payload.model,
+            service_tier=None,
+            reasoning_effort=None,
+            api_key_reservation=None,
+            started_at=0.0,
+        )
+        guarded = _response_create_text_with_size_guard(
+            payload,
+            include_type_field=True,
+            client_metadata=None,
+            request_state=request_state,
+            transport="websocket",
+        )
+        assert guarded is not None
+        text = guarded
+
+    assert json.loads(text)["input"] == payload.to_payload()["input"]
+    # Measuring the body encoded it once, and that encoding became the frame:
+    # no second dump of the whole body.
+    assert encoder.encoded_chars <= len(text)
+    whole_body_dumps = [
+        call
+        for spy in module_json.values()
+        for call in spy.dumps.call_args_list
+        if isinstance(call.args[0], dict) and "input" in call.args[0] and "model" in call.args[0]
+    ]
+    assert whole_body_dumps == []
 
 
 def test_input_fingerprint_matches_the_whole_list_digest_with_bounded_memory() -> None:

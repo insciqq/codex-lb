@@ -8,6 +8,7 @@ request path multiplies with every concurrent request and retry.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import Final
 
 # Large enough that the per-slice overhead is negligible, small enough that a
@@ -40,19 +41,53 @@ def compact_json_length(value: object) -> int:
     The output is ASCII, so this is also its UTF-8 byte count. A top-level
     object is measured one member at a time, and a member that is an array one
     element at a time, so the temporary memory is bounded by the largest
-    element (one input item) instead of the whole body. Anything else is
-    measured with a single dump, which yields the same length and errors.
+    element (one input item) instead of the whole body.
+    """
+    return compact_json_dumps_within(value, -1)[0]
+
+
+def compact_json_dumps_within(value: object, max_length: int) -> tuple[int, str | None]:
+    """Measure the compact dump of ``value`` and return it if it fits ``max_length``.
+
+    Returns ``(length, text)`` where ``text`` equals
+    ``json.dumps(value, ensure_ascii=True, separators=(",", ":"))`` when its
+    length is at most ``max_length`` and is ``None`` otherwise. A top-level
+    object is encoded one member, and one array element, at a time in a single
+    pass: the pieces are joined when the total fits, and dropped as soon as
+    it passes ``max_length``, so an oversized body is only counted and never
+    held whole. Anything else is dumped in one call, with the same length and
+    errors.
     """
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        return len(_COMPACT_ENCODER.encode(value))
-    # ``{`` and ``}``, a ``:`` per member and a ``,`` between members.
-    length = 2 + 2 * len(value) - 1 if value else 2
-    for key, member in value.items():
-        length += len(_COMPACT_ENCODER.encode(key))
-        if isinstance(member, list):
-            # ``[`` and ``]`` and a ``,`` between elements.
-            length += 2 + max(len(member) - 1, 0)
-            length += sum(len(_COMPACT_ENCODER.encode(element)) for element in member)
+        text = _COMPACT_ENCODER.encode(value)
+        return len(text), text if len(text) <= max_length else None
+    pieces: list[str] | None = []
+    length = 0
+    for piece in _compact_object_pieces(value):
+        length += len(piece)
+        if pieces is None:
+            continue
+        if length <= max_length:
+            pieces.append(piece)
         else:
-            length += len(_COMPACT_ENCODER.encode(member))
-    return length
+            pieces = None
+    return length, "".join(pieces) if pieces is not None else None
+
+
+def _compact_object_pieces(value: dict[str, object]) -> Iterator[str]:
+    yield "{"
+    for index, (key, member) in enumerate(value.items()):
+        if index:
+            yield ","
+        yield _COMPACT_ENCODER.encode(key)
+        yield ":"
+        if isinstance(member, list):
+            yield "["
+            for position, element in enumerate(member):
+                if position:
+                    yield ","
+                yield _COMPACT_ENCODER.encode(element)
+            yield "]"
+        else:
+            yield _COMPACT_ENCODER.encode(member)
+    yield "}"

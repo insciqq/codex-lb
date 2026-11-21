@@ -43,7 +43,7 @@ from app.core.config.settings import DEFAULT_HOME_DIR, get_settings
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
-from app.core.utils.payload_size import compact_json_length, utf8_length
+from app.core.utils.payload_size import compact_json_dumps_within, utf8_length
 from app.modules.proxy._service.support import (
     _PENDING_TOOL_CALL_ITEM_TYPES,
     _PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE,
@@ -393,11 +393,11 @@ def _response_create_text_with_size_guard(
             or _payload_has_responses_lite_websocket_marker(upstream_payload)
         ),
     )
-    # Measured without a full dump, so an oversized body is serialized only
-    # once, after slimming.
-    payload_size = compact_json_length(upstream_payload)
+    # Serialized in the pass that measures it; an oversized body is only
+    # counted, then serialized once after slimming.
     max_bytes = _upstream_response_create_max_bytes()
-    if payload_size > max_bytes:
+    payload_size, text_data = compact_json_dumps_within(upstream_payload, max_bytes)
+    if text_data is None:
         original_payload_size = payload_size
         slim_payload_for_upstream = _service_global_or(
             "_slim_response_create_payload_for_upstream",
@@ -410,7 +410,7 @@ def _response_create_text_with_size_guard(
         )
         if slim_summary is not None:
             upstream_payload = slimmed_payload
-            payload_size = compact_json_length(upstream_payload)
+            payload_size, text_data = compact_json_dumps_within(upstream_payload, max_bytes)
             logger.warning(
                 (
                     "Slimmed response.create request_id=%s request_log_id=%s transport=%s "
@@ -425,7 +425,7 @@ def _response_create_text_with_size_guard(
                 slim_summary["historical_tool_outputs_slimmed"],
                 slim_summary["historical_images_slimmed"],
             )
-        if payload_size > max_bytes:
+        if text_data is None:
             logger.warning(
                 (
                     "Skipping oversized response.create retry body request_id=%s request_log_id=%s "
@@ -438,7 +438,7 @@ def _response_create_text_with_size_guard(
                 max_bytes,
             )
             return None
-    return json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
+    return text_data
 
 
 def _response_create_text_with_account_installation_id(

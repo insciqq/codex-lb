@@ -61,7 +61,7 @@ from app.core.openai.requests import (
 from app.core.resilience.overload import is_local_overload_error_code
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.locks import fast_lock
-from app.core.utils.payload_size import compact_json_length
+from app.core.utils.payload_size import compact_json_dumps_within
 from app.core.utils.request_id import (
     ensure_request_id,
     ensure_request_scope_id,
@@ -861,12 +861,11 @@ class _HTTPBridgeRequestSubmitMixin:
                 deduped_replayed_tool_call_count,
                 payload.previous_response_id,
             )
-        # Measured without a full dump, so an oversized body is serialized only
-        # once, after slimming.
-        payload_size = compact_json_length(upstream_payload)
+        # Serialized in the pass that measures it; an oversized body is only
+        # counted, then serialized once after slimming.
         max_bytes = _upstream_response_create_max_bytes()
-        slimmed_text: str | None = None
-        if payload_size > max_bytes:
+        payload_size, text_data = compact_json_dumps_within(upstream_payload, max_bytes)
+        if text_data is None:
             slimmed_payload, slim_summary = _slim_response_create_payload_for_upstream(
                 upstream_payload,
                 max_bytes=max_bytes,
@@ -874,7 +873,8 @@ class _HTTPBridgeRequestSubmitMixin:
             )
             if slim_summary is not None:
                 upstream_payload = slimmed_payload
-                slimmed_text = json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
+            text_data = json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
+            if slim_summary is not None:
                 logger.warning(
                     (
                         "Slimmed response.create request_id=%s request_log_id=%s transport=%s "
@@ -885,15 +885,10 @@ class _HTTPBridgeRequestSubmitMixin:
                     request_state.request_log_id,
                     transport,
                     payload_size,
-                    len(slimmed_text),
+                    len(text_data),
                     slim_summary["historical_tool_outputs_slimmed"],
                     slim_summary["historical_images_slimmed"],
                 )
-        text_data = (
-            slimmed_text
-            if slimmed_text is not None
-            else json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
-        )
         request_state.request_text = text_data
         request_state.native_codex_full_history = native_codex_full_history
         _enforce_response_create_size_limit(request_state)
