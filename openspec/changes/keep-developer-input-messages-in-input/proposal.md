@@ -49,5 +49,6 @@ None.
 - Anchored requests that trim a stored prefix still send new or changed developer messages from that range; durable
   operation keys from before the change still match; developer item ids the hoist dropped are not forwarded.
 - One prompt-cache miss per existing thread after the change, a compact budget that now counts developer text, one
-  repeat of the trimmed range's developer messages after a durable reattach, and `system` messages that are still
+  repeat of the trimmed range's developer messages after a durable reattach, a multi-replica upgrade that must stop
+  the old replicas first, developer messages an anchored chain cannot revoke, and `system` messages that are still
   hoisted: see `context.md`.

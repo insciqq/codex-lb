@@ -65,8 +65,11 @@ question about it):
 - Developer messages without content are dropped, as the hoist used to drop them.
 - Rolling deploy: a replica of this release cannot forward a request with an inline developer message to an owner
   replica of an earlier release (the owner hoists it before verifying the forwarding signature, `400
-  bridge_forward_invalid`). A multi-replica deployment must stop its old replicas before the new ones serve;
-  single-replica deployments are unaffected.
+  bridge_forward_invalid`). A multi-replica deployment must drain first: stop its old replicas before the new ones
+  serve (`kubectl scale statefulset/<name> --replicas=0` before `helm upgrade`, or stop the old colour of a blue/green
+  pair). Otherwise, while both releases serve, owner forwards that carry developer messages fail with that 400. The
+  Helm chart's defaults (a StatefulSet with `RollingUpdate` and `replicaCount: 2`) do not drain, so a default chart
+  install is affected. Single-replica deployments are unaffected.
 - Transitional: a recovery checkpoint recorded before the change in the `REPLAYED` state is keyed with the developer
   text in `instructions`; an identical retry after the upgrade records a new checkpoint under the new key and can
   dispatch that consumed turn once more. Rollback to the previous release is not symmetric for operation keys either:
