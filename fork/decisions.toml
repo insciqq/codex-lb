@@ -82,7 +82,8 @@ status = "pending"
 [pr.2088]
 title = "fix(http-bridge): wait for aborted bridge owner before retrying admission"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "A large owner-wait rework of bridge admission that no longer applies to the current bridge code; scheduled after the first release with the related admission work (issues 1758 and 1799)."
 
 [pr.2097]
 title = "feat(proxy): enforce Astra configuration-update policy"
@@ -118,7 +119,8 @@ reason = "Codex history and notes across account pools, with a new API-key optio
 [pr.2112]
 title = "fix(observability): record HTTP upstream phase timings"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "A real gap, but it is observability-only and rewrites the hot SSE relay path; to be revisited after the first release."
 
 [pr.2115]
 title = "feat(proxy): support Astra steering with transport-owned dispatch"
@@ -141,7 +143,8 @@ reason = "A new dashboard locale."
 [pr.2120]
 title = "fix(auth): retain unexpired access on refresh preflight failure"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Keeping an unexpired access token usable after a permanent refresh failure must land together with benching an account whose access token upstream refuses (issue 2442), and the recovery re-read needs its own session instead of the caller's."
 
 [pr.2121]
 title = "fix(proxy): recover tool-complete goal followups from unavailable owners"
@@ -309,7 +312,8 @@ reason = "A library-only pool-walk failover decision that nothing calls yet."
 [pr.2398]
 title = "fix(proxy): prepare portable WebSocket full resends for quota replay"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Moves an account-bound WebSocket history to another account on quota, which needs an owner-relocation design scheduled after the first release."
 
 [pr.2403]
 title = "feat(proxy): classify usage-limit rejections and answer pool-walk exclusion"
@@ -326,7 +330,8 @@ reason = "Upstream beta release bookkeeping that only updates version files."
 [pr.2423]
 title = "fix(proxy): reject a dead client anchor instead of asking for a retry"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Open maintainer blockers remain: on multi-replica deployments the owner-forward hop turns the terminal rejection into a local rebind after the owner was retired, and the request-log row for this failure is lost; scheduled after the first release."
 
 [pr.2428]
 title = "feat(proxy): decide relocation once, and rebuild a conversation from the durable spool"
@@ -383,7 +388,8 @@ status = "pending"
 [pr.2458]
 title = "fix(proxy): release a bridge-bypassed turn-state owner on quota evidence"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Moving a turn-state owner's history on quota evidence is a real gap, but it needs the owner-relocation design scheduled after the first release."
 
 [pr.2463]
 title = "feat(api-keys): add estimated usage-share limits"
@@ -413,7 +419,9 @@ reason = "Its stream-lease release was split out upstream as PR 2616. The remain
 [pr.2486]
 title = "fix(balancer): admit a hard continuity owner serving its own transient backoff"
 state = "open"
-status = "pending"
+status = "superseded"
+by = 2627
+reason = "Same code change as PR 2627, which also adds route regressions."
 
 [pr.2487]
 title = "fix(auth): reject non-ASCII TOTP digits safely"
@@ -446,7 +454,8 @@ reason = "A new MySQL/MariaDB database backend that also changes the Alembic mig
 [pr.2503]
 title = "fix(http-bridge): keep replayed history images on the bridge"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Changes bridge routing for image threads while two upstream proposals (PRs 2503 and 2508) compete without a maintainer decision; scheduled after the first release."
 
 [pr.2504]
 title = "fix(usage): account for cache-write tokens"
@@ -514,7 +523,9 @@ reason = "Request-log performance indexes with new Alembic revisions, stacked on
 [pr.2523]
 title = "fix(metrics): publish fresh account pool gauges on scrape"
 state = "closed"
-status = "pending"
+status = "own-fix"
+issues = [2426]
+reason = "Replaced by a narrow own fix that populates the existing account-count gauge from account reads the service already makes; the scrape-time database refresh, token decryption and new availability gauge are not taken."
 
 [pr.2526]
 title = "fix(model-sources): preserve declared collaboration namespaces"
@@ -600,7 +611,9 @@ reason = "New Helm values for the startup probe; the defaults are unchanged."
 [pr.2555]
 title = "fix(http-bridge): leave the terminal append running at its bound"
 state = "closed"
-status = "pending"
+status = "superseded"
+by = 2600
+reason = "PR 2600 finalizes the cancelled SQLite cursor that held the writer lock; with that fix, cancelling the terminal append at its bound is safe, so the never-cancel rule is not needed."
 
 [pr.2558]
 title = "fix(balancer): express lease pressure in percentage points and keep relative availability ranked by persisted usage"
@@ -687,7 +700,9 @@ reason = "Adds a database column through a migration that is not rolling-safe; t
 [pr.2581]
 title = "fix(proxy): preserve agent context across HTTP bridge reconnects"
 state = "closed"
-status = "pending"
+status = "own-fix"
+issues = [2582]
+reason = "The fork's own fix never anchors native Codex HTTP history, so an agent_message suffix no longer leads to a stale injected anchor after a bridge reconnect."
 
 [pr.2583]
 title = "fix(proxy): retire a policy-excluded continuity owner that cannot return in time"
@@ -703,7 +718,8 @@ reason = "Adds a third-party client identity to the native-fingerprint allowlist
 [pr.2591]
 title = "fix(proxy): preserve required-owner WebSocket connect errors"
 state = "closed"
-status = "pending"
+status = "deferred"
+reason = "Surfacing the owner's original 403 or 429 on WebSocket connect instead of the owner-unavailable error is an open upstream contract question, and the model-rejection case is already covered by PR 2332; to be revisited after the first release."
 
 [pr.2593]
 title = "fix(images): allow GPT Image 2 transparent PNG and WebP"
@@ -788,7 +804,8 @@ status = "pending"
 [pr.2628]
 title = "fix(proxy): honor poisoned fallback keys before bridge anchor planning"
 state = "open"
-status = "pending"
+status = "own-fix"
+reason = "The fork's own fix never adds a proxy anchor to native Codex HTTP history, so a native full resend is no longer trimmed against an anchor that the fallback key had poisoned."
 
 [pr.2630]
 title = "fix(shutdown): bound managed HTTP client close"
@@ -813,7 +830,8 @@ status = "pending"
 [pr.2634]
 title = "fix(proxy): reject paused accounts on open WebSockets"
 state = "open"
-status = "pending"
+status = "rejected"
+reason = "Rejects every later turn on an open WebSocket whose account was paused, full-history retries included, with no failover to another account and no socket recycle, so pausing an account fails the connected client's turns."
 
 [pr.2635]
 title = "fix(native): preserve bounded WebSocket bursts"
@@ -1224,7 +1242,8 @@ reason = "Replaced for burst handling by the narrower queue bound of PR 2635; th
 [pr.2712]
 title = "fix(proxy): retry zero-event bridge socket drops once"
 state = "open"
-status = "pending"
+status = "rejected"
+reason = "Replays a request after a socket loss that does not prove upstream never started it, which can duplicate generation and billing; it also stops excluding the account after a 1011 close."
 
 [pr.2713]
 title = "docs: add optional desktop Dot recipe for codex-lb routing"
@@ -1267,27 +1286,36 @@ reason = "PR 2690 carries the same or newer versions."
 [pr.2719]
 title = "chore(deps): bump the frontend-minor-patch group in /frontend with 24 updates"
 state = "closed"
-status = "pending"
+status = "superseded"
+by = 2690
+reason = "PR 2690 carries the same or newer versions of most packages; the remaining minor and patch updates are tracked in PR 2735."
 
 [pr.2720]
 title = "chore(deps): bump jsdom from 30.1.2 to 31.0.0 in /frontend"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "A major bump of the test-only jsdom dependency with no runtime security advisory; it needs bun.lock and bun.nix regenerated and is scheduled after the first release."
 
 [pr.2721]
 title = "chore(deps): bump msw from 2.15.0 to 3.0.4 in /frontend"
 state = "open"
-status = "pending"
+status = "superseded"
+by = 2690
+reason = "PR 2690 moves msw to 3.x with the required test adaptation; this bump alone breaks the frontend build."
 
 [pr.2722]
 title = "chore(deps): bump @hookform/resolvers from 5.9.1 to 7.0.3 in /frontend"
 state = "open"
-status = "pending"
+status = "superseded"
+by = 2690
+reason = "PR 2690 moves @hookform/resolvers to 7.x."
 
 [pr.2723]
 title = "chore(deps): bump the python-minor-patch group with 31 updates"
 state = "open"
-status = "pending"
+status = "superseded"
+by = 2690
+reason = "PR 2690 carries the same or newer versions except a few patch releases of pydantic and development tools, none of which fixes a security advisory."
 
 [pr.2724]
 title = "fix(model-sources): preserve client collaboration namespace when source declares multi-agent support"
@@ -1352,7 +1380,8 @@ status = "pending"
 [pr.2735]
 title = "chore(deps): bump the frontend-minor-patch group across 1 directory with 23 updates"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "A development-only frontend tooling refresh with no runtime security advisory; it needs bun.lock and bun.nix regenerated and is scheduled after the first release."
 
 [pr.2738]
 title = "test(native): use a closed port for the refused fallback probes"
@@ -1425,7 +1454,8 @@ reason = "Enhancement request for upstream transport fingerprint parity; upstrea
 [issue.1304]
 title = "WebSocket clean-close handoff can consume a queued turn"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Needs a deferred admission slot in the WebSocket main loop so that a parked replay runs before the next queued turn, a concurrency change scheduled after the first release."
 
 [issue.1307]
 title = "feat: subagent prompt-cache affinity TTL"
@@ -1437,7 +1467,8 @@ reason = "Feature request: a separate prompt-cache affinity TTL for subagents."
 [issue.1367]
 title = "bug(accounts): Team 30d quota is displayed as 5h"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Moving the 30-day Team quota from the primary to the monthly slot needs a migration-safe path for existing blocks and reset evidence."
 
 [issue.1413]
 title = "feat(accounts): support explicit access-token-only credential imports"
@@ -1504,7 +1535,8 @@ status = "pending"
 [issue.1707]
 title = "bug: existing Codex thread can remain unusable on dead hard-affinity owner while fresh/side chat works"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "Native Codex HTTP history is no longer anchored by the proxy and owner-bound history stays on its owner after a model rejection; moving a thread off an unavailable hard-affinity owner is not addressed yet."
 
 [issue.1708]
 title = "ux/docs: make routing, sticky affinity, quota thresholds, warm-up, and account eligibility understandable in the dashboard"
@@ -1516,7 +1548,8 @@ reason = "Dashboard UX enhancement; the copy clarifications landed upstream in P
 [issue.1758]
 title = "http-bridge: evicting an inflight waiter does not cancel its creator, so multiple creators race one session key"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Cancelling an evicted waiter's creator belongs to the bridge admission waiter rework scheduled with PR 2088 after the first release."
 
 [issue.1793]
 title = "feat: weekly limits estimation in $"
@@ -1527,12 +1560,14 @@ reason = "Feature request: weekly limit estimates in dollars."
 [issue.1799]
 title = "bug: HTTP responses session bridge returns 503: \"preserving an incompatible admission handoff\""
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Upstream 1.25.0-beta.2 removed several causes; a deadline for a retained admission handoff is scheduled after the first release."
 
 [issue.1844]
 title = "Telemetry opt-out: close the consent/send race and follow-up hardening"
 state = "open"
-status = "pending"
+status = "out-of-scope"
+reason = "Telemetry consent hardening follow-ups that upstream deferred; closing the remaining race needs a collector-side protocol change."
 
 [issue.1870]
 title = "feat: add an upstream facet to dashboard request logs"
@@ -1551,7 +1586,9 @@ reason = "Fixed in upstream main: the warm-up compact route by PR 1809 and the p
 [issue.1898]
 title = "fix(proxy): persist complete HTTP bridge replay transcripts"
 state = "open"
-status = "pending"
+status = "not-fixed"
+prs = [2430, 2579]
+reason = "Complete durable replay transcripts need new schema, which both candidate PRs add through Alembic revisions; the fork keeps the upstream schema, and bridge recovery fails closed when a transcript is incomplete."
 
 [issue.1901]
 title = "bug(reports): /api/reports takes ~120 s for a 7-day window (~543k rows) while equivalent raw SQL finishes in ~2.5 s"
@@ -1578,7 +1615,8 @@ reason = "Hidden scrollbars are a deliberate dashboard-wide convention and rows 
 [issue.1950]
 title = "bug(compact): hosted computer screenshots can still hard-fail compaction and wedge image-heavy threads"
 state = "open"
-status = "pending"
+status = "not-fixed"
+reason = "Eliding a hosted computer screenshot needs a schema-valid placeholder that upstream has not defined; Codex clients send screenshots as input_image inside tool outputs, which compaction and history slimming already handle."
 
 [issue.1959]
 title = "feat: Would you be interested in an optional auto re-login feature?"
@@ -1629,7 +1667,9 @@ reason = "Feature request: a GET /v1/models/{model_id} endpoint for a non-Codex 
 [issue.2064]
 title = "bug(proxy): revoked access tokens repeatedly re-enter reauth routing"
 state = "open"
-status = "pending"
+status = "deferred"
+prs = [2117]
+reason = "Retiring an account on a single token_revoked or token_invalidated observation needs a recovery path and race-free quarantine first."
 
 [issue.2068]
 title = "bug(proxy): quota failover stalls unanchored full-resend threads"
@@ -1656,7 +1696,8 @@ status = "pending"
 [issue.2090]
 title = "fix(proxy): reconcile reservations after late HTTP-bridge anchor injection"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "An admission-only accounting gap on the repeated-turn anchor advance, while final usage is still settled from upstream; scheduled after the first release."
 
 [issue.2108]
 title = "bug: HTTP Responses logs omit observed upstream phase timings"
@@ -1666,7 +1707,9 @@ status = "pending"
 [issue.2128]
 title = "bug(proxy): standalone web search fails on v1 and duplicates native Content-Type"
 state = "open"
-status = "pending"
+status = "fixed-upstream"
+prs = [2513]
+reason = "The duplicate Content-Type on native control requests is fixed in upstream main by PR 2513; Codex control routes such as alpha/search are served under the documented /backend-api/codex base URL, not under /v1."
 
 [issue.2169]
 title = "test: make native SSE fallback refusal fixture portable on macOS"
@@ -1797,7 +1840,9 @@ reason = "Feature request: new drain-status fields."
 [issue.2356]
 title = "bug(proxy): experimental context management returns 405 for native notes v2 calls"
 state = "open"
-status = "pending"
+status = "not-fixed"
+prs = [2101]
+reason = "Native history and notes routes for an experimental Codex feature need account-local ownership, and the candidate PR 2101 can pin different owners on concurrent first writes."
 
 [issue.2388]
 title = "bug(proxy): other HTTP-bridge local refusals still reach native Codex clients as an empty 200"
@@ -1807,7 +1852,8 @@ status = "pending"
 [issue.2389]
 title = "bug(http-bridge): a model-transition fork rescues one turn, then re-derives the same owner conflict"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Converging a forked lane means repointing the parent thread's turn-state and session aliases to it, an ownership change scheduled after the first release."
 
 [issue.2409]
 title = "bug(proxy): intermittent cache misses on Astra/SOL with the same Pro account across HTTP and WebSocket (195k–777k input)"
@@ -1824,7 +1870,8 @@ reason = "Feature request: fall back to a reserve model when chat quota is exhau
 [issue.2420]
 title = "bug(accounts): Hard-coded Pro and Pro Lite credit capacities disagree with observed quota consumption, distorting pooled credit reporting"
 state = "open"
-status = "pending"
+status = "not-fixed"
+reason = "The plan capacity constants also weight routing across mixed pools; recalibrating them needs an upstream decision and independent measurements. The lease-pressure unit defect is fixed separately (issue 2554)."
 
 [issue.2425]
 title = "bug: input_image requests still fail ~35% during overload on beta.8 — the HTTP bridge bypass, not the upstream transport, is the cause (follow-up to #2363/#2386)"
@@ -1845,7 +1892,9 @@ reason = "Blocking an account on a refused access token must not retire accounts
 [issue.2443]
 title = "bug(metrics): dashboard/report TPS uses post-settlement latency and reasoning-inclusive TTFT"
 state = "open"
-status = "pending"
+status = "not-fixed"
+prs = [2444]
+reason = "A correct generation rate needs the upstream terminal latency stored per request, which is a schema change; the fork keeps the upstream schema."
 
 [issue.2455]
 title = "bug(proxy): bridge payload bypass blocks verified quota failover"
@@ -1860,7 +1909,8 @@ status = "pending"
 [issue.2465]
 title = "bug: beta.9 sticky bridge lineages wedge permanently; image+tools path sends invalid parallel_tool_calls"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "Multi-line WebSocket JSON from upstream is parsed (PR 2530), so upstream errors no longer end as eventless bridge timeouts; the Responses-Lite parallel_tool_calls rejection on the image-plus-tools path is not addressed yet."
 
 [issue.2470]
 title = "bug(proxy): direct-HTTP stream that dies with \"Native upstream transport ended before a terminal event\" never releases its account stream lease → per-account cap wedges (every request waits, then `account_stream_cap`) until restart"
@@ -1870,7 +1920,8 @@ status = "pending"
 [issue.2471]
 title = "bug(proxy): with upstream_stream_transport=http the native egress multiplexes every account's streams onto ONE shared HTTP/2 connection — one transport failure kills all in-flight streams of all accounts, is logged with no reason/status, and is never retried"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "Native egress now logs the failure cause and the close code; per-account connection pooling is a pooling-policy change scheduled after the first release."
 
 [issue.2492]
 title = "feat: Reset API key limit usage from dashboard without regenerating keys"
@@ -1898,12 +1949,15 @@ reason = "The shield-loop livelock fix (PRs 1969 and 1972) is in upstream main; 
 [issue.2501]
 title = "bug: native HTTP upstream regressed in 1.25.0-beta.7 with native upstream request failures"
 state = "open"
-status = "pending"
+status = "not-fixed"
+reason = "No reproducible defect beyond the shared native egress connection tracked in issue 2471; the report still lacks the data requested upstream."
 
 [issue.2505]
 title = "bug: shutdown cancels schedulers and the leader-lease keeper mid-DB-work (SQLite pool CancelledError, unreleased lease, unclean run-state)"
 state = "open"
-status = "pending"
+status = "deferred"
+prs = [2506]
+reason = "Letting DB-owning tasks finish before cancellation needs a stop that keeps the leader lease until detached work ends; the candidate PR 2506 can release the lease while the old leader's work still runs."
 
 [issue.2511]
 title = "bug(accounts): self_serve_business_prolite usage plan is rejected as unknown"
@@ -1949,7 +2003,8 @@ reason = "Credit limits have no agreed accounting upstream; a correct accrual ne
 [issue.2557]
 title = "bug(accounts): plan capacity constants are unmeasured; every weekly value is 5h × 33.6"
 state = "open"
-status = "pending"
+status = "not-fixed"
+reason = "Recalibrating plan capacity constants changes routing weights and needs an upstream decision; the Pro Max values were added with PR 2638."
 
 [issue.2559]
 title = "feat: not a feature request, can you check discussions?"
@@ -1993,7 +2048,8 @@ status = "pending"
 [issue.2596]
 title = "CODEX_LB_CONVERSATION_ARCHIVE_ENABLED doesn't work with k8s / multiple instances"
 state = "open"
-status = "pending"
+status = "out-of-scope"
+reason = "Feature request: store the conversation archive in the database; the file archive works when CODEX_LB_CONVERSATION_ARCHIVE_DIR points at a writable volume."
 
 [issue.2601]
 title = "bug(oauth): outbound connection failures return unhandled 500 in PKCE callback and device start"
@@ -2062,7 +2118,8 @@ status = "pending"
 [issue.2688]
 title = "bug: one client's large response.create requests can OOM-kill the whole proxy"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "Large response.create bodies are measured, prepared and decoded with fewer full copies, about 2x instead of 6x of the body on direct HTTP dispatch; a memory budget for request bytes in flight is not added."
 
 [issue.2691]
 title = "bug: chat-to-Responses conversion loses non-strict tool defaults"
@@ -2096,4 +2153,5 @@ reason = "Feature request: a per-account cutoff before paid credits are used."
 [issue.2737]
 title = "bug: Codex repeats proposed plan and remains in Plan mode"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Expected to be fixed by keeping developer messages in the input (issue 2563); to be confirmed with a live switch from Plan to Default mode after the first release."
