@@ -627,7 +627,19 @@ MUST fence the same way, on the generation captured before its settlement
 and registration awaits: a strike arming a new quarantine during those
 awaits is evidence the completion does not disprove, and that quarantine
 MUST survive the clear, or the next half-open probe is planned with the
-newly poisoned anchor on a key already marked loaded. The clear MUST also
+newly poisoned anchor on a key already marked loaded. Quarantine
+generations MUST come from one sequence for the life of the service, never
+restarted for an entry re-created after its key's entry was removed, so a
+captured fence cannot match a replacement entry armed after the capture.
+An eventless strike MUST move the fence too: a healthy completion resets an
+inactive entry's strike counter only when no strike was recorded after its
+fence was captured, and an entry that did not exist at capture survives the
+clear. The completing session MUST clear its own key's entry only when it
+owns that evidence: the entry was last armed or struck by that session, or
+that session is the one now registered for the key — the replacement a
+quarantine forces, whose healthy completion is what disproves the wedge. A
+late completion on a session that was retired from the key MUST NOT clear
+evidence recorded for its replacement. The clear MUST also
 be gated on the fresh anchor's durable registration actually confirming: a
 swallowed durable alias failure leaves the old poisoned anchor as the
 stored one, and with the circuit already settled the quarantine is the
@@ -6541,6 +6553,27 @@ A quarantine armed for reason `retry_circuit_poisoned_anchor` MUST remain in for
 - **THEN** the quarantine (and its eventless strike counter) is cleared
 - **AND** a session that survived the quarantine window is reusable again instead of staying rejected forever
 - **AND** no durable row, janitor work, or account-health write was involved at any point
+
+#### Scenario: A late completion keeps the replacement session's quarantine
+
+- **GIVEN** a session's response is completing on a session key
+- **AND** before its quarantine fence is captured, another session replaces it on that key and is quarantined
+- **WHEN** the late completion runs its quarantine clear
+- **THEN** the replacement session's quarantine survives
+
+#### Scenario: A completion fence does not match a re-created entry
+
+- **GIVEN** a completion captured the quarantine fence of its session key
+- **AND** that entry was removed and the key quarantined again before the clear
+- **WHEN** the completion runs its quarantine clear
+- **THEN** the new quarantine survives, even though it is the re-created entry's first arm
+
+#### Scenario: A strike recorded during completion survives the clear
+
+- **GIVEN** a completion captured the quarantine fence of its session key
+- **AND** an eventless timeout strike is recorded on that key during the completion's settlement awaits
+- **WHEN** the completion runs its quarantine clear
+- **THEN** the strike counter survives, so the next eventless timeout on the key quarantines it
 
 #### Scenario: Retry circuit opened by eventless failures quarantines the key
 
