@@ -71,8 +71,12 @@ floating tags. Images are built by GitHub Actions, never locally.
   digest is never moved.
 * The workflow runs on the tag ref only. Before building, it requires the
   run's commit to be the tag commit, the commit to be reachable from
-  `patched`, a successful full CI run for that exact commit, and the tag's
-  version in every release-managed file listed above.
+  `patched`, a successful full CI run for that exact commit, the tag's
+  version in every release-managed file listed above and in the fork
+  versions named by the READMEs, `docs/` and the chart README, and that
+  `:<version>` is not published yet. Whether a tag exists is read from the
+  registry for that exact tag; only HTTP 404 counts as missing, and any
+  other answer fails the run.
 * It builds once and pushes by digest, signs build provenance for that
   digest, and only then points both tags at it. A re-run of failed jobs
   re-signs or re-tags the same digest without rebuilding.
@@ -91,9 +95,13 @@ floating tags. Images are built by GitHub Actions, never locally.
   the README, `docs/` and the chart README name the fork image and release
   tag (`git grep -n 'fork\.[0-9]'`). Bump them with the version; the fork
   publishes no Helm chart or Python package.
-* When the tag push built nothing (the workflow was disabled, or the run
-  failed), publish an existing tag with
-  `gh workflow run "Fork image" --ref v<version>`.
+* When a run fails in the attest or tag job, finish that run with
+  `gh run rerun <run-id> --failed`: it signs or tags the digest already
+  built and keeps the earlier verify result. Start a new run with
+  `gh workflow run "Fork image" --ref v<version>` only when the run
+  published no tag, for example when the workflow was disabled at the tag
+  push or the run failed before tagging; a new run stops in verify once
+  `:<version>` exists.
 
 The Fork image workflow has to be enabled once in the Actions settings. The
 first publish creates the `codex-lb` container package; check in its
