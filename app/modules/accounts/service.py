@@ -543,6 +543,7 @@ class AccountsService:
         account = Account(
             id=account_id,
             chatgpt_account_id=raw_account_id,
+            chatgpt_user_id=claims.chatgpt_user_id,
             email=email,
             workspace_id=claims.workspace_id,
             workspace_label=claims.workspace_label,

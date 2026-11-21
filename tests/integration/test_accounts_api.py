@@ -46,7 +46,7 @@ async def test_import_and_list_accounts(async_client):
     payload = {
         "email": email,
         "chatgpt_account_id": "acc_payload",
-        "https://api.openai.com/auth": {"chatgpt_plan_type": "plus"},
+        "https://api.openai.com/auth": {"chatgpt_plan_type": "plus", "chatgpt_user_id": "user-review"},
     }
     auth_json = {
         "tokens": {
@@ -71,6 +71,10 @@ async def test_import_and_list_accounts(async_client):
     accounts = list_response.json()["accounts"]
     account = next(account for account in accounts if account["accountId"] == expected_account_id)
     assert "usageRefreshedAt" not in account
+    # The seat identity distinguishes team seats sharing one ChatGPT account.
+    async with SessionLocal() as session:
+        stored = await session.get(Account, expected_account_id)
+        assert stored is not None and stored.chatgpt_user_id == "user-review"
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,15 @@ Dashboard account summaries MUST expose and render the upstream ChatGPT account 
 - **THEN** it displays the ChatGPT account id
 - **AND** it does not display the generic unknown-workspace label
 
+### Requirement: Imported accounts store their seat identity
+
+`auth.json` import MUST store the seat identity (`chatgpt_user_id`, resolved from the ID token like OAuth does) on the account it creates or replaces, so seats sharing one ChatGPT account id can be told apart. Readers of the seat identity MUST fall back to the account's stored ID-token claims when the column is empty.
+
+#### Scenario: Import stores the seat identity
+- **GIVEN** an `auth.json` whose ID token carries a ChatGPT user id
+- **WHEN** the operator imports it
+- **THEN** the stored account MUST carry that user id as its seat identity
+
 ### Requirement: Duplicate consolidation preserves a recoverable canonical identity
 
 Identity reconciliation MUST preserve the upstream ChatGPT account id on the canonical row, reparent existing account-owned usage history to that row, and remove selected duplicate rows when it consolidates duplicate local accounts under the existing email and workspace-slot policy. Reconciliation MUST NOT consolidate distinct real-email account slots solely to make an upstream identity unique. On PostgreSQL, every account insertion, replacement, token/metadata identity update, duplicate consolidation, and deletion that changes upstream-identity membership MUST acquire the same transaction-scoped upstream-identity advisory lock as live-usage settlement before row or fold-state locks and hold it through commit. An old-to-new membership move MUST acquire both stable identity lock keys in canonical sorted order.
