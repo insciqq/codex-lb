@@ -65,6 +65,22 @@ async def test_runtime_version_reports_stable_release_as_update_for_current_beta
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("latest_tag", "update_available"), [("v1.25.1", True), ("v1.25.0", False)])
+async def test_runtime_version_ignores_build_metadata_on_current_version(
+    latest_tag: str, update_available: bool
+) -> None:
+    service = RuntimeVersionService(current_version="1.25.0+fork.1", ttl_seconds=60)
+    session = _mock_session(_mock_response(json_data={"tag_name": latest_tag}))
+
+    with patch("app.modules.runtime.service.aiohttp.ClientSession", return_value=session):
+        status = await service.get_version_status()
+
+    assert status.current_version == "1.25.0+fork.1"
+    assert status.latest_version == latest_tag.removeprefix("v")
+    assert status.update_available is update_available
+
+
+@pytest.mark.asyncio
 async def test_runtime_version_compares_prerelease_identifiers() -> None:
     service = RuntimeVersionService(current_version="1.20.0-beta.1", ttl_seconds=60)
     session = _mock_session(_mock_response(json_data={"tag_name": "v1.20.0-beta.2"}))

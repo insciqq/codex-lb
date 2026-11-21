@@ -20,7 +20,9 @@ _GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/Soju06/codex-lb/relea
 _LATEST_RELEASE_PAGE_URL = "https://github.com/Soju06/codex-lb/releases/latest"
 _VERSION_RE = re.compile(
     r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
-    r"(?:-(?P<prerelease>[0-9A-Za-z.-]+))?$"
+    r"(?:-(?P<prerelease>[0-9A-Za-z.-]+))?"
+    # SemVer build metadata (e.g. a fork's "+fork.1") is parsed and ignored for precedence.
+    r"(?:\+[0-9A-Za-z.-]+)?$"
 )
 
 

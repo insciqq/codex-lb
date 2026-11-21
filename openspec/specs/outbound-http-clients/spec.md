@@ -58,6 +58,13 @@ The service SHALL expose a dashboard-auth protected runtime version status API t
 - **AND** the GitHub latest release tag is `v1.20.0`
 - **THEN** the runtime version status reports `currentVersion: "1.19.0"`, `latestVersion: "1.20.0"`, and `updateAvailable: true`
 
+#### Scenario: Build metadata on the running version is ignored for precedence
+
+- **WHEN** the running version carries SemVer build metadata, such as `1.25.0+fork.1`
+- **THEN** the runtime version status compares only the version before `+`
+- **AND** a GitHub latest release tag `v1.25.1` reports `updateAvailable: true`
+- **AND** a GitHub latest release tag `v1.25.0` reports `updateAvailable: false`
+
 #### Scenario: GitHub lookup fails
 
 - **WHEN** the GitHub latest release lookup fails
