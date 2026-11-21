@@ -73,7 +73,9 @@ rework = "Rebased on PR 2001 with the spec delta reconciled; the post-refresh qu
 [pr.2075]
 title = "fix(proxy): keep frameless bridge drops account neutral"
 state = "open"
-status = "pending"
+status = "own-fix"
+issues = [2074]
+reason = "Not taken: it bundles a selection change, whose backoff fallback would admit a single backed-off account, and a native-helper protocol capability. The fork keeps frame-less WebSocket endings account-neutral in narrow own commits."
 
 [pr.2085]
 title = "feat(models): add gpt-6 astra catalog support"
@@ -572,7 +574,8 @@ reason = "Overrides the maintainer-approved image host selection from PR 2320, a
 [pr.2539]
 title = "fix(proxy): treat websocket close 1009 as terminal payload_too_large"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Treating an upstream 1009 as a terminal size error must also keep bridge retirement, retry-circuit strikes and the sequenced WebSocket close contract consistent; scheduled after the release."
 
 [pr.2543]
 title = "docs(codex): enable API-key model discovery in setup examples"
@@ -1701,7 +1704,8 @@ reason = "The callback listener left bound after an abandoned browser sign-in is
 [issue.2081]
 title = "bug: direct websocket terminal failures lose transport and owner evidence"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "Frame-less direct WebSocket endings after the response started are no longer charged to the account; eventless ones keep the penalty. Rewriting a selected owner's retryable terminal to owner-unavailable is upstream's continuity contract and is unchanged."
 
 [issue.2090]
 title = "fix(proxy): reconcile reservations after late HTTP-bridge anchor injection"
@@ -2108,7 +2112,8 @@ status = "pending"
 [issue.2658]
 title = "HTTP bridge reuses prompt-cache upstream websocket past the 60-minute limit → 400 websocket_connection_limit_reached"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Replacing an aged upstream socket safely needs the replacement opened before the old one is retired and a hand-off once its reader is idle; scheduled after the release."
 
 [issue.2663]
 title = "feat: Add configurable daily active hours to the Weekly credits pace forecast"

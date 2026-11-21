@@ -12,26 +12,26 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 |---|---|---|
 | taken | 55 | ported from the upstream PR into the fork |
 | taken with changes | 13 | ported, with the fork's changes noted |
-| own-fix | 4 | not taken; the problem is fixed by the fork's own commits |
+| own-fix | 5 | not taken; the problem is fixed by the fork's own commits |
 | rejected | 32 | reviewed and not taken, for the reason given |
 | superseded | 54 | replaced by another PR |
 | out-of-scope | 50 | a feature or other change outside the fork's scope |
 | not-applicable | 4 | does not concern the fork (upstream release, CI, docs or translation work) |
 | merged-upstream | 0 | merged upstream; the fork gets it with upstream main |
-| deferred | 15 | decided, scheduled after the first release |
-| pending | 4 | no decision yet |
+| deferred | 16 | decided, scheduled after the first release |
+| pending | 2 | no decision yet |
 | total | 231 | |
 
 | Status | Issues | Meaning |
 |---|---|---|
-| fixed | 36 | fixed in the fork by a taken PR or the fork's own commits |
-| partial | 11 | partly addressed in the fork; the reason says what is left |
+| fixed | 37 | fixed in the fork by a taken PR or the fork's own commits |
+| partial | 12 | partly addressed in the fork; the reason says what is left |
 | fixed-upstream | 5 | fixed in upstream main |
 | not-fixed | 13 | reviewed and not fixed in the fork, for the reason given |
 | out-of-scope | 40 | a feature request |
 | not-applicable | 8 | does not concern the fork |
-| deferred | 14 | decided, scheduled after the first release |
-| pending | 3 | no decision yet |
+| deferred | 15 | decided, scheduled after the first release |
+| pending | 0 | no decision yet |
 | total | 130 | |
 
 ## Pull requests
@@ -49,7 +49,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2001](https://github.com/Soju06/codex-lb/pull/2001) | fix(proxy): release payload owner after pre-visible quota rejection | open | taken with changes | changes: Ownership is released only for supported reasoning and compaction item shapes; any other item carrying encrypted content keeps the first dispatch account.; issues [1924](https://github.com/Soju06/codex-lb/issues/1924) |
 | [2048](https://github.com/Soju06/codex-lb/pull/2048) | fix(proxy): preserve exhausted sticky failover | open | rejected | The sticky failover bug it targets is already fixed on main by PR 2078; what remains relaxes early recovery of rate-limited accounts through a large rewrite of the balancer recovery helpers that was not re-reviewed. |
 | [2069](https://github.com/Soju06/codex-lb/pull/2069) | fix(proxy): recover unanchored quota replay | open | taken with changes | changes: Rebased on PR 2001 with the spec delta reconciled; the post-refresh quota rejection also projects the soft owner before the failover decision.; issues [2068](https://github.com/Soju06/codex-lb/issues/2068) |
-| [2075](https://github.com/Soju06/codex-lb/pull/2075) | fix(proxy): keep frameless bridge drops account neutral | open | pending | - |
+| [2075](https://github.com/Soju06/codex-lb/pull/2075) | fix(proxy): keep frameless bridge drops account neutral | open | own-fix | Not taken: it bundles a selection change, whose backoff fallback would admit a single backed-off account, and a native-helper protocol capability. The fork keeps frame-less WebSocket endings account-neutral in narrow own commits.; issues [2074](https://github.com/Soju06/codex-lb/issues/2074) |
 | [2085](https://github.com/Soju06/codex-lb/pull/2085) | feat(models): add gpt-6 astra catalog support | open | taken | - |
 | [2088](https://github.com/Soju06/codex-lb/pull/2088) | fix(http-bridge): wait for aborted bridge owner before retrying admission | open | deferred | A large owner-wait rework of bridge admission that no longer applies to the current bridge code; scheduled after the first release with the related admission work (issues 1758 and 1799). |
 | [2097](https://github.com/Soju06/codex-lb/pull/2097) | feat(proxy): enforce Astra configuration-update policy | open | out-of-scope | A new Astra configuration_update policy layer of about 4.7k lines. The API-key effort-policy defect it touches is tracked as issue 2664. |
@@ -133,7 +133,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2531](https://github.com/Soju06/codex-lb/pull/2531) | fix(proxy): normalize parallel\_tool\_calls for Responses-Lite upstream | open | taken | issues [2465](https://github.com/Soju06/codex-lb/issues/2465), [2538](https://github.com/Soju06/codex-lb/issues/2538) |
 | [2534](https://github.com/Soju06/codex-lb/pull/2534) | feat(proxy): admit bounded inline images on the HTTP responses bridge | open | out-of-scope | Admits inline images on the HTTP bridge, a new capability continued in PR 2732. |
 | [2537](https://github.com/Soju06/codex-lb/pull/2537) | fix(images): route image requests through compatible host | closed | rejected | Overrides the maintainer-approved image host selection from PR 2320, and bundles an unrelated doubling of the request-body and WebSocket message limits. |
-| [2539](https://github.com/Soju06/codex-lb/pull/2539) | fix(proxy): treat websocket close 1009 as terminal payload\_too\_large | open | pending | - |
+| [2539](https://github.com/Soju06/codex-lb/pull/2539) | fix(proxy): treat websocket close 1009 as terminal payload\_too\_large | open | deferred | Treating an upstream 1009 as a terminal size error must also keep bridge retirement, retry-circuit strikes and the sequenced WebSocket close contract consistent; scheduled after the release. |
 | [2543](https://github.com/Soju06/codex-lb/pull/2543) | docs(codex): enable API-key model discovery in setup examples | open | taken | - |
 | [2546](https://github.com/Soju06/codex-lb/pull/2546) | feat(accounts): support Pro Max routing and quota coverage | open | out-of-scope | The Pro 500 label and quota presentation are a feature; promax plan recognition comes from PR 2638. |
 | [2547](https://github.com/Soju06/codex-lb/pull/2547) | fix(usage): account for Astra ultrafast token pricing | open | taken | - |
@@ -321,9 +321,9 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2038](https://github.com/Soju06/codex-lb/issues/2038) | Visual Studio Copilot requires GET /v1/models/{model\_id} | open | out-of-scope | PRs [2549](https://github.com/Soju06/codex-lb/pull/2549); Feature request: a GET /v1/models/{model_id} endpoint for a non-Codex client. |
 | [2064](https://github.com/Soju06/codex-lb/issues/2064) | bug(proxy): revoked access tokens repeatedly re-enter reauth routing | open | deferred | PRs [2117](https://github.com/Soju06/codex-lb/pull/2117); Retiring an account on a single token_revoked or token_invalidated observation needs a recovery path and race-free quarantine first. |
 | [2068](https://github.com/Soju06/codex-lb/issues/2068) | bug(proxy): quota failover stalls unanchored full-resend threads | open | fixed | fixed by PR [2069](https://github.com/Soju06/codex-lb/pull/2069); own fix |
-| [2074](https://github.com/Soju06/codex-lb/issues/2074) | bug: post-output frame-less bridge drops still penalize account health | open | pending | - |
+| [2074](https://github.com/Soju06/codex-lb/issues/2074) | bug: post-output frame-less bridge drops still penalize account health | open | fixed | own fix; PRs [2075](https://github.com/Soju06/codex-lb/pull/2075) |
 | [2076](https://github.com/Soju06/codex-lb/issues/2076) | bug: default Docker port 1455 mapping can intercept Codex Desktop OAuth callbacks | open | fixed-upstream | PRs [2079](https://github.com/Soju06/codex-lb/pull/2079), [2098](https://github.com/Soju06/codex-lb/pull/2098); The callback listener left bound after an abandoned browser sign-in is fixed in upstream main by PR 2079; whether to stop publishing host port 1455 by default (PR 2098) is a deployment-default decision. |
-| [2081](https://github.com/Soju06/codex-lb/issues/2081) | bug: direct websocket terminal failures lose transport and owner evidence | open | pending | - |
+| [2081](https://github.com/Soju06/codex-lb/issues/2081) | bug: direct websocket terminal failures lose transport and owner evidence | open | partial | own fix; Frame-less direct WebSocket endings after the response started are no longer charged to the account; eventless ones keep the penalty. Rewriting a selected owner's retryable terminal to owner-unavailable is upstream's continuity contract and is unchanged. |
 | [2090](https://github.com/Soju06/codex-lb/issues/2090) | fix(proxy): reconcile reservations after late HTTP-bridge anchor injection | open | deferred | An admission-only accounting gap on the repeated-turn anchor advance, while final usage is still settled from upstream; scheduled after the first release. |
 | [2108](https://github.com/Soju06/codex-lb/issues/2108) | bug: HTTP Responses logs omit observed upstream phase timings | open | deferred | Deferred with PR 2112: filling the phase timings is observability-only and rewrites the hot relay path, so it is scheduled after the first release. |
 | [2128](https://github.com/Soju06/codex-lb/issues/2128) | bug(proxy): standalone web search fails on v1 and duplicates native Content-Type | open | fixed-upstream | PRs [2513](https://github.com/Soju06/codex-lb/pull/2513); The duplicate Content-Type on native control requests is fixed in upstream main by PR 2513; Codex control routes such as alpha/search are served under the documented /backend-api/codex base URL, not under /v1. |
@@ -392,7 +392,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2637](https://github.com/Soju06/codex-lb/issues/2637) | bug(accounts): promax plan is not recognized, so Pro Max accounts get free-tier capacity and are skipped by routing | open | fixed | fixed by PR [2638](https://github.com/Soju06/codex-lb/pull/2638) |
 | [2652](https://github.com/Soju06/codex-lb/issues/2652) | bug: \`ApiKeysRepository.reset\_expired\_limits\` busy-loops forever on SQLite when \`reset\_at\` is stored without microseconds | open | fixed | fixed by PR [2654](https://github.com/Soju06/codex-lb/pull/2654); own fix |
 | [2655](https://github.com/Soju06/codex-lb/issues/2655) | bug: cross-replica owner forwarding always fails with bridge\_forward\_invalid because thread affinity keys start with LF | open | fixed | own fix |
-| [2658](https://github.com/Soju06/codex-lb/issues/2658) | HTTP bridge reuses prompt-cache upstream websocket past the 60-minute limit → 400 websocket\_connection\_limit\_reached | open | pending | - |
+| [2658](https://github.com/Soju06/codex-lb/issues/2658) | HTTP bridge reuses prompt-cache upstream websocket past the 60-minute limit → 400 websocket\_connection\_limit\_reached | open | deferred | Replacing an aged upstream socket safely needs the replacement opened before the old one is retired and a hand-off once its reader is idle; scheduled after the release. |
 | [2663](https://github.com/Soju06/codex-lb/issues/2663) | feat: Add configurable daily active hours to the Weekly credits pace forecast | open | out-of-scope | Feature request: a configurable daily active window for the weekly credits pace forecast. |
 | [2664](https://github.com/Soju06/codex-lb/issues/2664) | bug(proxy): configuration\_update effort is ignored | open | fixed | own fix |
 | [2669](https://github.com/Soju06/codex-lb/issues/2669) | docs: verified workaround for missing desktop Dot while keeping codex-lb routing | open | not-applicable | PRs [2713](https://github.com/Soju06/codex-lb/pull/2713); A client-side Codex Desktop configuration workaround, not a codex-lb defect. |
@@ -533,3 +533,5 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(proxy): apply the quota policy to unparseable blocks and read it once | - | hardening of the upstream PR 2308 quota projection |
 | fix(http-bridge): stop reader failures waiting on their own reader | - | bug found in production or review |
 | fix(http-bridge): leave a concurrent session close to its owner | - | bug found in production or review |
+| fix(proxy): keep frame-less direct WebSocket drops after output account-neutral | [2081](https://github.com/Soju06/codex-lb/issues/2081) | - |
+| fix(proxy): keep frame-less bridge drops after output account-neutral | [2074](https://github.com/Soju06/codex-lb/issues/2074) | - |
