@@ -90,6 +90,12 @@ Callers and outcomes:
   an owned background cleanup task drained, with its bound, at shutdown. A
   lease the reconnect borrowed from the session is released by whichever of
   the reconnect and a racing close takes it out of the session first.
+  Known limitation, predating this rule: if account invalidation (for
+  example a proxy-binding change) closes a bridge session while its
+  reconnect's second handshake is in flight, a successful handshake can
+  reinstall the released lease and reopen the session outside the registry.
+  The fix is to check handoff and lease ownership at the final swap with no
+  intervening await.
 - Force Probe and the dashboard reset-credit endpoints answer 404, as when
   the account was gone on arrival, also when the refresh before them or the
   SQLite redeem claim fails because the row is gone (the claim rows

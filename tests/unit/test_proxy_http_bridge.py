@@ -13270,6 +13270,11 @@ async def test_reconnect_stuck_wrong_owner_lease_release_still_completes_handoff
     assert session.handoff_in_progress is False
     assert session.handoff_future is None
     assert session.key not in service._http_bridge_inflight_sessions
+    # The stuck release would otherwise outlive the test's service and loop.
+    stuck_releases = list(service._background_cleanup_tasks)
+    for task in stuck_releases:
+        task.cancel()
+    await asyncio.gather(*stuck_releases, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -13547,9 +13552,11 @@ async def test_reconnect_stuck_lease_release_is_owned_and_bounded_at_shutdown(
     previous_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
 
+    refresh_error = TimeoutError("forced refresh failed")
+
     async def refresh(account: Any, *, force: bool = False, **_: object) -> Any:
         if force:
-            raise TimeoutError()
+            raise refresh_error
         return account
 
     _install_reconnect_after_401(monkeypatch, service, refresh=AsyncMock(side_effect=refresh), released_leases=[])
@@ -13560,11 +13567,14 @@ async def test_reconnect_stuck_lease_release_is_owned_and_bounded_at_shutdown(
     monkeypatch.setattr(service._load_balancer, "release_account_lease", stuck_release)
     monkeypatch.setattr(http_bridge_mixin_module, "_HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS", 0.05)
     try:
-        with pytest.raises(TimeoutError):
+        # The watchdog also raises ``TimeoutError``; only the refresh's own
+        # error proves the reconnect did not wait on the stuck release.
+        with pytest.raises(TimeoutError) as exc_info:
             await asyncio.wait_for(
                 service._reconnect_http_bridge_session(session, request_state=_reconnect_request_state("req-stuck")),
                 timeout=1.0,
             )
+        assert exc_info.value is refresh_error
         pending = [task for task in service._background_cleanup_tasks if not task.done()]
         assert [task.get_name() for task in pending] == ["http-bridge-close-reconnect-lease"]
         gc.collect()
