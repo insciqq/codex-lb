@@ -546,3 +546,4 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | feat(fork): accept plain vX.Y.Z release tags next to -fork.N | - | fork release tooling |
 | feat(fork): publish a latest image tag for the newest release | - | fork release tooling |
 | fix(fork): accept only ASCII release versions | - | fork release tooling |
+| fix(fork): move latest only by the maintainers' dispatch | - | fork release tooling |

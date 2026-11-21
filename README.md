@@ -25,7 +25,7 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 >   Codex clients and the OpenAI backend; upstream has had no new commits since 2026-10-16.
 > - **Scope:** bug fixes, security, compatibility with current Codex clients and the OpenAI backend, and
 >   dependency updates. New features are on hold until the fork has settled with a few stable releases.
-> - **Releases:** version tags with images at `ghcr.io/insciqq/codex-lb`; `latest` follows the newest release.
+> - **Releases:** version tags with images at `ghcr.io/insciqq/codex-lb`; `latest` points to the newest release.
 >   Release notes are on [Releases](https://github.com/insciqq/codex-lb/releases); `CHANGELOG.md` is upstream's.
 > - **Coming from upstream:** see [Migrating from upstream](#migrating-from-upstream).
 > - **Telemetry is off by default** since the `fork.2` release ([details](docs/telemetry.md)).
@@ -76,9 +76,10 @@ nix run github:insciqq/codex-lb/v1.25.0-fork.2
 
 `uvx codex-lb` installs upstream's PyPI release, not this fork: the fork publishes container images only.
 
-The fork publishes `ghcr.io/insciqq/codex-lb:<version>` and `:sha-<full commit SHA>`; `latest` follows the newest
-release for convenience. Production and automated updaters should pin a version, `sha-` tag or digest: a release can
-include database migrations that an image rollback cannot undo ([FORK.md](FORK.md#releases-and-images)).
+The fork publishes `ghcr.io/insciqq/codex-lb:<version>` and `:sha-<full commit SHA>`; `latest` points to the newest
+release, and the maintainers move it after each release. Production and automated updaters should pin a version,
+`sha-` tag or digest: a release can include database migrations that an image rollback cannot undo
+([FORK.md](FORK.md#releases-and-images)).
 
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
 

@@ -1,17 +1,15 @@
 name: Fork image latest
 
-# Re-points ghcr.io/insciqq/codex-lb:latest at the published image of an
-# existing release tag, for example to set latest for a release published
-# before the Fork image workflow moved it, or to move latest back when a
-# release is pulled. It never builds: the digest comes from the release's
-# sha-<full commit SHA> tag, the <version> tag must name the same digest, and
-# the digest's build provenance must verify. Any lookup error fails the run
-# before latest is touched.
+# The only writer of ghcr.io/insciqq/codex-lb:latest. The maintainers run it
+# after each release, and to move latest back when a release is pulled:
 #
 #   gh workflow run "Fork image latest" --ref main -f release_tag=v<version>
 #
-# The release's Fork image run moves latest only when its tag is the highest
-# release, so do not re-run the latest job of a pulled release.
+# It never builds: the tag commit must be on main and not on upstream-main,
+# the digest comes from the release's sha-<full commit SHA> tag, the <version>
+# tag must name the same digest, and the digest's build provenance must
+# verify. Any lookup error fails the run before latest is touched. A tag that
+# is not the highest release tag only gets a warning, so latest can move back.
 
 on:
   workflow_dispatch:
@@ -21,7 +19,7 @@ on:
         required: true
         type: string
 
-# Shared with the latest job of fork-image.yml: one writer of :latest at a time.
+# One run at a time.
 concurrency:
   group: fork-image-latest
   cancel-in-progress: false
@@ -53,7 +51,7 @@ jobs:
             exit 1
           fi
 
-      # fetch-depth 0 brings every tag and origin/main.
+      # fetch-depth 0 brings every tag, origin/main and origin/upstream-main.
       - name: Checkout main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -72,8 +70,13 @@ jobs:
             echo "::error::no tag ${RELEASE_TAG} in the repository"
             exit 1
           }
+          git rev-parse --verify refs/remotes/origin/upstream-main > /dev/null
           if ! git merge-base --is-ancestor "${sha}" refs/remotes/origin/main; then
             echo "::error::${RELEASE_TAG} (${sha}) is not reachable from origin/main"
+            exit 1
+          fi
+          if git merge-base --is-ancestor "${sha}" refs/remotes/origin/upstream-main; then
+            echo "::error::${RELEASE_TAG} (${sha}) is an upstream commit, not a fork release"
             exit 1
           fi
           order="$(git tag --list 'v*' | python3 -m app.modules.runtime.release_version is-highest "${RELEASE_TAG}")"

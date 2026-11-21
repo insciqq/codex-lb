@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Point ghcr.io/<repository>:latest at the published image of a release.
+# Used by .github/workflows/fork-image-latest.yml.
 #
 # Usage: ghcr_point_latest.sh <repository> <full commit SHA> <version> [<expected digest>]
 #

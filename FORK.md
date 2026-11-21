@@ -94,16 +94,14 @@ Images are built by GitHub Actions, never locally.
   `ghcr.io/insciqq/codex-lb:sha-<full commit SHA>` for linux/amd64 and
   linux/arm64. Both are immutable: a tag that already names another digest
   is never moved and fails the run.
-* `latest` follows the newest fork release for convenience. The workflow's
-  `latest` job points it at the release digest only when the tag is the
-  highest release tag in the repository, in the order above, so a re-run of
-  an older release never moves it back. To set or move it by hand, for
-  example back to the previous release when a release is pulled, run
-  `gh workflow run "Fork image latest" --ref main -f release_tag=v<version>`
-  (`.github/workflows/fork-image-latest.yml`). It takes the digest from the
-  release's `sha-<full>` tag, requires `:<version>` to name the same digest
-  and its provenance to verify, never rebuilds, and fails on any lookup
-  error. Do not re-run the `latest` job of a pulled release afterwards.
+* `latest` points to the newest release; the maintainers move it after
+  each release (step 5 below), and back to the previous release when a
+  release is pulled. Only `.github/workflows/fork-image-latest.yml` writes
+  it. That workflow never builds and fails on any lookup error. It
+  requires the tag commit on `main` and not on `upstream-main`, takes the
+  digest from the release's `sha-<full>` tag, and requires `:<version>`
+  to name the same digest and the digest's provenance to verify. When the
+  tag is not the highest release tag it only warns.
   Production and automated updaters should pin a version, `sha-` tag or
   digest, because a release can include database migrations that an image
   rollback cannot undo.
@@ -117,9 +115,8 @@ Images are built by GitHub Actions, never locally.
   is read from the registry for that exact tag; only HTTP 404 counts as
   missing, and any other answer fails the run.
 * It builds once and pushes by digest, signs build provenance for that
-  digest, and only then points both tags, and `latest` when the release is
-  the highest, at it. A re-run of failed jobs re-signs or re-tags the same
-  digest without rebuilding.
+  digest, and only then points both tags at it. A re-run of failed jobs
+  re-signs or re-tags the same digest without rebuilding.
 * The dashboard's update notice polls the fork's latest GitHub release.
   It compares the release tag with the running version in the order above
   (a build without `+fork.N` counts as fork 0), ignores tags of any other
@@ -147,17 +144,7 @@ Images are built by GitHub Actions, never locally.
   tag (`git grep -nE 'fork\.[0-9]|insciqq/codex-lb[:/]v?[0-9]|--branch v[0-9]'`).
   Bump them with the version; the fork publishes no Helm chart or Python
   package.
-* The release notes' image section names `:<version>` and `:sha-<full>`,
-  the digest and the attestation command, and says: "`latest` follows the
-  newest fork release for convenience. Production and automated updaters
-  should pin a version, `sha-` tag or digest, because a release can include
-  database migrations that an image rollback cannot undo."
-* Both READMEs open with the upstream triage result: a snapshot date and
-  counts. At each release, after `python3 scripts/fork_registry.py check
-  --strict`, refresh them from the "Summary" of `fork/REGISTRY.md`: the
-  registry's upstream-state date, pull requests ported (`taken` plus `taken
-  with changes`), `own-fix` pull requests, and `fixed` and `partial` issues.
-* When a run fails in the attest, tag or latest job, finish that run with
+* When a run fails in the attest or tag job, finish that run with
   `gh run rerun <run-id> --failed`: it signs or tags the digest already
   built and keeps the earlier verify result. Start a new run with
   `gh workflow run "Fork image" --ref v<version>` only when the run
@@ -165,8 +152,30 @@ Images are built by GitHub Actions, never locally.
   push or the run failed before tagging; a new run stops in verify once
   `:<version>` exists.
 
-The Fork image workflow has to be enabled once in the Actions settings. The
-first publish creates the `codex-lb` container package; check in its
+### Release steps
+
+1. On a work branch, bump the version in the release-managed files and in
+   the README, `docs/` and chart README commands. Refresh the triage lead of
+   both READMEs from the "Summary" of `fork/REGISTRY.md`: the registry's
+   upstream-state date, pull requests ported (`taken` plus `taken with
+   changes`), `own-fix` pull requests, and `fixed` and `partial` issues.
+   `python3 scripts/fork_registry.py check --strict` must pass.
+2. Push it as `wip/merge-<name>`. When CI is green, move the fork's `main` to
+   the SHA that CI tested ([Branches](#branches)).
+3. Tag that SHA `v<version>` and push the tag. Fork image publishes
+   `:<version>` and `:sha-<full>`, and its job summary prints the digest.
+4. Publish the GitHub Release for the tag. In the image section of the
+   notes, name `:<version>`, `:sha-<full>`, the digest and the attestation
+   command, and say: "`latest` points to the newest release; it is moved by
+   the maintainers after each release. Production and automated updaters
+   should pin a version, `sha-` tag or digest, because a release can include
+   database migrations that an image rollback cannot undo."
+5. Move `latest` to the release:
+   `gh workflow run "Fork image latest" --ref main -f release_tag=v<version>`,
+   and check that its summary names the digest from step 3.
+
+The Fork image and Fork image latest workflows have to be enabled once in
+the Actions settings. The first publish creates the `codex-lb` container package; check in its
 settings that it is public before relying on anonymous pulls.
 
 ## What goes into the fork's `main`

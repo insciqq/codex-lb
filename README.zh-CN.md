@@ -73,8 +73,8 @@ nix run github:insciqq/codex-lb/v1.25.0-fork.2
 
 `uvx codex-lb` 安装的是上游的 PyPI 版本，而不是本 fork；本 fork 只发布容器镜像。
 
-本 fork 发布 `ghcr.io/insciqq/codex-lb:<version>` 和 `:sha-<完整 commit SHA>`；为方便起见，`latest` 指向最新的
-fork 版本。生产环境和自动更新工具应固定版本号、`sha-` 标签或 digest：一个版本可能包含数据库迁移，仅回滚镜像
+本 fork 发布 `ghcr.io/insciqq/codex-lb:<version>` 和 `:sha-<完整 commit SHA>`；`latest` 指向最新版本，由维护者在
+每次发布后移动。生产环境和自动更新工具应固定版本号、`sha-` 标签或 digest：一个版本可能包含数据库迁移，仅回滚镜像
 无法撤销这些迁移（见 [FORK.md](FORK.md#releases-and-images)）。
 
 打开 [localhost:2455](http://localhost:2455) → 添加账户 → 完成。

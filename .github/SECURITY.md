@@ -96,8 +96,8 @@ release of the fork's own, on the fork's `main` branch; see
 not receive backports — please upgrade.
 
 Each release publishes `ghcr.io/insciqq/codex-lb:<version>` and
-`ghcr.io/insciqq/codex-lb:sha-<full commit SHA>`, and `latest` follows the
-newest release. Deploy by the `sha-` tag or by digest and verify the digest's
+`ghcr.io/insciqq/codex-lb:sha-<full commit SHA>`, and `latest` points to the
+newest release once the maintainers move it. Deploy by the `sha-` tag or by digest and verify the digest's
 build provenance first ([FORK.md](../FORK.md#releases-and-images)).
 
 ## Hall of fame

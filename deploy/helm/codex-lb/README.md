@@ -14,9 +14,10 @@ helm dependency build deploy/helm/codex-lb/
 ```
 
 The chart's default image is `ghcr.io/insciqq/codex-lb:<appVersion>`. The
-`latest` tag follows the newest fork release for convenience; in production
-pin `image.digest`, or set `image.tag=sha-<full commit SHA>`, because a release
-can include database migrations that an image rollback cannot undo.
+`latest` tag points to the newest release and is moved by the maintainers
+after each release. In production pin `image.digest`, or set
+`image.tag=sha-<full commit SHA>`, because a release can include database
+migrations that an image rollback cannot undo.
 
 ## Design Goal
 
