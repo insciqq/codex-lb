@@ -535,6 +535,16 @@ account A answers `model_not_found` before `response.created`. The client
 receives A's rejection; the history is not re-sent to B with the namespace
 stripped. The same history without the namespace still moves once to B.
 
+The connect loop computes the owner requirement before selection, and
+selection then binds an account-scoped body (a captured Codex history carries
+item ids) to the account it picks. A handshake model rejection from that
+account surfaces its original error. Every other handshake failure keeps the
+requirement computed before selection, so a confirmed proxy pre-dispatch
+failure or a deleted account still fails over as before. Known limitation,
+unchanged from upstream: a handshake 401, 5xx or 429 on such a selection-bound
+body excludes the account, and the next selection, which still requires it,
+ends in `previous_response_owner_unavailable`.
+
 ## Reasoning policy for configuration_update items
 
 Mid-conversation effort changes arrive as `configuration_update` input items, so a policy that reads only the request-level `reasoning.effort` and model aliases lets an item select any effort. Clients persist the items in the history they resend, so a policy that rejects a thread for one historical item would break it for good: a user who toggles effort under a pinned key, or a thread that recorded an item before this policy existed, would fail on every later turn, and compaction could not recover it. See the configuration_update policy requirement in [spec.md](spec.md).

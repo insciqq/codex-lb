@@ -970,6 +970,141 @@ def test_backend_responses_websocket_owner_bound_model_not_found_surfaces_origin
     assert event["error"]["code"] == "model_not_found"
 
 
+def test_backend_responses_websocket_selection_bound_model_not_found_surfaces_original_404(
+    app_instance,
+    monkeypatch,
+):
+    """An owner bound by selection itself keeps its own model rejection.
+
+    A captured Codex body carries item ids, so selection binds the unanchored
+    request to the account it picks. Excluding that account after it rejects
+    the model would only re-select into the binding and replace the 404 with
+    owner unavailability before anything reached upstream.
+    """
+    account = SimpleNamespace(id="acct_ws_selection_bound_owner", security_work_authorized=False)
+    selection_exclusions: list[set[str]] = []
+    opened_accounts: list[str] = []
+
+    async def select_unless_excluded(self, *args, **kwargs):
+        del self, args
+        excluded = set(kwargs["exclude_account_ids"])
+        selection_exclusions.append(excluded)
+        return proxy_module.AccountSelection(
+            account=None if account.id in excluded else cast(Account, account),
+            error_message=None,
+        )
+
+    async def reject_model(self, selected_account, headers, **kwargs):
+        del self, headers, kwargs
+        opened_accounts.append(selected_account.id)
+        raise proxy_module.ProxyResponseError(
+            404,
+            proxy_module.openai_error(
+                "model_not_found",
+                "The model `gpt-5.5` does not exist or you do not have access to it.",
+                error_type="invalid_request_error",
+            ),
+            failure_phase="connect",
+        )
+
+    async def classify_connect_error(self, selected_account, exc):
+        del self, selected_account, exc
+        return {"failure_class": "retryable_transient"}
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(_authorization: str | None, *, request: object | None = None):
+        return None
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget_compatible", select_unless_excluded)
+    monkeypatch.setattr(proxy_module.ProxyService, "_try_open_websocket_connect_attempt", reject_model)
+    monkeypatch.setattr(proxy_module.ProxyService, "_handle_websocket_connect_error", classify_connect_error)
+
+    captured_body = json.loads(
+        (Path(__file__).parents[1] / "fixtures/codex_bodies/captured_gpt55_standard_http.json").read_text()
+    )
+    response_create = {**captured_body, "type": "response.create", "stream": True}
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect("/backend-api/codex/responses") as websocket:
+            websocket.send_text(json.dumps(response_create))
+            event = json.loads(websocket.receive_text())
+
+    assert opened_accounts == [account.id]
+    assert selection_exclusions == [set()]
+    assert event["type"] == "error"
+    assert event["status"] == 404
+    assert event["error"]["code"] == "model_not_found"
+
+
+def test_backend_responses_websocket_selection_bound_proxy_pre_dispatch_failure_still_fails_over(
+    app_instance,
+    monkeypatch,
+):
+    """Only a model rejection keeps a selection-bound body on its account.
+
+    A confirmed proxy pre-dispatch failure sent nothing upstream, so it keeps
+    the ordinary failover: the account is backed off and excluded, and the
+    next selection runs without it.
+    """
+    account = SimpleNamespace(id="acct_ws_selection_bound_proxy", security_work_authorized=False)
+    selection_exclusions: list[set[str]] = []
+    backed_off_accounts: list[str] = []
+
+    async def select_unless_excluded(self, *args, **kwargs):
+        del self, args
+        excluded = set(kwargs["exclude_account_ids"])
+        selection_exclusions.append(excluded)
+        return proxy_module.AccountSelection(
+            account=None if account.id in excluded else cast(Account, account),
+            error_message=None,
+        )
+
+    async def fail_proxy_connect(self, selected_account, headers, **kwargs):
+        del self, selected_account, headers, kwargs
+        raise proxy_module.ProxyResponseError(
+            502,
+            proxy_module.openai_error("upstream_unavailable", "proxy connect failed"),
+            failure_phase="connect",
+            retryable_same_contract=True,
+            failure_detail="proxy_connect_pre_dispatch",
+            failure_exception_type="ClientProxyConnectionError",
+        )
+
+    async def record_error_backoff(self, backed_off_account):
+        del self
+        backed_off_accounts.append(backed_off_account.id)
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(_authorization: str | None, *, request: object | None = None):
+        return None
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget_compatible", select_unless_excluded)
+    monkeypatch.setattr(proxy_module.ProxyService, "_try_open_websocket_connect_attempt", fail_proxy_connect)
+    monkeypatch.setattr(proxy_module.LoadBalancer, "record_error_backoff", record_error_backoff)
+
+    captured_body = json.loads(
+        (Path(__file__).parents[1] / "fixtures/codex_bodies/captured_gpt55_standard_http.json").read_text()
+    )
+    response_create = {**captured_body, "type": "response.create", "stream": True}
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect("/backend-api/codex/responses") as websocket:
+            websocket.send_text(json.dumps(response_create))
+            event = json.loads(websocket.receive_text())
+
+    assert event["type"] == "error"
+    assert selection_exclusions == [set(), {account.id}]
+    assert backed_off_accounts == [account.id]
+
+
 def test_backend_responses_websocket_canonical_source_previous_response_requires_http(
     app_instance,
     monkeypatch,

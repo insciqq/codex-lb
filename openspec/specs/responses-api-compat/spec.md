@@ -5607,6 +5607,13 @@ another proxy-generated failure.
 - **THEN** the proxy does not move the request to another account
 - **AND** it preserves the original upstream rejection
 
+#### Scenario: account bound by connect selection keeps its handshake model rejection
+
+- **GIVEN** a Responses WebSocket request without a client anchor whose body is account-scoped, so the connect binds it to the account selection returns
+- **WHEN** that account rejects the upstream handshake with a model rejection before anything is sent
+- **THEN** the client receives that account's original rejection, without excluding the account, a replacement selection or an account-health write
+- **AND** any other handshake failure of that attempt keeps its ordinary failover decision
+
 ### Requirement: Model-capacity messages are retryable transient failures
 
 When upstream returns a temporary model-capacity failure whose message says that the selected model is at capacity, the proxy MUST treat the failure as retryable transient even if the upstream error code or HTTP status would otherwise look non-retryable.

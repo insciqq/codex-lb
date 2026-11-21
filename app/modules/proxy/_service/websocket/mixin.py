@@ -4798,7 +4798,14 @@ class _WebSocketMixin:
                 # the owner's own envelope (a 404 ``model_not_found`` included)
                 # with owner unavailability. Capacity failures keep their
                 # existing owner-unavailable translation.
-                owner_bound=require_preferred_account and model_scoped_rejection,
+                owner_bound=model_scoped_rejection
+                and (
+                    require_preferred_account
+                    # Selection binds an account-scoped body to the account it
+                    # picked after the requirement above was computed.
+                    or request_state.replay_required_account_id == account.id
+                    or _websocket_recorded_portability_vetoes_account_switch(request_state)
+                ),
             )
         else:
             action = "surface"
