@@ -10,8 +10,8 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 
 | Status | Pull requests | Meaning |
 |---|---|---|
-| taken | 50 | ported from the upstream PR into the fork |
-| taken with changes | 8 | ported, with the fork's changes noted |
+| taken | 52 | ported from the upstream PR into the fork |
+| taken with changes | 9 | ported, with the fork's changes noted |
 | own-fix | 4 | not taken; the problem is fixed by the fork's own commits |
 | rejected | 32 | reviewed and not taken, for the reason given |
 | superseded | 54 | replaced by another PR |
@@ -19,19 +19,19 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | not-applicable | 4 | does not concern the fork (upstream release, CI, docs or translation work) |
 | merged-upstream | 0 | merged upstream; the fork gets it with upstream main |
 | deferred | 13 | decided, scheduled after the first release |
-| pending | 16 | no decision yet |
+| pending | 13 | no decision yet |
 | total | 231 | |
 
 | Status | Issues | Meaning |
 |---|---|---|
-| fixed | 30 | fixed in the fork by a taken PR or the fork's own commits |
-| partial | 7 | partly addressed in the fork; the reason says what is left |
+| fixed | 34 | fixed in the fork by a taken PR or the fork's own commits |
+| partial | 8 | partly addressed in the fork; the reason says what is left |
 | fixed-upstream | 5 | fixed in upstream main |
 | not-fixed | 13 | reviewed and not fixed in the fork, for the reason given |
 | out-of-scope | 40 | a feature request |
 | not-applicable | 8 | does not concern the fork |
 | deferred | 13 | decided, scheduled after the first release |
-| pending | 14 | no decision yet |
+| pending | 9 | no decision yet |
 | total | 130 | |
 
 ## Pull requests
@@ -102,7 +102,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2445](https://github.com/Soju06/codex-lb/pull/2445) | feat(proxy): forward the Codex plugin catalog upstream so chatgpt\_base\_url can point at codex-lb | closed | out-of-scope | A new plugin-catalog passthrough to the upstream backend; a path-traversal review finding was unresolved when the author closed it. |
 | [2448](https://github.com/Soju06/codex-lb/pull/2448) | feat(proxy): diversify subagents from parent accounts | open | out-of-scope | Opt-in subagent account diversification with a new setting and an Alembic revision. |
 | [2451](https://github.com/Soju06/codex-lb/pull/2451) | fix(proxy): refuse remote compaction for model-source models before account selection | open | rejected | Changes the remote-compaction contract for model-source models from forwarding to refusing, which upstream left for a maintainer decision. The standalone compact routes skip the continuity check, so an anchored subscription thread could be refused where main serves it.; issues [2318](https://github.com/Soju06/codex-lb/issues/2318) |
-| [2457](https://github.com/Soju06/codex-lb/pull/2457) | fix(proxy): classify Windows route errors 1231/1232 as host network loss | open | pending | - |
+| [2457](https://github.com/Soju06/codex-lb/pull/2457) | fix(proxy): classify Windows route errors 1231/1232 as host network loss | open | taken | issues [2456](https://github.com/Soju06/codex-lb/issues/2456) |
 | [2458](https://github.com/Soju06/codex-lb/pull/2458) | fix(proxy): release a bridge-bypassed turn-state owner on quota evidence | open | deferred | Moving a turn-state owner's history on quota evidence is a real gap, but it needs the owner-relocation design scheduled after the first release. |
 | [2463](https://github.com/Soju06/codex-lb/pull/2463) | feat(api-keys): add estimated usage-share limits | open | out-of-scope | API-key usage-share limits with an Alembic revision. |
 | [2464](https://github.com/Soju06/codex-lb/pull/2464) | feat(ui): add compact and fullscreen dashboard account views | open | out-of-scope | New dashboard account view modes and a fullscreen layout. |
@@ -130,7 +130,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2526](https://github.com/Soju06/codex-lb/pull/2526) | fix(model-sources): preserve declared collaboration namespaces | closed | superseded | superseded by [2724](https://github.com/Soju06/codex-lb/pull/2724); Same change as PR 2724. |
 | [2529](https://github.com/Soju06/codex-lb/pull/2529) | fix(metrics): stop the metrics server from reconfiguring process logging | closed | superseded | superseded by [2507](https://github.com/Soju06/codex-lb/pull/2507); The same metrics-server logging fix is carried by PR 2507. |
 | [2530](https://github.com/Soju06/codex-lb/pull/2530) | fix(http-bridge): parse multiline websocket JSON messages | open | taken | issues [2465](https://github.com/Soju06/codex-lb/issues/2465) |
-| [2531](https://github.com/Soju06/codex-lb/pull/2531) | fix(proxy): normalize parallel\_tool\_calls for Responses-Lite upstream | open | pending | - |
+| [2531](https://github.com/Soju06/codex-lb/pull/2531) | fix(proxy): normalize parallel\_tool\_calls for Responses-Lite upstream | open | taken | issues [2465](https://github.com/Soju06/codex-lb/issues/2465), [2538](https://github.com/Soju06/codex-lb/issues/2538) |
 | [2534](https://github.com/Soju06/codex-lb/pull/2534) | feat(proxy): admit bounded inline images on the HTTP responses bridge | open | out-of-scope | Admits inline images on the HTTP bridge, a new capability continued in PR 2732. |
 | [2537](https://github.com/Soju06/codex-lb/pull/2537) | fix(images): route image requests through compatible host | closed | rejected | Overrides the maintainer-approved image host selection from PR 2320, and bundles an unrelated doubling of the request-body and WebSocket message limits. |
 | [2539](https://github.com/Soju06/codex-lb/pull/2539) | fix(proxy): treat websocket close 1009 as terminal payload\_too\_large | open | pending | - |
@@ -173,7 +173,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2624](https://github.com/Soju06/codex-lb/pull/2624) | fix(proxy): record the resolved upstream transport, not auto | closed | rejected | Changes a telemetry label contract that awaits a maintainer decision; recording auto matches the existing spec scenario. |
 | [2625](https://github.com/Soju06/codex-lb/pull/2625) | fix(api-keys): expire elapsed samples in the /v1/usage aggregate | open | taken with changes | changes: Only the reset_at expiry fix is taken; the bundled pool rate limits and backend relay are a feature and are left out. |
 | [2626](https://github.com/Soju06/codex-lb/pull/2626) | fix(proxy): preserve quota reset evidence in retry health | closed | taken with changes | changes: Only the direct WebSocket call sites, using the rejection-time normalizer from PR 2728; keyed owner-pinned terminals queue the penalty until settlement. |
-| [2627](https://github.com/Soju06/codex-lb/pull/2627) | fix(proxy): recover owned HTTP sessions during transient backoff | closed | pending | - |
+| [2627](https://github.com/Soju06/codex-lb/pull/2627) | fix(proxy): recover owned HTTP sessions during transient backoff | closed | taken with changes | changes: The error-backoff bypass is limited to proven continuity ownership (required continuity owners and resolved hard sticky rows), so soft preferences, single-account routing and reuse probes keep their error backoff; a file pin on first bridge creation does not bypass, as upstream.; issues [2493](https://github.com/Soju06/codex-lb/issues/2493) |
 | [2628](https://github.com/Soju06/codex-lb/pull/2628) | fix(proxy): honor poisoned fallback keys before bridge anchor planning | open | own-fix | The native full-history resend loop is fixed by the fork's own change, which never adds a proxy anchor to native Codex HTTP history; the PR's pre-dispatch 404 refusal of incomplete resends is not adopted. |
 | [2630](https://github.com/Soju06/codex-lb/pull/2630) | fix(shutdown): bound managed HTTP client close | open | taken | - |
 | [2631](https://github.com/Soju06/codex-lb/pull/2631) | fix(deploy): forward startup migration termination signals | open | taken | - |
@@ -330,11 +330,11 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2169](https://github.com/Soju06/codex-lb/issues/2169) | test: make native SSE fallback refusal fixture portable on macOS | open | fixed | fixed by PR [2738](https://github.com/Soju06/codex-lb/pull/2738) |
 | [2262](https://github.com/Soju06/codex-lb/issues/2262) | feat(proxy): preserve built-in OpenAI provider when routing ChatGPT-authenticated Codex Desktop through codex-lb | open | out-of-scope | PRs [2597](https://github.com/Soju06/codex-lb/pull/2597); Feature request: keep the built-in OpenAI provider in Codex Desktop while routing through codex-lb. |
 | [2266](https://github.com/Soju06/codex-lb/issues/2266) | bug: paused streams can keep growing worker memory | open | not-fixed | PRs [1903](https://github.com/Soju06/codex-lb/pull/1903); Reviewed: a paused stream buffers at most one response, the same cost as a non-streaming request; the proposed back-pressure (PR 1903) would let one paused client hold other requests until the request deadline. |
-| [2268](https://github.com/Soju06/codex-lb/issues/2268) | bug: old bridge requests can clear a newer session's quarantine | open | pending | PRs [2276](https://github.com/Soju06/codex-lb/pull/2276) |
+| [2268](https://github.com/Soju06/codex-lb/issues/2268) | bug: old bridge requests can clear a newer session's quarantine | open | fixed | own fix; PRs [2276](https://github.com/Soju06/codex-lb/pull/2276) |
 | [2269](https://github.com/Soju06/codex-lb/issues/2269) | bug: forwarded continuations can lose required conversation history | open | pending | - |
 | [2270](https://github.com/Soju06/codex-lb/issues/2270) | bug: retry cleanup can delete state changed by a newer request | open | fixed | fixed by PR [2280](https://github.com/Soju06/codex-lb/pull/2280) |
 | [2271](https://github.com/Soju06/codex-lb/issues/2271) | bug: retry claims can stay locked after their owner exits | open | not-fixed | No claim-release step exists in submit-interruption cleanup: a replay claim is a compare-and-swap bump of the admission generation and an orphaned bump ages out with the circuit TTL; a release needs a new durable compare-and-swap and open claim-policy decisions. |
-| [2272](https://github.com/Soju06/codex-lb/issues/2272) | bug: bridge retries can stay blocked after cooldown ends | open | pending | - |
+| [2272](https://github.com/Soju06/codex-lb/issues/2272) | bug: bridge retries can stay blocked after cooldown ends | open | fixed | own fix |
 | [2273](https://github.com/Soju06/codex-lb/issues/2273) | bug: incomplete responses can bypass bridge retry limits | open | not-fixed | PRs [2278](https://github.com/Soju06/codex-lb/pull/2278); Upstream has not been shown to send a response.incomplete with reason stream_incomplete and no error; the proxy's own stream_incomplete terminal is a response.failed with an error code and is already counted. |
 | [2274](https://github.com/Soju06/codex-lb/issues/2274) | bug: continuations can be routed to the wrong account | open | pending | - |
 | [2290](https://github.com/Soju06/codex-lb/issues/2290) | feat(model-sources): discover CLIProxyAPI catalogs and retain unavailable ownership | open | out-of-scope | PRs [2305](https://github.com/Soju06/codex-lb/pull/2305); Feature request: CLIProxyAPI catalog discovery for model sources. |
@@ -359,19 +359,19 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2442](https://github.com/Soju06/codex-lb/issues/2442) | bug(proxy): early token\_expired reauth account poisons fresh Codex HTTP routing | open | deferred | Blocking an account on a refused access token must not retire accounts whose refresh token still works. |
 | [2443](https://github.com/Soju06/codex-lb/issues/2443) | bug(metrics): dashboard/report TPS uses post-settlement latency and reasoning-inclusive TTFT | open | not-fixed | PRs [2444](https://github.com/Soju06/codex-lb/pull/2444); A correct generation rate needs the upstream terminal latency stored per request, which is a schema change; the fork keeps the upstream schema. |
 | [2455](https://github.com/Soju06/codex-lb/issues/2455) | bug(proxy): bridge payload bypass blocks verified quota failover | open | deferred | Failing a bridge-bypassed history over to another account on quota needs the owner-relocation design scheduled after the first release. |
-| [2456](https://github.com/Soju06/codex-lb/issues/2456) | bug(proxy): Windows route errors 1231/1232 bypass shared-client recovery | open | pending | - |
-| [2465](https://github.com/Soju06/codex-lb/issues/2465) | bug: beta.9 sticky bridge lineages wedge permanently; image+tools path sends invalid parallel\_tool\_calls | open | partial | partly fixed by PR [2530](https://github.com/Soju06/codex-lb/pull/2530); own fix; Multi-line WebSocket JSON from upstream is parsed (PR 2530), so upstream errors no longer end as eventless bridge timeouts; the Responses-Lite parallel_tool_calls rejection on the image-plus-tools path is not addressed yet. |
+| [2456](https://github.com/Soju06/codex-lb/issues/2456) | bug(proxy): Windows route errors 1231/1232 bypass shared-client recovery | open | fixed | fixed by PR [2457](https://github.com/Soju06/codex-lb/pull/2457) |
+| [2465](https://github.com/Soju06/codex-lb/issues/2465) | bug: beta.9 sticky bridge lineages wedge permanently; image+tools path sends invalid parallel\_tool\_calls | open | partial | partly fixed by PR [2530](https://github.com/Soju06/codex-lb/pull/2530), [2531](https://github.com/Soju06/codex-lb/pull/2531); own fix; Multi-line WebSocket JSON from upstream is parsed (PR 2530), so upstream errors no longer end as eventless bridge timeouts; the Responses-Lite parallel_tool_calls rejection on the image-plus-tools path is not addressed yet. |
 | [2470](https://github.com/Soju06/codex-lb/issues/2470) | bug(proxy): direct-HTTP stream that dies with "Native upstream transport ended before a terminal event" never releases its account stream lease → per-account cap wedges (every request waits, then \`account\_stream\_cap\`) until restart | open | fixed | fixed by PR [2616](https://github.com/Soju06/codex-lb/pull/2616); own fix; PRs [2472](https://github.com/Soju06/codex-lb/pull/2472) |
 | [2471](https://github.com/Soju06/codex-lb/issues/2471) | bug(proxy): with upstream\_stream\_transport=http the native egress multiplexes every account's streams onto ONE shared HTTP/2 connection — one transport failure kills all in-flight streams of all accounts, is logged with no reason/status, and is never retried | open | partial | own fix; PRs [2701](https://github.com/Soju06/codex-lb/pull/2701); On the HTTP path native_egress_request_failed now logs a typed transport cause, and close codes are logged as WebSocket diagnostics; per-account connection pooling is a pooling-policy change scheduled after the first release. |
 | [2492](https://github.com/Soju06/codex-lb/issues/2492) | feat: Reset API key limit usage from dashboard without regenerating keys | open | out-of-scope | Feature request: reset API-key usage counters from the dashboard. |
-| [2493](https://github.com/Soju06/codex-lb/issues/2493) | bug: Beta.9 HTTP bridge can close native stream without terminal event after proxy-injected anchor rejection | open | pending | - |
+| [2493](https://github.com/Soju06/codex-lb/issues/2493) | bug: Beta.9 HTTP bridge can close native stream without terminal event after proxy-injected anchor rejection | open | partial | partly fixed by PR [2627](https://github.com/Soju06/codex-lb/pull/2627); The fork no longer anchors native Codex HTTP history and keeps a backed-off continuity owner; other upstream-phase stream endings can still close a committed native stream without a terminal event. |
 | [2499](https://github.com/Soju06/codex-lb/issues/2499) | bug(model-sources): multi-agent capability does not preserve client collaboration tools | open | fixed | fixed by PR [2724](https://github.com/Soju06/codex-lb/pull/2724) |
 | [2500](https://github.com/Soju06/codex-lb/issues/2500) | bug: #1968 shield-loop livelock still ships in latest stable 1.24.0; please cut a stable patch with #1969 | open | fixed-upstream | PRs [1969](https://github.com/Soju06/codex-lb/pull/1969), [1972](https://github.com/Soju06/codex-lb/pull/1972); The shield-loop livelock fix (PRs 1969 and 1972) is in upstream main; the request for a stable patch release concerns upstream releases. |
 | [2501](https://github.com/Soju06/codex-lb/issues/2501) | bug: native HTTP upstream regressed in 1.25.0-beta.7 with native upstream request failures | open | not-fixed | No reproducible defect beyond the shared native egress connection tracked in issue 2471; the report still lacks the data requested upstream. |
 | [2505](https://github.com/Soju06/codex-lb/issues/2505) | bug: shutdown cancels schedulers and the leader-lease keeper mid-DB-work (SQLite pool CancelledError, unreleased lease, unclean run-state) | open | deferred | PRs [2506](https://github.com/Soju06/codex-lb/pull/2506); Letting DB-owning tasks finish before cancellation needs a stop that keeps the leader lease until detached work ends; the candidate PR 2506 can release the lease while the old leader's work still runs. |
 | [2511](https://github.com/Soju06/codex-lb/issues/2511) | bug(accounts): self\_serve\_business\_prolite usage plan is rejected as unknown | open | fixed | fixed by PR [2512](https://github.com/Soju06/codex-lb/pull/2512); own fix |
 | [2514](https://github.com/Soju06/codex-lb/issues/2514) | feat(accounts): redeem all eligible reset credits in one action | open | out-of-scope | PRs [2725](https://github.com/Soju06/codex-lb/pull/2725); Feature request: redeem all eligible reset credits in one action. |
-| [2538](https://github.com/Soju06/codex-lb/issues/2538) | bug(http-bridge): upstream error responses silently swallowed as timeouts — pretty JSON parsing + Responses-Lite parallel\_tool\_calls | open | pending | - |
+| [2538](https://github.com/Soju06/codex-lb/issues/2538) | bug(http-bridge): upstream error responses silently swallowed as timeouts — pretty JSON parsing + Responses-Lite parallel\_tool\_calls | open | fixed | fixed by PR [2531](https://github.com/Soju06/codex-lb/pull/2531) |
 | [2551](https://github.com/Soju06/codex-lb/issues/2551) | feat: option to auto redeem reset on quota exceeded | open | out-of-scope | Feature request: redeem a reset credit automatically when quota is exhausted. |
 | [2552](https://github.com/Soju06/codex-lb/issues/2552) | feat: add blacklisted models for an api key | open | out-of-scope | Feature request: a per-API-key model blocklist. |
 | [2554](https://github.com/Soju06/codex-lb/issues/2554) | bug(routing): leased-token pressure divides tokens by plan credits, so one open stream makes a Plus account look 100% used | open | fixed | fixed by PR [2558](https://github.com/Soju06/codex-lb/pull/2558) |
@@ -495,3 +495,17 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(reset-credits): answer a v1 redeem for a deleted account as missing | - | fail-closed proxy route for accounts deleted mid-operation |
 | fix(upstream-proxy): treat a whitespace installation id as blank | - | fail-closed proxy route for accounts deleted mid-operation |
 | fix(proxy): keep the installation id in proxy warmup snapshots | - | fail-closed proxy route for accounts deleted mid-operation |
+| perf(proxy): scan for account-scoped encrypted state only when needed | - | hardening of the upstream PR 2001 port |
+| fix(proxy): keep unanchored namespaced WebSocket history on model rejection | - | hardening of the upstream PR 2332 port |
+| fix(proxy): surface a selection-bound WebSocket handshake model rejection | - | hardening of the upstream PR 2332 port |
+| fix(proxy): release the bridge lease when the forced refresh after a 401 fails | - | fail-closed proxy route for accounts deleted mid-operation |
+| fix(proxy): release bridge connect leases before account health writes | - | fail-closed proxy route for accounts deleted mid-operation |
+| fix(proxy): never wait on a stuck bridge reconnect lease release | - | fail-closed proxy route for accounts deleted mid-operation |
+| chore(release): set the fork version to 1.25.0+fork.1 | - | fork release version |
+| fix(runtime): ignore build metadata in the update check | - | fork release version |
+| fix(proxy): stop reloads from arming a bridge probe after the cooldown ended | [2272](https://github.com/Soju06/codex-lb/issues/2272) | - |
+| fix(proxy): clear only bridge quarantine evidence the completion observed | [2268](https://github.com/Soju06/codex-lb/issues/2268) | - |
+| fix(proxy): apply the ended-cooldown rule when a missed settle re-adopts | [2272](https://github.com/Soju06/codex-lb/issues/2272) | - |
+| refactor(proxy): tie bridge quarantine clears to the registered session | [2268](https://github.com/Soju06/codex-lb/issues/2268) | - |
+| fix(proxy): drop the old lease whenever a missed settle adopts a replacement | [2272](https://github.com/Soju06/codex-lb/issues/2272) | - |
+| refactor(proxy): move the required continuity owner check out of load\_balancer.py | - | line ratchet room for the upstream PR 2627 port |
