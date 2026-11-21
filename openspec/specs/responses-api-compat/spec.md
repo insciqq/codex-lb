@@ -6282,8 +6282,7 @@ account-neutral item checks as historical interleaving and has no response-owned
 ID. A developer message in the stored prefix outside that canonical position or
 the verified pending-call/matching-output interleave MUST fail closed. Outside
 Responses Lite, developer messages stay inline, and the replay proofs MUST
-judge such `input` without its account-neutral developer messages, as when
-those were hoisted into `instructions`.
+judge such `input` as the old hoist left it in `input`.
 
 #### Scenario: Canonical Responses-Lite prefix remains transparent
 

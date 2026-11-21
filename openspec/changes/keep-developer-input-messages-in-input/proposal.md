@@ -41,9 +41,10 @@ None.
   the upstream in `input` as that requirement states, instead of being hoisted afterwards; `system` messages are still
   hoisted.
 - Requests with `additional_tools` are unchanged (Responses Lite rule).
-- Replay heuristics that decided delta versus full resend, or proved retained output, on input without developer
-  messages now judge two explicit views of `input` (classifier and proof), so replay behaviour stays as it was. See
-  the ADDED requirement.
-- One prompt-cache miss per existing thread after the change, replay classification outside Responses Lite that
-  ignores inline developer messages, a compact budget that now counts developer text, and `system` messages that
-  are still hoisted: see `context.md`.
+- Replay and continuity decisions (`app/modules/proxy`: WebSocket and HTTP bridge classifiers, stored-context
+  recording and matching, prefix trims, durable and compact proofs, cross-transport replay, tool-call dedupe) judge
+  the base-equivalent input, the list the old hoist produced, so replay behaviour stays as it was; the
+  account-neutrality gate accepts Codex developer metadata. See the ADDED requirement.
+- One prompt-cache miss per existing thread after the change, a compact budget that now counts developer text, a
+  developer message inserted ahead of a trimmed stored prefix not being sent on that anchored request, and `system`
+  messages that are still hoisted: see `context.md`.

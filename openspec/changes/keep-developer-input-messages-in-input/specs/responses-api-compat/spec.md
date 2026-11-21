@@ -132,8 +132,7 @@ account-neutral item checks as historical interleaving and has no response-owned
 ID. A developer message in the stored prefix outside that canonical position or
 the verified pending-call/matching-output interleave MUST fail closed. Outside
 Responses Lite, developer messages stay inline, and the replay proofs MUST
-judge such `input` without its account-neutral developer messages, as when
-those were hoisted into `instructions`.
+judge such `input` as the old hoist left it in `input`.
 
 #### Scenario: Canonical Responses-Lite prefix remains transparent
 
@@ -225,43 +224,36 @@ those were hoisted into `instructions`.
 
 ## ADDED Requirements
 
-### Requirement: Replay heuristics judge history without inline developer messages
+### Requirement: Replay and continuity decisions judge the base-equivalent input
 
-Outside Responses Lite (`input` without an `additional_tools` item), developer
-messages stay in `input` instead of moving into `instructions`, but they carry
-no conversation history. Replay heuristics MUST judge the `input` through one
-of two views, chosen by the direction in which each heuristic fails safe. The
-forwarded payload MUST keep the developer messages in place, and Responses Lite
-`input` MUST keep its own developer rules.
+Developer messages stay in `input` instead of moving into `instructions`, but
+every replay and continuity decision MUST judge exactly the `input` the
+normalizer produced before that change: the base-equivalent input. Outside
+Responses Lite (`input` without an `additional_tools` item) it applies the old
+hoist to each developer message (`type` omitted or `message`): the message
+leaves the list, except that in JSON mode (`text.format.type = "json_object"`
+on a Responses request) a message that mentions JSON stays, and non-text parts
+stay as a `user` message. Responses Lite `input` is unchanged. The forwarded
+payload MUST keep the developer messages in place.
 
-The classifier view serves every decision whether an `input` is a turn delta
-or a complete conversation: the WebSocket client full-resend retry classifier,
-the HTTP bridge full-resend classifier, and the bridge's decision whether a
-stored-prefix trim leaves an unanchored body that is safe to retry (a trimmed
-prefix of developer messages alone leaves a delta, so that decision stays as it
-was before the trim). A classifier fails safe by calling
-an `input` a delta, so this view MUST omit every developer message (`type`
-omitted or `message`) whatever its shape (metadata, blank parts, status, extra
-keys), exactly what the hoist removed.
+This covers the WebSocket client full-resend retry classifier, the HTTP bridge
+full-resend classifier, stored-context recording (item count and fingerprint),
+warm-session and durable stored-prefix matching with the stored-prefix trim
+and its retry-safety promotion, the durable retained-output and tool-manifest
+proofs, the compact account-neutral replay proof, cross-transport replay
+eligibility, the prior-output trims, and replayed tool-call deduplication
+segments. When a decision trims a prefix measured on the base-equivalent
+input, the wire prefix MUST end right after the wire item behind its last
+base-equivalent item: developer messages inside that range go with it, and
+developer messages after it stay, in order, with the remainder.
 
-The proof view serves the durable full-resend proofs (retained prior output and
-pending tool-call manifest) and the compact account-neutral replay proof. A
-proof fails safe by rejecting, so this view MUST omit only account-neutral
-developer messages: role `developer`, `type` omitted or `message`, no phase, no
-status or a `completed` status, only known fields, valid text content, and
-metadata limited to a nonblank `turn_id` and nonblank `content_item_kinds`.
-Any other developer item stays visible, and the proof rejects it. An item id
-does not make such a message account-scoped, because upstream never emits
-developer messages as response output. A verified stored prefix made only of
-such developer messages MUST still count as a verified prefix, and the proof
-MUST validate the retained output and fresh input that follow it. Without a
-durable fingerprint, the compact proof MUST keep a history whose only items
-ahead of the assistant output are developer messages owner-bound.
-
-When an anchored continuation echoes the prior response's output before its
-tool results and a developer message sits between them, the service MUST
-still trim the recognized echoed output and MUST keep the developer message,
-in order, ahead of the tool results.
+The account-neutrality gate MUST still judge the complete forwarded payload.
+Outside Responses Lite a developer message MAY carry Codex metadata limited to
+a nonblank `turn_id` and nonblank `content_item_kinds`, and blank text parts
+beside other parts; file and other account-owned references MUST still fail. A
+replacement-account payload built from a client body MUST NOT carry a
+developer message's item id; the compact replay strips it, and the bridge
+replay projection strips every item id.
 
 #### Scenario: Developer and user delta stays anchored on a cold bridge
 - **GIVEN** a hard bridge session with a durable latest response
@@ -269,16 +261,35 @@ in order, ahead of the tool results.
 - **THEN** the bridge sends the request with the durable anchor
 
 #### Scenario: Developer and user delta is not replayed without its anchor
-- **GIVEN** a WebSocket request with `previous_response_id` and `input` of developer messages, of any shape, and user messages
+- **GIVEN** a WebSocket request with `previous_response_id` and `input` of developer messages, of any shape, and one user message
 - **WHEN** upstream rejects the anchor before `response.created`
 - **THEN** the proxy does not replay the input as a fresh conversation
 
-#### Scenario: Non-Lite full resend with a developer prefix keeps its proof
-- **GIVEN** a durable stored prefix of a developer message (with or without Codex content-kind metadata), optionally followed by a user message
-- **WHEN** a client resends that prefix, the prior assistant output, and a new user message
-- **THEN** the retained-output proof succeeds as it did when the developer message was hoisted
-- **AND** the bridge sends the full resend without the durable anchor
+#### Scenario: Inputs the hoist kept still count as history
+- **GIVEN** an accepted empty prewarm on a WebSocket session
+- **WHEN** a chained first turn carries a JSON-mode instruction or a developer message with an image, and one user message, and loses its anchor
+- **THEN** the proxy replays the turn without the anchor, as before
+
+#### Scenario: A developer message ahead of stored history keeps the stored-prefix match
+- **GIVEN** a warm bridge session whose stored context is three history items
+- **WHEN** a client resends a new developer message, those three items, and a new user message
+- **THEN** the bridge sends only the new user message with the session anchor
+
+#### Scenario: A developer-only turn leaves no stored context
+- **GIVEN** a turn whose `input` held only developer messages
+- **WHEN** the next request repeats them with the prior answer and a new user message
+- **THEN** no stored-prefix trim or anchor injection uses that turn
+- **AND** the request goes upstream as sent
 
 #### Scenario: Developer update between echoed output and tool result
 - **WHEN** an anchored continuation sends echoed reasoning, assistant output, and tool call, then a developer message, then the tool result
 - **THEN** the upstream `input` is the developer message followed by the tool result
+
+#### Scenario: Developer update inside replayed tool calls
+- **WHEN** an anchored HTTP bridge request repeats a tool call and its output after a developer message
+- **THEN** the repeated call is deduplicated as if the developer message were not there
+
+#### Scenario: Developer metadata does not block failover
+- **GIVEN** a verified complete transcript whose developer message carries Codex metadata or a client item id
+- **WHEN** its owner account becomes unavailable
+- **THEN** the transcript may move to another account, without the developer item id

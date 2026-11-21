@@ -37,11 +37,16 @@ question about it):
   into `input` once, so its next request misses the prompt cache once. The derived prompt-cache anchor (its domain
   includes `instructions`) and the inferred HTTP bridge key are re-derived once for the same reason. No compatibility
   switch is kept.
-- Replay heuristics: outside Responses Lite, they judge `input` as they did while developer messages were hoisted
-  (see the `responses-api-compat` requirement "Replay heuristics judge history without inline developer messages").
-  The delta-or-full-resend classifiers ignore every developer message, because they fail safe by calling an input a
-  delta; the retained-output proofs ignore only account-neutral ones, because they fail safe by rejecting. Lite
-  input keeps its own developer rules. Replay behaviour is otherwise unchanged.
+- Replay and continuity: every decision judges the base-equivalent input, the list the old hoist produced (see the
+  `responses-api-compat` requirement "Replay and continuity decisions judge the base-equivalent input"), so replay
+  behaviour, stored contexts and tool-call dedupe match the behaviour before this change, and stored contexts
+  recorded before it stay valid. Where a decision trims a stored prefix, developer messages inside the trimmed wire
+  range go with it; a developer message a client inserts ahead of the stored history is therefore not sent on that
+  anchored request (before, it reached that request's `instructions` only).
+- Account neutrality: the gate on the forwarded payload accepts Codex developer metadata (`turn_id`,
+  `content_item_kinds`) and blank text parts beside others outside Lite. Proxy-built replacement payloads carry no
+  developer item id (compact strips it, the bridge projection strips all ids); a WebSocket or cross-transport fresh
+  replay of a client body whose developer message carries an id stays owner-bound.
 - Compact budget: developer messages now count toward the compact input budget and are trim anchors, so a compact
   request with a single very large developer message can now fail with `responses_compact_input_too_large`, where the
   same text in `instructions` was not counted.
