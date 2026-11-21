@@ -36,13 +36,47 @@ gh workflow run CI --ref <branch>
 gh run list --workflow CI --branch <branch> --limit 1
 ```
 
-Only CI runs in the fork. Release, publishing, release guard, simplicity
-budget, docs, labeler, stale and metadata workflows are disabled in the
-Actions settings; they serve upstream's `main`, pull requests and releases.
+Only CI and Fork image run in the fork. Release, publishing, release guard,
+simplicity budget, docs, labeler, stale and metadata workflows are disabled
+in the Actions settings; they serve upstream's `main`, pull requests and
+releases.
 
 Tags named `patched/<date>-<short>` keep previous `patched` heads reachable
-after a rebuild. They are recovery points, not versions. The fork publishes
-no releases, packages or images.
+after a rebuild. They are recovery points, not versions.
+
+## Releases and images
+
+The fork publishes container images only: no PyPI package, Helm chart or
+floating tags. Images are built by GitHub Actions, never locally.
+
+* Version tags are `v<upstream base>-fork.<n>`, for example `v1.25.0-fork.1`
+  on upstream's 1.25.0 train. The Python package version is the PEP 440 form
+  `1.25.0+fork.1`; SemVer files use `1.25.0-fork.1`.
+* Pushing a version tag runs `.github/workflows/fork-image.yml`, which
+  publishes `ghcr.io/insciqq/codex-lb:<version>` and
+  `ghcr.io/insciqq/codex-lb:sha-<full commit SHA>` for linux/amd64 and
+  linux/arm64. There is no `latest`, and an existing tag is never
+  overwritten.
+* Before building, the workflow requires the tag commit to be reachable from
+  `patched`, a successful full CI run for that exact commit, and the tag's
+  version in `pyproject.toml` and `app/__init__.py`.
+* Images carry `org.opencontainers.image.revision`, `.version` and `.source`
+  and a signed build provenance attestation. The job summary prints the
+  pushed digest.
+* Deploy by the `sha-<full>` tag or by digest, not by the version tag, and
+  verify the digest first:
+
+  ```bash
+  gh attestation verify oci://ghcr.io/insciqq/codex-lb@<digest> --repo insciqq/codex-lb
+  ```
+
+* When the tag push built nothing (the workflow was disabled, or the run
+  failed before pushing), publish an existing tag with
+  `gh workflow run "Fork image" --ref patched -f tag=v<version>`.
+
+The Fork image workflow has to be enabled once in the Actions settings. The
+first publish creates the `codex-lb` container package; check in its
+settings that it is public before relying on anonymous pulls.
 
 ## What goes into `patched`
 

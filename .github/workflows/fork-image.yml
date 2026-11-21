@@ -1,0 +1,238 @@
+name: Fork image
+
+# Publishes the fork's container image for a `v<upstream base>-fork.<n>` tag.
+# Upstream's release.yml and publish-beta-release.yml stay disabled and
+# untouched; this workflow only builds and pushes the image, with no PyPI,
+# Helm chart, GitHub release or floating tags.
+#
+# Gates, all before anything is pushed:
+# * the tag commit is reachable from origin/patched;
+# * the CI workflow succeeded for that exact commit (checks are per commit,
+#   so the green wip/merge-* run of the same SHA counts);
+# * pyproject.toml and app/__init__.py carry the tag's version;
+# * neither image tag exists yet, so a tag never moves to another build.
+#
+# Published tags: ghcr.io/insciqq/codex-lb:<version> and
+# ghcr.io/insciqq/codex-lb:sha-<full commit SHA>. Deploy by the sha tag or by
+# digest; verify with `gh attestation verify oci://<image>@<digest> --repo
+# insciqq/codex-lb`.
+
+on:
+  push:
+    tags: ["v*-fork.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing fork tag to publish (e.g. v1.25.0-fork.1)"
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/insciqq/codex-lb
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  verify:
+    name: Verify tag, branch and CI
+    runs-on: ubuntu-24.04
+    if: github.repository == 'insciqq/codex-lb'
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      sha: ${{ steps.tag.outputs.sha }}
+      version: ${{ steps.tag.outputs.version }}
+
+    steps:
+      - name: Validate tag name
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[1-9][0-9]*$ ]]; then
+            echo "::error::tag ${RELEASE_TAG} does not match v<major>.<minor>.<patch>-fork.<n>"
+            exit 1
+          fi
+
+      # fetch-depth 0 brings every branch and tag, including origin/patched.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
+      - name: Resolve tag commit and version
+        id: tag
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          if [[ ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not resolve ${RELEASE_TAG} to a full commit SHA"
+            exit 1
+          fi
+          version="${RELEASE_TAG#v}"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "${RELEASE_TAG} -> ${sha}"
+
+      - name: Require the commit on patched
+        env:
+          SHA: ${{ steps.tag.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git rev-parse --verify refs/remotes/origin/patched > /dev/null
+          if ! git merge-base --is-ancestor "${SHA}" refs/remotes/origin/patched; then
+            echo "::error::${SHA} is not reachable from origin/patched"
+            exit 1
+          fi
+
+      # The Python package version is PEP 440: X.Y.Z-fork.N is X.Y.Z+fork.N.
+      - name: Require the tag version in the project files
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          expected = os.environ["VERSION"].replace("-fork.", "+fork.", 1)
+          found = {
+              "pyproject.toml": tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"],
+              "app/__init__.py": re.search(r'^__version__ = "([^"]+)"', Path("app/__init__.py").read_text(), re.M).group(1),
+          }
+          drift = {name: value for name, value in found.items() if value != expected}
+          if drift:
+              print(f"::error::expected version {expected}, found {drift}")
+              sys.exit(1)
+          print(f"project version {expected}")
+          PY
+
+      # Only full-suite runs count: pull_request runs skip jobs by path.
+      - name: Require a successful CI run for the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.tag.outputs.sha }}
+        run: |
+          set -euo pipefail
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=success&per_page=100" \
+            --jq '[.workflow_runs[] | select(.head_sha == env.SHA and .conclusion == "success" and (.event == "push" or .event == "workflow_dispatch" or .event == "merge_group"))] | map(.html_url) | .[]')"
+          if [[ -z "${runs}" ]]; then
+            echo "::error::no successful full CI run for ${SHA}"
+            exit 1
+          fi
+          echo "successful CI runs for ${SHA}:"
+          echo "${runs}"
+
+  image:
+    name: Build and push image
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+
+    steps:
+      # Check out the verified SHA, not the tag name, so a moved tag cannot
+      # change what is built.
+      - name: Checkout verified commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.sha }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A resolvable tag fails the job. Any other answer means absent: the
+      # registry reports a package that was never pushed in several ways, and a
+      # real registry outage fails the push below anyway.
+      - name: Refuse to overwrite existing tags
+        env:
+          SHA: ${{ needs.verify.outputs.sha }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          for ref in "${IMAGE}:${VERSION}" "${IMAGE}:sha-${SHA}"; do
+            if out="$(docker buildx imagetools inspect "${ref}" 2>&1)"; then
+              echo "::error::${ref} already exists; image tags are immutable"
+              exit 1
+            fi
+            echo "${ref} is not published yet: ${out}"
+          done
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          pull: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.verify.outputs.version }}
+            ${{ env.IMAGE }}:sha-${{ needs.verify.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.verify.outputs.sha }}
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.revision=${{ needs.verify.outputs.sha }}
+            index:org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+          cache-from: type=gha,scope=codex-lb-fork-image
+          cache-to: type=gha,mode=max,scope=codex-lb-fork-image
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          # Storage records exist only for organization-owned repositories.
+          create-storage-record: false
+
+      - name: Write job summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SHA: ${{ needs.verify.outputs.sha }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Fork image ${RELEASE_TAG}"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Revision | \`${SHA}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Tags | \`${IMAGE}:${VERSION}\`, \`${IMAGE}:sha-${SHA}\` |"
+            echo
+            echo '```bash'
+            echo "docker pull ${IMAGE}@${DIGEST}"
+            echo "gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
