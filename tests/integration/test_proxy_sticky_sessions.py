@@ -3231,3 +3231,30 @@ async def test_cleanup_retires_derived_prompt_cache_rows_and_keeps_client_sticky
 
     assert set(client_thread_keys) <= remaining, "a client-supplied sticky_thread row was swept by key prefix"
     assert not set(derived_prompt_cache_keys) & remaining, "derived prompt_cache rows should expire at the TTL"
+
+
+@pytest.mark.asyncio
+async def test_developer_sliding_window(async_client, monkeypatch):
+    """A fixed developer instruction does not pin the derived key to one window.
+
+    The client repeats its developer message and keeps only the latest items.
+    The developer message stays inline on the wire, but the thread identity
+    compares the conversation items, so each trim reuses the derived key.
+    """
+    await _import_account(async_client, "acc_cache_window", "window@example.com")
+    keys = []
+    forwarded_inputs = []
+
+    async def stream(payload, *args, **kwargs):
+        keys.append(payload.prompt_cache_key)
+        forwarded_inputs.append(payload.to_payload()["input"])
+        yield 'data: {"type":"response.completed","response":{"id":"resp_ok"}}\n\n'
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", stream)
+    dev = {"role": "developer", "content": "Keep answers concise."}
+    history = [{"role": "assistant" if i % 2 else "user", "content": str(i)} for i in range(13)]
+    for start in (0, 2, 4, 6):
+        body = {"model": "gpt-5.5", "input": [dev, *history[start : start + 7]], "stream": True}
+        assert (await async_client.post("/v1/responses", json=body)).status_code == 200
+    assert len(keys) == 4 and keys[0] and len(set(keys)) == 1
+    assert all(forwarded[0] == dev for forwarded in forwarded_inputs)

@@ -574,3 +574,49 @@ An allowlist key without a pin judges only the effective item, the last one with
 The request-level effort is still judged on every turn. An allowlist key whose request-level starting effort is later removed from the allowlist keeps failing for that thread until the client changes its request-level effort; a later `configuration_update` item does not excuse it.
 
 This covers policy enforcement only. Request logs, accounting, TTFT cohorts and the request-level effort sent to model sources for keys without a pin still ignore the items; that remains open in issue 2664.
+
+## Keyless thread identity on the upstream-main hoist view
+
+The derived thread identity scopes its item digests by API key, model class
+and `instructions`, and matches a trailing window of 32 items. Upstream `main`
+hoisted every `system`/`developer` message into `instructions`, so that text
+was in the scope and never in the window. JSON mode now keeps its instruction
+in `input` (upstream counts the word "json" only in input messages), and
+`developer` messages stay in `input`. Computing the identity on the wire
+shape broke it three ways: two threads that differed only in that message and
+ended in the same 32 items shared a key and an account; a client repeating a
+fixed developer message at the head of a sliding window minted a new key on
+every trim (four trims, four keys), because that message sat at the front of
+every window; and partial rules (only the leading run in the scope) moved a
+mid-thread reminder into the scope as soon as a trim made it the first item.
+
+Rather than invent a rule, the anchor, the inferred HTTP bridge key and its
+history check are computed on the request as upstream `main`'s hoist produced
+it (`upstream_hoist_view`): the top-level `instructions` followed by the text
+of the developer messages still in `input`, in wire order, and the items
+without those messages. The view is built from the request as it is; the only
+recorded input is the Lite classification of the request as the client sent
+it, because a warm session trims the Lite tool bundle off later frames and
+the suffix would otherwise be judged as non-Lite, dropping a Plan or Default
+mode message from the window. The history check uses the same items as the
+hash: upstream hoisted the text of a JSON-mode developer message with an image
+and left the image as a `user` item, so such a follow-up is history. For the
+captured Codex bodies with their key removed, and for keyless bodies with JSON
+mode, a developer image part, mid-thread developer messages and compact
+requests, the scope, window digests and bridge key equal those of upstream
+`main`.
+
+Known limitation (keyless clients only): `system` messages are hoisted at
+validation, so the view cannot recover their position relative to developer
+messages and always puts the system text first. Upstream joined them in input
+order, so two keyless threads that interleave `system` and `developer`
+messages and differ only in their order share a scope here where upstream
+split them; they still need identical recent items to share a key.
+
+Known limitation (keyless clients only; Codex sends its own
+`prompt_cache_key`): a changed or added instruction message changes the
+scope and mints a new key and bridge locality. For a refreshed leading
+message (a skills list) the upstream prefix is cold anyway; for a reminder
+added mid-thread the prefix up to it is still warm on the old account, so the
+thread can lose its cache once. That is upstream `main`'s behaviour and is
+kept.

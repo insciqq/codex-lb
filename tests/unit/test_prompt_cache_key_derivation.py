@@ -191,6 +191,124 @@ class TestJsonModeInstruction:
             items = [*items, _assistant("{}"), _user(text)]
             assert _derive_prompt_cache_key(json_mode_turn(items), api_key) == first
 
+    def test_a_sliding_window_behind_a_json_mode_instruction_keeps_the_key(self):
+        """The JSON instruction stays at the head of ``input`` while the client drops its oldest items."""
+
+        history: list[object] = [_user(f"u{i}") if i % 2 == 0 else _assistant(f"a{i}") for i in range(13)]
+
+        def window(start: int) -> ResponsesRequest:
+            return ResponsesRequest.model_validate(
+                {
+                    "model": "gpt-5.4",
+                    "input": [{"role": "system", "content": "Answer in JSON."}, *history[start : start + 7]],
+                    "text": {"format": {"type": "json_object"}},
+                }
+            )
+
+        api_key = _make_api_key()
+        keys = {_derive_prompt_cache_key(window(start), api_key) for start in (0, 2, 4, 6)}
+        assert len(keys) == 1
+
+
+class TestUpstreamHoistView:
+    """A body without its own key is identified as upstream main identified it.
+
+    Upstream main hoisted every system and developer message into
+    ``instructions``. The wire now keeps developer messages in ``input``, but
+    the derived key is computed on the hoisted view, so it moves exactly when
+    upstream's moved and no more.
+    """
+
+    @staticmethod
+    def _upstream_shape(request: ResponsesRequest) -> ResponsesRequest:
+        """The same turn as upstream main sent it: instruction text hoisted, items without it."""
+        items = cast(list[dict[str, object]], request.input)
+        texts = [cast(str, item["content"]) for item in items if item.get("role") in ("system", "developer")]
+        rest = [item for item in items if item.get("role") not in ("system", "developer")]
+        return _request(rest, instructions="\n".join([request.instructions, *texts]))
+
+    @staticmethod
+    def _key_pattern(requests: Sequence[ResponsesRequest]) -> list[tuple[int, str]]:
+        """Per turn: the index of the first turn holding the same key, and the outcome."""
+        reset_thread_anchor_index()
+        first_turn: dict[str | None, int] = {}
+        pattern: list[tuple[int, str]] = []
+        for turn, request in enumerate(requests):
+            anchor = _derive_prompt_cache_anchor(request, None)
+            pattern.append((first_turn.setdefault(anchor.sticky_key, turn), anchor.outcome))
+        return pattern
+
+    def test_trimming_up_to_a_mid_thread_developer_message_keeps_the_key(self):
+        items: list[object] = [
+            _user("u0"),
+            _assistant("a0"),
+            {"role": "developer", "content": "Be brief."},
+            _user("u1"),
+            _assistant("a1"),
+            _user("u2"),
+            _assistant("a2"),
+            _user("u3"),
+        ]
+        first = _derive_prompt_cache_key(_request(items), None)
+        trimmed = [*items[2:], _assistant("a3"), _user("u4")]
+        assert _derive_prompt_cache_key(_request(trimmed), None) == first
+
+    def test_a_trimmed_lite_suffix_keeps_its_developer_messages_in_the_window(self):
+        """A warm session trims the Lite tool bundle off; the request is still Lite.
+
+        Upstream never hoisted Lite input, so the Plan and Default suffixes of
+        one prefix must not share a key.
+        """
+
+        def suffix_key(mode: str) -> str | None:
+            request = ResponsesRequest.model_validate(
+                {
+                    "model": "gpt-5.6-sol",
+                    "instructions": "",
+                    "input": [
+                        {"type": "additional_tools", "role": "developer", "tools": []},
+                        _user("hi"),
+                        _assistant("ok"),
+                        {"role": "developer", "content": f"Mode: {mode}."},
+                        _user("next"),
+                    ],
+                }
+            )
+            trimmed = request.model_copy(update={"input": cast(list[object], request.input)[2:]})
+            return _derive_prompt_cache_key(trimmed, None)
+
+        assert suffix_key("Plan") != suffix_key("Default")
+
+    def test_keys_move_exactly_where_upstream_main_moved_them(self):
+        """Appends, a mid-thread reminder, a trim and a refreshed leading developer message.
+
+        The refreshed leading text (a skills list, say) changes upstream's
+        ``instructions`` and so mints a new key there too; that is the
+        reference behaviour for clients that send no key of their own.
+        """
+        skills = {"role": "developer", "content": "Skills: a, b."}
+        refreshed = {"role": "developer", "content": "Skills: a, b, c."}
+        reminder = {"role": "developer", "content": "Be brief."}
+        history: list[object] = [_env_item(), _user("u0"), _assistant("a0"), _user("u1")]
+        turns: list[list[object]] = [[skills, *history]]
+        history = [*history, _assistant("a1"), _user("u2")]
+        turns.append([skills, *history])
+        history = [*history, _assistant("a2"), reminder, _user("u3")]
+        turns.append([skills, *history])
+        history = [*history, _assistant("a3"), _user("u4")]
+        turns.append([skills, *history])
+        turns.append([skills, *history[2:], _assistant("a4"), _user("u5")])
+        turns.append([refreshed, *history[2:], _assistant("a4"), _user("u5"), _assistant("a5"), _user("u6")])
+        inline = [_request(items) for items in turns]
+
+        assert self._key_pattern(inline) == self._key_pattern([self._upstream_shape(turn) for turn in inline])
+        # The pattern is not trivial: the refreshed skills list mints a new key.
+        assert self._key_pattern(inline)[-1][0] == len(turns) - 1
+        for request in inline:
+            assert any(
+                isinstance(item, dict) and item.get("role") == "developer" for item in cast(list[object], request.input)
+            )
+
 
 class TestLeadingTrimStability:
     def test_key_survives_the_client_trimming_leading_history(self):

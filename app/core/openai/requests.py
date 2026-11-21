@@ -516,6 +516,46 @@ def _base_hoist_from_raw(data: JsonValue, *, instructions: str | None) -> BaseHo
     )
 
 
+def upstream_hoist_view(payload: ResponsesRequest | ResponsesCompactRequest) -> tuple[str, JsonValue]:
+    """``(instructions, input)`` of a request as upstream ``main``'s hoist produced them.
+
+    A request without its own ``prompt_cache_key`` is identified on this view
+    (the derived anchor's scope and item window, the inferred HTTP bridge key
+    and its history check), so the identity matches upstream while the wire
+    keeps developer messages, and a JSON-mode instruction, in ``input``.
+    Outside Responses Lite every inline ``system``/``developer`` message leaves
+    the items and its text joins ``instructions`` after the text already
+    hoisted there, in wire order; a message with non-text parts leaves those
+    parts behind as a ``user`` item. The Lite classification recorded for the
+    request wins over the list, so a trimmed Lite suffix is used as sent.
+    """
+    instructions = payload.instructions
+    input_value = payload.input
+    if not is_json_list(input_value):
+        return instructions, input_value
+    lite = responses_payload_base_hoist(payload).lite
+    if lite is None:
+        lite = responses_input_uses_lite_tools(input_value)
+    if lite:
+        return instructions, input_value
+    parts: list[str] = []
+    items: list[JsonValue] = []
+    for item in input_value:
+        item_mapping = _json_mapping_or_none(item)
+        if (
+            item_mapping is None
+            or item_mapping.get("role") not in ("system", "developer")
+            or _is_preserved_non_message_directive(item_mapping)
+        ):
+            items.append(item)
+            continue
+        instruction_text, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=False)
+        parts.append(instruction_text)
+        if kept_item is not None:
+            items.append(kept_item)
+    return _merge_responses_instructions(instructions, parts), items
+
+
 def base_equivalent_input_positions(
     input_items: list[JsonValue],
     *,

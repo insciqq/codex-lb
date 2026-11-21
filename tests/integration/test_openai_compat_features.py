@@ -809,6 +809,97 @@ async def test_v1_responses_messages_alias_keeps_developer_message_in_input(asyn
     ]
 
 
+def _long_shared_history() -> list[dict[str, str]]:
+    # Longer than the derived thread identity's trailing window, so the
+    # instruction message at the head of the thread is outside it.
+    history: list[dict[str, str]] = []
+    for turn in range(20):
+        history.append({"role": "user", "content": f"Question {turn}."})
+        history.append({"role": "assistant", "content": f"Answer {turn}."})
+    history.append({"role": "user", "content": "Next question."})
+    return history
+
+
+_INSTRUCTION_THREAD_CASES = [
+    pytest.param(
+        "/v1/responses",
+        "input",
+        "system",
+        {"text": {"format": {"type": "json_object"}}},
+        ("Reply with a JSON object with the keys a and b.", "Reply with a JSON object with the keys c and d."),
+        id="responses-json-system",
+    ),
+    pytest.param(
+        "/v1/responses",
+        "input",
+        "developer",
+        {"text": {"format": {"type": "json_object"}}},
+        ("Reply with a JSON object with the keys a and b.", "Reply with a JSON object with the keys c and d."),
+        id="responses-json-developer",
+    ),
+    pytest.param(
+        "/v1/chat/completions",
+        "messages",
+        "system",
+        {"response_format": {"type": "json_object"}},
+        ("Reply with a JSON object with the keys a and b.", "Reply with a JSON object with the keys c and d."),
+        id="chat-json-system",
+    ),
+    pytest.param(
+        "/v1/responses",
+        "input",
+        "developer",
+        {},
+        ("Answer as a pirate.", "Answer as a poet."),
+        id="responses-developer",
+    ),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "input_field", "role", "format_fields", "instruction_texts"), _INSTRUCTION_THREAD_CASES
+)
+async def test_derived_cache_key_separates_threads_by_instruction_messages_kept_in_input(
+    async_client, monkeypatch, path, input_field, role, format_fields, instruction_texts
+):
+    """An instruction message kept in ``input`` separates threads like ``instructions`` does.
+
+    JSON mode keeps its instruction in ``input``, and developer messages stay
+    there too. Two threads of one API key that differ only in that message
+    and share a tail longer than the thread window must not share a derived
+    ``prompt_cache_key``; a thread that keeps its message keeps its key.
+    """
+    await _import_account(async_client, "acc_instruction_threads", "instruction-threads@example.com")
+
+    seen_keys: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **_kw):
+        seen_keys.append(getattr(payload, "prompt_cache_key", None))
+        yield _completed_event("resp_instruction_threads")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    def thread(instruction_text: str, history: list[dict[str, str]]) -> dict[str, object]:
+        return {
+            "model": "gpt-5.2",
+            input_field: [{"role": role, "content": instruction_text}, *history],
+            **format_fields,
+        }
+
+    history = _long_shared_history()
+    first_text, second_text = instruction_texts
+    appended = [*history, {"role": "assistant", "content": "Answer."}, {"role": "user", "content": "One more."}]
+    for body in (thread(first_text, history), thread(second_text, history), thread(first_text, appended)):
+        resp = await async_client.post(path, json=body)
+        assert resp.status_code == 200
+
+    first_key, second_key, first_appended_key = seen_keys
+    assert isinstance(first_key, str) and first_key
+    assert second_key != first_key
+    assert first_appended_key == first_key
+
+
 @pytest.mark.asyncio
 async def test_v1_chat_completions_rejects_strict_schema_violation(async_client):
     """Strict-mode schema violations are rejected locally with 400.

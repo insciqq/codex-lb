@@ -64,3 +64,64 @@ def test_history_key_uses_complete_initial_input_and_is_soft_and_scoped():
     assert bridge_key.affinity_key == key
     assert bridge_key.strength == "soft"
     assert replace(bridge_key, api_key_id="key_a") != replace(bridge_key, api_key_id="key_b")
+
+
+def test_history_key_is_the_key_upstream_main_computed():
+    """Developer messages stay in ``input``; the key is computed on upstream main's hoisted view.
+
+    Upstream main moved every developer message into ``instructions``, so the
+    key equals the key of the same turn in that shape, and two threads that
+    differ only in a developer message keep distinct locality.
+    """
+
+    def history(*developer_texts: str) -> list[dict[str, str]]:
+        later = [{"role": "developer", "content": text} for text in developer_texts[1:]]
+        return [
+            {"role": "developer", "content": developer_texts[0]},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            *later,
+            {"role": "user", "content": "more"},
+        ]
+
+    def upstream_shape(items: list[dict[str, str]]) -> ResponsesRequest:
+        texts = [item["content"] for item in items if item["role"] == "developer"]
+        rest = [item for item in items if item["role"] != "developer"]
+        return ResponsesRequest(model="gpt-5.4", instructions="\n".join(["Instructions", *texts]), input=rest)
+
+    affinity = _AffinityPolicy(key="derived-cache", kind=StickySessionKind.PROMPT_CACHE)
+
+    def bridge_key(payload: ResponsesRequest) -> str:
+        return _make_http_bridge_session_key(
+            payload, headers={}, affinity=affinity, api_key=None, request_id="req"
+        ).affinity_key
+
+    for texts in (("Answer as a pirate.",), ("Answer as a pirate.", "Be brief.")):
+        items = history(*texts)
+        assert bridge_key(_payload(items)) == bridge_key(upstream_shape(items))
+    assert bridge_key(_payload(history("Answer as a poet."))) != bridge_key(_payload(history("Answer as a pirate.")))
+
+
+def test_json_mode_follow_up_with_an_image_instruction_is_history():
+    """Upstream hoisted the JSON text and left the image as a ``user`` item after the assistant turn."""
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.4",
+            "instructions": "Instructions",
+            "input": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {
+                    "role": "developer",
+                    "content": [
+                        {"type": "input_text", "text": "Reply in JSON about this image."},
+                        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                    ],
+                },
+            ],
+            "text": {"format": {"type": "json_object"}},
+        }
+    )
+    assert http_continuation_signal(payload, {}) == "history"
+    key = inferred_http_bridge_key(payload)
+    assert key is not None and key.startswith("http-history:")

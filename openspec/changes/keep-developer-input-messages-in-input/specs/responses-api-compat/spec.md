@@ -243,9 +243,11 @@ its developer messages inline; a fresh frame retained for replay MUST keep
 the decisions of the request it came from. The forwarded payload MUST keep
 the developer messages in place.
 
-This covers the HTTP bridge full-resend classifier, history signal and
-native Codex history check, stored-context recording (item count and
-fingerprint), warm-session and durable stored-prefix matching with the
+This covers the HTTP bridge full-resend classifier, history signal (a
+request without its own `prompt_cache_key` judges the upstream-main hoist
+view instead, see "Keyless thread identity uses the upstream-main hoist
+view") and native Codex history check, stored-context recording (item count
+and fingerprint), warm-session and durable stored-prefix matching with the
 stored-prefix trim and its retry-safety promotion, the durable
 retained-output and tool-manifest proofs,
 the compact account-neutral replay proof and terminal-item selection,

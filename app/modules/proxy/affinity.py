@@ -24,6 +24,7 @@ from app.core.openai.requests import (
     ResponsesRequest,
     extract_input_file_ids,
     responses_request_contains_goal_continuation_context,
+    upstream_hoist_view,
 )
 from app.db.models import StickySessionKind
 from app.modules.api_keys.service import ApiKeyData
@@ -372,12 +373,13 @@ def _derive_prompt_cache_anchor(
     model = getattr(payload, "model", None)
     model_class = _extract_model_class(model) if isinstance(model, str) and model else None
     api_key_id = api_key.id if api_key is not None else ""
-    instructions = getattr(payload, "instructions", None)
-    instructions_text = instructions if isinstance(instructions, str) else ""
+    # Scope and items as upstream main's hoist left them: developer messages,
+    # and a JSON-mode instruction, stay inline on the wire.
+    instructions_text, identity_input = upstream_hoist_view(payload)
     readable_parts = [part for part in (model_class, api_key_id[:12] or None) if part]
 
     window = build_thread_window(
-        getattr(payload, "input", None),
+        identity_input,
         domain=thread_anchor_domain(
             owner_row_id=api_key_id,
             model_class=model_class or "",

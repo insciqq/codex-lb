@@ -11143,7 +11143,10 @@ NOT alone constitute continuation evidence.
 ### Requirement: Inferred continuation locality remains soft
 History-only bridge requests SHALL use a deterministic locality key based on
 complete initial user input and instruction context, isolated by API-key scope.
-Conversation identifiers SHALL have distinct locality from inferred histories.
+The instructions and initial input SHALL be taken from the upstream-main hoist
+view of the request (see "Keyless thread identity uses the upstream-main hoist
+view"), so threads that differ only in a `developer` message keep distinct
+locality. Conversation identifiers SHALL have distinct locality from inferred histories.
 Inferred locality SHALL NOT authorize previous-response injection, cross-account
 replay, or dropping client history. Explicit turn/session ownership SHALL retain
 precedence and existing recovery/fork/queue safeguards.
@@ -11152,6 +11155,11 @@ precedence and existing recovery/fork/queue safeguards.
 - **WHEN** two compatible multi-turn requests retain the same initial user input and instructions
 - **THEN** they can reuse the same healthy upstream connection without replaying response headers
 - **AND** divergent complete initial inputs MUST NOT share an inferred locality key merely because their first 512 characters match
+
+#### Scenario: Developer messages separate inferred locality as upstream main did
+- **WHEN** two history-only requests of one API key differ only in a `developer` message
+- **THEN** they get different inferred locality keys
+- **AND** each key equals the key of the same request with its `developer` text hoisted into `instructions`
 
 ### Requirement: Chat Completions uses HTTP bridge policy
 Subscription-backed Chat Completions SHALL apply the same HTTP bridge admission
@@ -11518,3 +11526,73 @@ The HTTP Responses bridge MUST treat a request from a native Codex client, ident
 
 - **WHEN** a client that is not a native Codex client resends after the socket loss, or a native client supplies its own `previous_response_id`
 - **THEN** the bridge keeps the existing anchoring behavior for that request
+
+### Requirement: Keyless thread identity uses the upstream-main hoist view
+
+For a Responses or compact request that carries no `prompt_cache_key`, the
+derived prompt-cache anchor (its instruction scope and the items it records and
+compares), the inferred HTTP bridge locality key and the history check that
+makes such a request eligible for that key and counts as HTTP continuation
+evidence MUST be computed on the upstream-main hoist view of the request:
+outside Responses Lite every `system`/`developer` message still in `input`,
+wherever it sits and in JSON mode too, leaves the items and its text joins the
+top-level `instructions` (which already carry the hoisted `system` text) in
+wire order, joined as instruction normalization joins hoisted text; a message
+with non-text parts leaves those parts behind as a `user` item. The view is
+built from the request as it is, with no recorded state except the Lite
+classification taken from the request as the client sent it, so a trimmed
+suffix of a Lite request is still used as sent. Responses Lite input MUST be
+used as sent. The view MUST NOT change the
+upstream wire: `developer` messages and a JSON-mode instruction still reach
+upstream inline in `input`. A client-supplied `prompt_cache_key` is forwarded
+unchanged and is not affected.
+
+The derived key therefore moves exactly when it moved before developer
+messages and JSON-mode instructions stayed in `input`: threads that differ only
+in such a message stay apart past the trailing item window, a client that
+repeats a fixed instruction while dropping its oldest items keeps its key, and
+a changed or added instruction message mints a new key.
+
+#### Scenario: Threads that differ only in their JSON-mode instruction get different keys
+
+- **GIVEN** two JSON-mode requests of one API key without `prompt_cache_key`, each with a different JSON instruction followed by the same history of more than 32 items
+- **WHEN** both requests are sent to `/v1/responses` or `/v1/chat/completions`
+- **THEN** their derived `prompt_cache_key` values differ
+- **AND** the next turn of the first thread, with its instruction unchanged, gets the first thread's key
+
+#### Scenario: Threads that differ only in a developer message get different keys
+
+- **GIVEN** two requests of one API key without `prompt_cache_key`, each with a different `developer` message followed by the same history of more than 32 items
+- **WHEN** both requests are sent to `/v1/responses`
+- **THEN** their derived `prompt_cache_key` values differ
+
+#### Scenario: A sliding window behind a fixed developer instruction keeps the key
+
+- **GIVEN** a client without `prompt_cache_key` that sends the same leading `developer` message followed by its latest seven conversation items
+- **WHEN** each next request drops the oldest user and assistant pair and appends a new pair
+- **THEN** every request gets the same derived `prompt_cache_key`
+- **AND** the forwarded request still carries the `developer` message first in `input`
+
+#### Scenario: Trimming up to a mid-thread developer message keeps the key
+
+- **GIVEN** a thread without `prompt_cache_key` with a `developer` reminder after its first user and assistant pair
+- **WHEN** the next request drops that pair, so the reminder is the first item, and appends a new pair
+- **THEN** the request keeps the thread's derived key
+
+#### Scenario: A trimmed Lite suffix stays Lite
+
+- **GIVEN** a Responses Lite request whose warm session trims the tool bundle and the first turn off its input
+- **WHEN** the remaining suffix ends with a Plan-mode or a Default-mode `developer` message
+- **THEN** the two suffixes get different derived keys
+
+#### Scenario: A JSON-mode follow-up with an image instruction is history
+
+- **GIVEN** a keyless JSON-mode request with a user and an assistant turn followed by a `developer` message with JSON text and an image
+- **WHEN** the service checks it for HTTP continuation evidence and an inferred locality key
+- **THEN** it is classified as history and gets an `http-history:` locality key
+
+#### Scenario: A changed instruction message mints a key as upstream main did
+
+- **GIVEN** a thread without `prompt_cache_key`
+- **WHEN** a request refreshes its leading `developer` message or adds a `developer` message
+- **THEN** the derived key changes exactly where it changes for the same requests with that text hoisted into `instructions`

@@ -4,7 +4,8 @@ import json
 from collections.abc import Mapping
 from hashlib import sha256
 
-from app.core.openai.requests import ResponsesRequest, base_equivalent_input, responses_payload_base_hoist
+from app.core.openai.requests import ResponsesRequest, upstream_hoist_view
+from app.core.types import JsonValue
 from app.modules.proxy.affinity import (
     _prompt_cache_key_from_request_model,
     _sticky_key_from_session_header,
@@ -30,11 +31,17 @@ def http_continuation_signal(payload: ResponsesRequest, headers: Mapping[str, st
 
 
 def http_history_signal(payload: ResponsesRequest) -> str | None:
-    if not isinstance(payload.input, list):
+    # Only a request without its own key reaches this check (see
+    # ``http_continuation_signal``), so judge the items upstream main's hoist
+    # left in ``input``, as the inferred key does.
+    return _history_signal(upstream_hoist_view(payload)[1])
+
+
+def _history_signal(items: JsonValue) -> str | None:
+    if not isinstance(items, list):
         return None
     assistant_seen = False
-    # Judge the history the old hoist left in ``input``.
-    for item in base_equivalent_input(payload.input, hoist=responses_payload_base_hoist(payload)):
+    for item in items:
         if not isinstance(item, dict):
             continue
         item_type = item.get("type")
@@ -57,9 +64,13 @@ def inferred_http_bridge_key(payload: ResponsesRequest) -> str | None:
     if payload.conversation and payload.conversation.strip():
         identity = [payload.model, payload.conversation]
         kind = "conversation"
-    elif http_history_signal(payload) is not None and isinstance(payload.input, list):
+    else:
+        # Instructions, history and initial context as upstream main's hoist left them.
+        instructions, identity_input = upstream_hoist_view(payload)
+        if _history_signal(identity_input) is None or not isinstance(identity_input, list):
+            return None
         initial_context = []
-        for item in base_equivalent_input(payload.input, hoist=responses_payload_base_hoist(payload)):
+        for item in identity_input:
             if not isinstance(item, dict):
                 continue
             if item.get("role") in ("system", "developer", "user"):
@@ -69,9 +80,7 @@ def inferred_http_bridge_key(payload: ResponsesRequest) -> str | None:
         else:
             # A delta-only tool result cannot identify its conversation.
             return None
-        identity = [payload.model, payload.instructions, initial_context]
+        identity = [payload.model, instructions, initial_context]
         kind = "history"
-    else:
-        return None
     encoded = json.dumps(identity, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()
     return f"http-{kind}:{sha256(encoded).hexdigest()}"
