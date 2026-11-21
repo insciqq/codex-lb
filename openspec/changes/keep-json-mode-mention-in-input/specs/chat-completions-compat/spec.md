@@ -14,6 +14,11 @@ The service MUST map chat messages into the Responses request format by merging 
 - **THEN** the mapped Responses payload keeps that message in `input` with the `developer` role
 - **AND** the mapped `instructions` value does not contain that message content
 
+#### Scenario: JSON mode from text.format preserves instruction-role messages
+- **WHEN** the client sends `messages` with a `system` or `developer` message that instructs JSON output and `text: {"format": {"type": "json_object"}}` without `response_format`
+- **THEN** the mapped Responses payload keeps that message in `input` with the `developer` role
+- **AND** the mapped `instructions` value does not contain that message content
+
 #### Scenario: JSON object response format with an instruction that does not mention JSON
 - **WHEN** the client sends `response_format: {"type":"json_object"}` and a `system` message that does not mention JSON
 - **THEN** the service maps that system content to `instructions`
