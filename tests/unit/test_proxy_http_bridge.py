@@ -13439,6 +13439,11 @@ async def test_reconnect_releases_replacement_lease_when_cancel_scope_cancels_fo
         await service._reconnect_http_bridge_session(session, request_state=_reconnect_request_state("req-scope"))
 
     assert scope.cancelled_caught
+    # The shielded release finishes on its own task after the caller left.
+    for _ in range(10):
+        if released_leases:
+            break
+        await asyncio.sleep(0)
     assert released_leases == [replacement_lease]
     _assert_reconnect_handoff_failed(service, session)
 
