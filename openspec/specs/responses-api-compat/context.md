@@ -86,6 +86,10 @@ replaying that body.
 - Hard-affinity retry-circuit evidence is request-lifecycle evidence: retirement counts only while the bridge still owns an eventless pending request. Idle no-pending retirement remains observable but neutral, so routine socket churn cannot manufacture the first strike for a later real timeout.
 - A retry-circuit probe follows only a cooldown expiry the worker observed. A durable row whose cooldown is absent, zero or already elapsed maps to no cooldown, so an old cooldown first seen after it ended admits requests normally instead of leasing one probe; at the failure threshold that lease suppressed the key's other requests for up to the whole lease, and below it (a settled key's zero row included) it logged spurious `half_open` events (issue 2272).
 - Quarantine fences identify evidence, not entries: generations come from one service-lifetime sequence and every arm or eventless strike advances them, so a completion clears only what it observed. Only the session registered for the key may clear its entry, so a late completion on a retired session cannot clear a quarantine its replacement earned, while the replacement's own healthy completion still clears what forced it onto the fresh path (issue 2268).
+- Known limitations of the retry circuit and quarantine (accepted, not regressions):
+  - A durable load samples the monotonic clock before its lookup and the wall clock after it, so a cooldown with only a few milliseconds left can be judged already ended (or still running) by the lookup's database latency.
+  - Clearing a matched poison quarantine removes the whole entry, so a first eventless strike recorded on that key while the verified recovery was in flight is dropped with it; the poison fence deliberately ignores newer weaker evidence.
+  - When an owed settlement's fenced resets both miss and the state is reconciled onto an unchanged surviving episode whose cooldown already ended, a half-open lease armed before the settlement stays until it lapses. Only a deployment with several replicas writing the same key reaches this.
 
 ## Fast Mode and Service Tiers
 
