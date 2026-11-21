@@ -2,9 +2,12 @@ name: CI
 
 on:
   # Fork: push CI only for ready merge branches. `patched` is fast-forwarded to
-  # an already-green wip/merge-* SHA (checks are per commit) and `main` mirrors
-  # upstream, so neither re-runs the suite. Run any other ref manually with
-  # `gh workflow run CI --ref <branch>`.
+  # an already-green wip/merge-* SHA (checks are per commit), so this file does
+  # not re-run the suite there; patched-ci-guard.yml checks that such a run
+  # exists. A push to `main`, the upstream mirror, still runs upstream's own
+  # ci.yml from the pushed commit, because GitHub reads workflow files from
+  # that commit. Run any other ref manually with `gh workflow run CI --ref
+  # <branch>`.
   push:
     branches: ["wip/merge-*"]
   workflow_dispatch:

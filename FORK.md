@@ -13,8 +13,13 @@ no functionality of its own.
 | `wip/merge-*` | A ready change set on top of `patched`. The only branches pushed for CI. |
 
 Work branches stay local. When a `wip/merge-*` head is green, `patched` is
-fast-forwarded to exactly that SHA:
-`git push origin origin/wip/merge-<name>:refs/heads/patched`.
+fast-forwarded to exactly the SHA that CI tested. Take the literal SHA from
+the successful run, not a remote ref that may have moved since:
+
+```bash
+gh run list --workflow CI --branch wip/merge-<name> --status success --json headSha -L 1
+git push origin <full headSha>:refs/heads/patched
+```
 
 ## CI
 
@@ -24,6 +29,10 @@ fast-forwarded to exactly that SHA:
 * Checks belong to a commit, not to a branch. A `patched` head moved to a
   green `wip/merge-*` SHA shows the green checks of that run, so a second run
   would test the same tree again.
+* `.github/workflows/patched-ci-guard.yml` runs on every push to `patched`
+  and takes seconds. It fails unless a successful full CI run (push, manual
+  or merge queue, not pull request) exists for the pushed SHA, so an
+  unchecked `patched` head shows red.
 * `main` carries no fork commits. A push to `main` still runs the workflows
   defined in the pushed upstream commit, because GitHub reads workflow files
   from that commit.
@@ -36,7 +45,7 @@ gh workflow run CI --ref <branch>
 gh run list --workflow CI --branch <branch> --limit 1
 ```
 
-Only CI and Fork image run in the fork. Release, publishing, release guard,
+Only CI, the patched CI guard and Fork image run in the fork. Release, publishing, release guard,
 simplicity budget, docs, labeler, stale and metadata workflows are disabled
 in the Actions settings; they serve upstream's `main`, pull requests and
 releases.
@@ -180,7 +189,8 @@ Rebuild instead:
 4. Push the rebuilt head for CI, `git push origin patched:refs/heads/wip/merge-rebuild-<date>`,
    and wait until it is green. A push to `patched` runs no CI.
 5. `git push --force-with-lease origin patched` moves `patched` to the same
-   SHA. A head is deployable only after its checks are green.
+   SHA. A head is deployable only after its checks are green; the patched CI
+   guard turns red otherwise.
 
 ## Considered, not taken
 
