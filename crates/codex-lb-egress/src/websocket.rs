@@ -561,7 +561,10 @@ pub(crate) async fn emit_websocket_error(
 }
 
 fn websocket_reset_without_close(error: &WebSocketError) -> bool {
-    matches!(error, WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake))
+    matches!(
+        error,
+        WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake)
+    )
 }
 
 fn websocket_tls_verification_failure(failure: &NativeWebSocketFailure) -> bool {
