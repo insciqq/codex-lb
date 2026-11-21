@@ -3,7 +3,9 @@ name: Patched CI guard
 # patched only moves to a SHA that already passed CI on a wip/merge-* branch
 # (checks are per commit), so ci.yml does not run on patched pushes. This
 # seconds-long check fails when the pushed head has no successful full CI
-# run, so an unchecked patched head shows red instead of unchecked.
+# run, so an unchecked patched head shows red instead of unchecked. A head
+# without a result of this guard (e.g. skipped by a skip-ci directive) is
+# unchecked too.
 
 on:
   push:
@@ -31,7 +33,7 @@ jobs:
           runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=success&per_page=100" \
             --jq '[.workflow_runs[] | select(.head_sha == env.SHA and .conclusion == "success" and (.event == "push" or .event == "workflow_dispatch" or .event == "merge_group"))] | map(.html_url) | .[]')"
           if [[ -z "${runs}" ]]; then
-            echo "::error::no successful full CI run for ${SHA}; push it as wip/merge-<name> or run gh workflow run CI --ref patched"
+            echo "::error::no successful full CI run for ${SHA}. This check stays red until CI for this SHA is green (push it as wip/merge-<name>, or gh workflow run CI --ref patched) and this guard run is re-run."
             exit 1
           fi
           echo "successful CI runs for ${SHA}:"

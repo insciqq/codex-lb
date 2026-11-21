@@ -17,8 +17,9 @@ fast-forwarded to exactly the SHA that CI tested. Take the literal SHA from
 the successful run, not a remote ref that may have moved since:
 
 ```bash
-gh run list --workflow CI --branch wip/merge-<name> --status success --json headSha -L 1
-git push origin <full headSha>:refs/heads/patched
+sha="$(gh run list --workflow CI --branch wip/merge-<name> --event push \
+  --status success -L 1 --json headSha --jq '.[0].headSha')"
+git push origin "${sha}:refs/heads/patched"
 ```
 
 ## CI
@@ -32,7 +33,10 @@ git push origin <full headSha>:refs/heads/patched
 * `.github/workflows/patched-ci-guard.yml` runs on every push to `patched`
   and takes seconds. It fails unless a successful full CI run (push, manual
   or merge queue, not pull request) exists for the pushed SHA, so an
-  unchecked `patched` head shows red.
+  unchecked `patched` head shows red. It stays red until CI for that SHA is
+  green and the guard run is re-run. A `patched` head without a guard
+  result, for example because a skip-ci directive in the commit message
+  suppressed the run, counts as unchecked as well.
 * `main` carries no fork commits. A push to `main` still runs the workflows
   defined in the pushed upstream commit, because GitHub reads workflow files
   from that commit.
@@ -196,8 +200,16 @@ Rebuild instead:
    without a `merged upstream` signal, in report order.
 4. Push the rebuilt head for CI, `git push origin patched:refs/heads/wip/merge-rebuild-<date>`,
    and wait until it is green. A push to `patched` runs no CI.
-5. `git push --force-with-lease origin patched` moves `patched` to the same
-   SHA. A head is deployable only after its checks are green; the patched CI
+5. Move `patched` to the SHA that run tested, not to a ref that may have
+   moved:
+
+   ```bash
+   sha="$(gh run list --workflow CI --branch wip/merge-rebuild-<date> --event push \
+     --status success -L 1 --json headSha --jq '.[0].headSha')"
+   git push --force-with-lease origin "${sha}:refs/heads/patched"
+   ```
+
+   A head is deployable only after its checks are green; the patched CI
    guard turns red otherwise.
 
 ## Considered, not taken
