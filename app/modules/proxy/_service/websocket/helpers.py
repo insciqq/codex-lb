@@ -707,7 +707,7 @@ async def _record_or_defer_websocket_accepted_replay_health(
     request_state: "_WebSocketRequestState",
     *,
     account: Account,
-    error_message: str | None,
+    error: UpstreamError,
     error_code: str,
 ) -> None:
     """Penalize the account an accepted replay leaves, now or after settlement.
@@ -723,7 +723,6 @@ async def _record_or_defer_websocket_accepted_replay_health(
     terminal is never finalized on this surface, so a later terminal belongs to
     the replacement attempt and earns its own penalty.
     """
-    error: UpstreamError = {"message": error_message or "Upstream error"}
     if request_state.api_key_reservation is not None:
         request_state.deferred_keyed_stream_health.append(
             _DeferredKeyedStreamHealthPenalty(account=account, error=error, code=error_code)

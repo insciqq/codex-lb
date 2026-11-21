@@ -448,6 +448,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_event_error_message,
     _websocket_event_error_param,
     _websocket_event_error_type,
+    _websocket_event_health_error,
     _websocket_event_incomplete_reason,
     _websocket_fresh_replay_payload_is_account_neutral,
     _websocket_full_resend_conflicts_with_visible_pending,
@@ -6095,7 +6096,12 @@ class _WebSocketMixin:
         ):
             await proxy._handle_stream_error(
                 account,
-                {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
+                _websocket_event_health_error(
+                    event_type,
+                    payload,
+                    _websocket_event_error_message(event_type, payload),
+                    now=clock.time(),
+                ),
                 retry_error_code,
             )
             event, payload, event_type, downstream_text = _rewrite_websocket_previous_response_owner_unavailable_event(
@@ -6107,7 +6113,12 @@ class _WebSocketMixin:
             if safe_request_text is None:
                 await proxy._handle_stream_error(
                     account,
-                    {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
+                    _websocket_event_health_error(
+                        event_type,
+                        payload,
+                        _websocket_event_error_message(event_type, payload),
+                        now=clock.time(),
+                    ),
                     retry_error_code,
                 )
                 event, payload, event_type, downstream_text = (
@@ -6257,13 +6268,23 @@ class _WebSocketMixin:
                         proxy,
                         request_state,
                         account=account,
-                        error_message=_websocket_event_error_message(event_type, payload),
+                        error=_websocket_event_health_error(
+                            event_type,
+                            payload,
+                            _websocket_event_error_message(event_type, payload),
+                            now=clock.time(),
+                        ),
                         error_code=retry_error_code,
                     )
                 else:
                     await proxy._handle_stream_error(
                         account,
-                        {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
+                        _websocket_event_health_error(
+                            event_type,
+                            payload,
+                            _websocket_event_error_message(event_type, payload),
+                            now=clock.time(),
+                        ),
                         retry_error_code,
                     )
             if retry_error_code is not None:

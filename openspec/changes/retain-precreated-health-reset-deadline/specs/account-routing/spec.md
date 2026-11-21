@@ -38,6 +38,12 @@ When a fresh applicable exhausted sample omits reset metadata, an elapsed fallba
 - **WHEN** the proxy queues the account-health penalty for post-settlement application
 - **THEN** the queued penalty retains the deadline observed at rejection time (a valid absolute `resets_at`, or a relative `resets_in_seconds` frozen to an absolute deadline)
 - **AND** the settlement-time write persists that same deadline instead of the no-metadata fallback cooldown, even when settlement happened after the rejection
+
+#### Scenario: Direct WebSocket retry health keeps the upstream reset deadline
+
+- **GIVEN** a direct Responses WebSocket request whose upstream attempt fails with `usage_limit_reached` and reset metadata before output is visible
+- **WHEN** a pre-created retry or an accepted output-free replay records that account's health, immediately or after API-key reservation settlement
+- **THEN** the recorded penalty carries the deadline observed at rejection time instead of the no-metadata fallback cooldown
 - **AND** an already-elapsed frozen deadline falls back to the no-metadata cooldown instead of starting a new hold
 
 #### Scenario: Available usage permits early recovery on the marking replica
