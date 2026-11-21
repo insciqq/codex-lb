@@ -2,9 +2,10 @@
 
 This fork publishes no Helm chart. Install it from a checkout of a fork release
 tag; the chart's default image is `ghcr.io/insciqq/codex-lb:<appVersion>`.
-There is no `latest` tag, so pin `image.digest` (or
-`image.tag=sha-<full commit SHA>`) in production. Run the commands on this page
-from the checkout root:
+The `latest` tag follows the newest fork release for convenience; in production
+pin `image.digest` (or `image.tag=sha-<full commit SHA>`), because a release can
+include database migrations that an image rollback cannot undo. Run the
+commands on this page from the checkout root:
 
 ```bash
 git clone --depth 1 --branch v1.25.0-fork.2 https://github.com/insciqq/codex-lb

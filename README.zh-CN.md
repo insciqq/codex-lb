@@ -21,7 +21,7 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 >   客户端和 OpenAI 后端；上游自 2026-10-16 起没有新的提交。
 > - **范围：** 缺陷修复、安全、对当前 Codex 客户端与 OpenAI 后端的兼容性，以及依赖更新。在 fork 经过几个稳定
 >   版本之前不添加新功能。
-> - **版本：** 标签为 `v<上游基线>-fork.<n>`，镜像为 `ghcr.io/insciqq/codex-lb`（没有 `latest`）。发布说明见
+> - **版本：** 以版本标签发布，镜像为 `ghcr.io/insciqq/codex-lb`；`latest` 指向最新版本。发布说明见
 >   [Releases](https://github.com/insciqq/codex-lb/releases)；`CHANGELOG.md` 是上游的。
 > - **从上游迁移：** 见英文 README 的 [Migrating from upstream](./README.md#migrating-from-upstream)。
 > - **自 `fork.2` 版本起默认关闭遥测**（[说明](docs/telemetry.md)）。
@@ -73,9 +73,9 @@ nix run github:insciqq/codex-lb/v1.25.0-fork.2
 
 `uvx codex-lb` 安装的是上游的 PyPI 版本，而不是本 fork；本 fork 只发布容器镜像。
 
-本 fork 发布 `ghcr.io/insciqq/codex-lb:<version>` 和
-`ghcr.io/insciqq/codex-lb:sha-<完整 commit SHA>`，没有 `latest` 标签。
-生产环境请固定 `sha-` 标签或镜像 digest（见 [FORK.md](FORK.md#releases-and-images)）。
+本 fork 发布 `ghcr.io/insciqq/codex-lb:<version>` 和 `:sha-<完整 commit SHA>`；为方便起见，`latest` 指向最新的
+fork 版本。生产环境和自动更新工具应固定版本号、`sha-` 标签或 digest：一个版本可能包含数据库迁移，仅回滚镜像
+无法撤销这些迁移（见 [FORK.md](FORK.md#releases-and-images)）。
 
 打开 [localhost:2455](http://localhost:2455) → 添加账户 → 完成。
 

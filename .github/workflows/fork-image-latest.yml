@@ -1,0 +1,142 @@
+name: Fork image latest
+
+# Re-points ghcr.io/insciqq/codex-lb:latest at the published image of an
+# existing release tag, for example to set latest for a release published
+# before the Fork image workflow moved it, or to move latest back when a
+# release is pulled. It never builds: the digest comes from the release's
+# sha-<full commit SHA> tag, the <version> tag must name the same digest, and
+# the digest's build provenance must verify. Any lookup error fails the run
+# before latest is touched.
+#
+#   gh workflow run "Fork image latest" --ref main -f release_tag=v<version>
+#
+# The release's Fork image run moves latest only when its tag is the highest
+# release, so do not re-run the latest job of a pulled release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag, v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-fork.<n>"
+        required: true
+        type: string
+
+# Shared with the latest job of fork-image.yml: one writer of :latest at a time.
+concurrency:
+  group: fork-image-latest
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/insciqq/codex-lb
+  RELEASE_TAG: ${{ inputs.release_tag }}
+
+jobs:
+  latest:
+    name: Point latest at a release
+    runs-on: ubuntu-24.04
+    if: github.repository == 'insciqq/codex-lb'
+    timeout-minutes: 15
+    permissions:
+      attestations: read
+      contents: read
+      packages: write
+
+    steps:
+      - name: Require the fork's main
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != refs/heads/main ]]; then
+            echo "::error::run this workflow on main: gh workflow run \"Fork image latest\" --ref main -f release_tag=v<version>"
+            exit 1
+          fi
+
+      # fetch-depth 0 brings every tag and origin/main.
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve the release commit
+        id: release
+        run: |
+          set -euo pipefail
+          forms="$(python3 -m app.modules.runtime.release_version forms "${RELEASE_TAG}")" || {
+            echo "::error::${RELEASE_TAG} is not a release tag: v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-fork.<n>"
+            exit 1
+          }
+          sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")" || {
+            echo "::error::no tag ${RELEASE_TAG} in the repository"
+            exit 1
+          }
+          if ! git merge-base --is-ancestor "${sha}" refs/remotes/origin/main; then
+            echo "::error::${RELEASE_TAG} (${sha}) is not reachable from origin/main"
+            exit 1
+          fi
+          order="$(git tag --list 'v*' | python3 -m app.modules.runtime.release_version is-highest "${RELEASE_TAG}")"
+          {
+            echo "sha=${sha}"
+            echo "version=$(sed -n 's/^semver=//p' <<< "${forms}")"
+            echo "${order}"
+          } >> "$GITHUB_OUTPUT"
+          echo "${RELEASE_TAG} -> ${sha}"
+          echo "${order}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the published digest
+        id: image
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          digest="$(bash .github/scripts/ghcr_tag_digest.sh "${IMAGE#ghcr.io/}" "sha-${SHA}")"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::${IMAGE}:sha-${SHA} is not published (${digest})"
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "${IMAGE}:sha-${SHA} -> ${digest}"
+
+      - name: Verify build provenance
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://${IMAGE}@${DIGEST}" --repo "${GITHUB_REPOSITORY}" \
+            --source-digest "${SHA}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/fork-image.yml"
+
+      - name: Point latest at the digest
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          GITHUB_TOKEN: ${{ github.token }}
+          HIGHEST: ${{ steps.release.outputs.highest }}
+          IS_HIGHEST: ${{ steps.release.outputs.is_highest }}
+          SHA: ${{ steps.release.outputs.sha }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "${IS_HIGHEST}" != true ]]; then
+            echo "::warning::${RELEASE_TAG} is not the highest release (${HIGHEST}); latest now names an older release"
+          fi
+          bash .github/scripts/ghcr_point_latest.sh "${IMAGE#ghcr.io/}" "${SHA}" "${VERSION}" "${DIGEST}"
+          {
+            echo "## Fork image latest"
+            echo
+            echo "\`${IMAGE}:latest\` -> \`${DIGEST}\` (${RELEASE_TAG}, \`${SHA}\`)"
+          } >> "$GITHUB_STEP_SUMMARY"

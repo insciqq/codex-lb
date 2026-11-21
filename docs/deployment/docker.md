@@ -22,13 +22,17 @@ The volume holds everything under `/var/lib/codex-lb/` (database, encryption key
 
 ## Images
 
-The fork publishes each release as two tags:
+The fork publishes each release as two tags that never move:
 
 - `ghcr.io/insciqq/codex-lb:<version>`, for example `1.25.0-fork.2`
 - `ghcr.io/insciqq/codex-lb:sha-<full 40-character commit SHA>`
 
-There is no `latest` or other floating tag. For production, pin the `sha-` tag
-or the image digest, and verify the digest's build provenance first:
+`ghcr.io/insciqq/codex-lb:latest` follows the newest fork release for
+convenience, such as a first try. Production deployments and automated
+updaters should pin a version, the `sha-` tag or the image digest instead: a
+release can include database migrations that an image rollback cannot undo,
+so moving to a new release should be a deliberate step with a backup. Verify
+the digest's build provenance first:
 
 ```bash
 gh attestation verify oci://ghcr.io/insciqq/codex-lb@<digest> \

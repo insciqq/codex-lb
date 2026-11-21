@@ -19,8 +19,9 @@ nix run github:insciqq/codex-lb/v1.25.0-fork.2
 
 `uvx codex-lb` installs upstream's PyPI release, not this fork: the fork publishes container images only.
 
-The image tags are `<version>` and `sha-<full commit SHA>`; there is no `latest`.
-Pin the `sha-` tag or the digest in production, see [Docker](deployment/docker.md#images).
+The image tags are `<version>` and `sha-<full commit SHA>`, and `latest` follows the newest release for
+convenience. Pin a version, the `sha-` tag or the digest in production and in automated updates, see
+[Docker](deployment/docker.md#images).
 
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
 

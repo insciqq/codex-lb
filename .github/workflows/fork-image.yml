@@ -5,7 +5,7 @@ name: Fork image
 # for a release of the fork's own (app/modules/runtime/release_version.py).
 # Upstream's release.yml and publish-beta-release.yml stay disabled and
 # untouched; this workflow only builds and pushes the image, with no PyPI,
-# Helm chart, GitHub release or floating tags.
+# Helm chart or GitHub release.
 #
 # It runs on the tag ref only: a tag push, or `gh workflow run "Fork image"
 # --ref v<version>`. The run's commit is then the tag commit, so the
@@ -23,6 +23,10 @@ name: Fork image
 #         already names this digest is kept, any other digest fails the job,
 #         and only an HTTP 404 for the exact tag counts as missing
 #         (.github/scripts/ghcr_tag_digest.sh); any other answer fails closed.
+# latest  points latest at the digest only when the tag is the highest release
+#         tag of the repository in the update notice's order, so a re-run of
+#         an older release never moves latest back. fork-image-latest.yml
+#         re-points latest by hand; both share one concurrency group.
 #
 # Deploy by the sha- tag or by digest, and verify with
 #   gh attestation verify oci://ghcr.io/insciqq/codex-lb@<digest> \
@@ -427,3 +431,77 @@ jobs:
             echo "  --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/fork-image.yml"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # :latest is a convenience pointer for new users; production pins a
+  # version, sha- tag or digest. Only one job writes it at a time (a newer
+  # pending writer replaces an older pending one; re-run a cancelled job).
+  latest:
+    name: Point latest at the newest release
+    needs: [verify, build, tag]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: fork-image-latest
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # For the release_version module and the ghcr scripts at the verified commit.
+      - name: Checkout verified commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.sha }}
+
+      # Every v* tag of the repository, read when this job runs; a lookup
+      # error or a listing without this tag fails the job.
+      - name: Compare with every release tag
+        id: order
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v" --jq '.[].ref')"
+          tags="$(sed -n 's|^refs/tags/||p' <<< "${tags}")"
+          if ! grep -qxF "${RELEASE_TAG}" <<< "${tags}"; then
+            echo "::error::the tag listing does not include ${RELEASE_TAG}"
+            exit 1
+          fi
+          order="$(python3 -m app.modules.runtime.release_version is-highest "${RELEASE_TAG}" <<< "${tags}")"
+          echo "${order}"
+          echo "${order}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        if: steps.order.outputs.is_highest == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Log in to GHCR
+        if: steps.order.outputs.is_highest == 'true'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Point latest at the digest
+        if: steps.order.outputs.is_highest == 'true'
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          GITHUB_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.verify.outputs.sha }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/ghcr_point_latest.sh "${IMAGE#ghcr.io/}" "${SHA}" "${VERSION}" "${DIGEST}"
+          echo "${IMAGE}:latest -> ${DIGEST} (${RELEASE_TAG})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep latest
+        if: steps.order.outputs.is_highest != 'true'
+        env:
+          HIGHEST: ${{ steps.order.outputs.highest }}
+        run: |
+          set -euo pipefail
+          echo "::notice::${RELEASE_TAG} is not the highest release (${HIGHEST}); latest is left unchanged"
+          echo "${IMAGE}:latest left unchanged: ${HIGHEST} is the highest release" >> "$GITHUB_STEP_SUMMARY"
