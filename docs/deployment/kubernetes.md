@@ -1,9 +1,21 @@
 # Kubernetes
 
+This fork publishes no Helm chart. Install it from a checkout of a fork release
+tag; the chart's default image is `ghcr.io/insciqq/codex-lb:<appVersion>`.
+There is no `latest` tag, so pin `image.digest` (or
+`image.tag=sha-<full commit SHA>`) in production. Run the commands on this page
+from the checkout root:
+
+```bash
+git clone --depth 1 --branch v1.25.0-fork.1 https://github.com/insciqq/codex-lb
+cd codex-lb
+helm dependency build deploy/helm/codex-lb/
+```
+
 Install with Helm:
 
 ```bash
-helm install codex-lb oci://ghcr.io/soju06/charts/codex-lb \
+helm install codex-lb deploy/helm/codex-lb/ \
   --set postgresql.auth.password=changeme \
   --set config.databaseMigrateOnStartup=true \
   --set migration.schemaGate.enabled=false
@@ -24,7 +36,7 @@ it runs *before* the new pods roll and therefore before the old ones drain: an o
 ```bash
 # Scale to zero, upgrade, scale back up.
 kubectl scale deploy/codex-lb --replicas=0
-helm upgrade codex-lb oci://ghcr.io/soju06/charts/codex-lb
+helm upgrade codex-lb deploy/helm/codex-lb/
 ```
 
 or run the migration by hand after the old colour is stopped

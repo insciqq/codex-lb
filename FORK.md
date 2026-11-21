@@ -73,6 +73,10 @@ floating tags. Images are built by GitHub Actions, never locally.
   gh attestation verify oci://ghcr.io/insciqq/codex-lb@<digest> --repo insciqq/codex-lb
   ```
 
+* The Helm chart defaults to `ghcr.io/insciqq/codex-lb:<appVersion>`, and
+  the README, `docs/` and the chart README name the fork image and release
+  tag (`git grep -n 'fork\.[0-9]'`). Bump them with the version; the fork
+  publishes no Helm chart or Python package.
 * When the tag push built nothing (the workflow was disabled, or the run
   failed before pushing), publish an existing tag with
   `gh workflow run "Fork image" --ref patched -f tag=v<version>`.

@@ -7,8 +7,9 @@ type: application
 version: 1.25.0-fork.1
 appVersion: 1.25.0-fork.1
 kubeVersion: '>=1.32.0-0'
-home: https://github.com/soju06/codex-lb
+home: https://github.com/insciqq/codex-lb
 sources:
+  - https://github.com/insciqq/codex-lb
   - https://github.com/soju06/codex-lb
 keywords:
   - load-balancer

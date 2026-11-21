@@ -41,13 +41,13 @@ For Docker, mount your Codex data directory only for this one-off command:
 ```bash
 docker run --rm \
   -v ~/.codex:/codex-home \
-  ghcr.io/soju06/codex-lb:latest \
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.1 \
   codex-lb codex-sessions retag --from openai --to codex-lb \
     --codex-home /codex-home --dry-run
 
 docker run --rm \
   -v ~/.codex:/codex-home \
-  ghcr.io/soju06/codex-lb:latest \
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.1 \
   codex-lb codex-sessions retag --from openai --to codex-lb \
     --codex-home /codex-home --yes
 ```

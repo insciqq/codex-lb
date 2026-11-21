@@ -49,14 +49,18 @@ docker run -d --name codex-lb \
   --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/soju06/codex-lb:latest
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.1
 
-# or uvx
+# or uvx (upstream's PyPI release; the fork publishes no Python package)
 uvx codex-lb
 
 # or nix
-nix run github:Soju06/codex-lb
+nix run github:insciqq/codex-lb/v1.25.0-fork.1
 ```
+
+The fork publishes `ghcr.io/insciqq/codex-lb:<version>` and
+`ghcr.io/insciqq/codex-lb:sha-<full commit SHA>`; there is no `latest` tag.
+For production, pin the `sha-` tag or the image digest ([FORK.md](FORK.md#releases-and-images)).
 
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
 

@@ -9,7 +9,7 @@ docker run -d --name codex-lb \
   --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/soju06/codex-lb:latest
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.1
 ```
 
 Ports:
@@ -18,6 +18,22 @@ Ports:
 - `1455` — OAuth login callback (needed while adding accounts)
 
 The volume holds everything under `/var/lib/codex-lb/` (database, encryption key, archives) — back it up to preserve your data.
+
+## Images
+
+The fork publishes each release as two tags:
+
+- `ghcr.io/insciqq/codex-lb:<version>`, for example `1.25.0-fork.1`
+- `ghcr.io/insciqq/codex-lb:sha-<full 40-character commit SHA>`
+
+There is no `latest` or other floating tag. For production, pin the `sha-` tag
+or the image digest, and verify the digest's build provenance first:
+
+```bash
+gh attestation verify oci://ghcr.io/insciqq/codex-lb@<digest> --repo insciqq/codex-lb
+```
+
+The release policy is in [FORK.md](https://github.com/insciqq/codex-lb/blob/patched/FORK.md#releases-and-images).
 
 ## Switching Wi-Fi or other networks
 
@@ -36,7 +52,7 @@ docker volume create codex-lb-data
 docker run -d --name codex-lb \
   --network host \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/soju06/codex-lb:latest
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.1
 ```
 
 In the verified Docker Engine setup on Linux, host networking does not use `-p`; codex-lb still listens on ports 2455 and 1455. It also removes Docker's network-namespace isolation. The command is an opt-in path to a stable host resolver, not a DNS fix by itself.
@@ -82,7 +98,7 @@ docker run -d --name codex-lb \
   -e CODEX_LB_FIREWALL_TRUST_PROXY_HEADERS=true \
   -e CODEX_LB_FIREWALL_TRUSTED_PROXY_CIDRS=172.18.0.0/16 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/soju06/codex-lb:latest
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.1
 ```
 
 **Hard override / no app-level dashboard auth**
@@ -92,7 +108,7 @@ docker run -d --name codex-lb \
   -p 2455:2455 -p 1455:1455 \
   -e CODEX_LB_DASHBOARD_AUTH_MODE=disabled \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/soju06/codex-lb:latest
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.1
 ```
 
 For Helm, pass the same values through `extraEnv`. What these modes mean and when to use them is covered in [Authentication](../authentication.md).

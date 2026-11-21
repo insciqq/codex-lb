@@ -46,14 +46,18 @@ docker run -d --name codex-lb \
   --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/soju06/codex-lb:latest
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.1
 
-# 或者使用 uvx
+# 或者使用 uvx（上游的 PyPI 版本；本 fork 不发布 Python 包）
 uvx codex-lb
 
 # 或者使用 nix
-nix run github:Soju06/codex-lb
+nix run github:insciqq/codex-lb/v1.25.0-fork.1
 ```
+
+本 fork 发布 `ghcr.io/insciqq/codex-lb:<version>` 和
+`ghcr.io/insciqq/codex-lb:sha-<完整 commit SHA>`，没有 `latest` 标签。
+生产环境请固定 `sha-` 标签或镜像 digest（见 [FORK.md](FORK.md#releases-and-images)）。
 
 打开 [localhost:2455](http://localhost:2455) → 添加账户 → 完成。
 
