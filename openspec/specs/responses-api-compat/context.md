@@ -425,6 +425,23 @@ several turns ago:
   request stays on the bridge. If the tool output with the screenshot were the
   last item, that one request would bypass. The next turn would not.
 
+The rule applies only to a native Codex client's full history. The proxy never
+anchors that history, so the bridge sends it complete and the thread keeps one
+upstream session and its `prompt_cache_key`. Another client's resent history
+would receive the bridge's session anchor while only its stored input is
+trimmed, so the previous answer and its calls would go upstream twice; those
+requests keep bypassing the bridge for any `input_image`.
+
+Parallel calls from one response are one batch. In `[call c1, screenshot
+output of c1, call c2, output of c2]` the second call does not end the current
+turn, so the new screenshot still bypasses. A client that replays the next
+response's call right after the previous results, with no reasoning item or
+assistant message between them, is treated the same way and bypasses until
+an assistant message or reasoning item follows; that errs toward the raw path.
+Items outside the boundary list, such as `shell_call` or `mcp_list_tools`, do
+not end the turn either, so an image before them stays current and the request
+bypasses; that errs the same way.
+
 Failure modes kept with the clause: a client that sends new images without any
 model-output item before them (single-shot) still bypasses; this is the #903
 behavior. An external URL in history bypasses forever. This is intended: the

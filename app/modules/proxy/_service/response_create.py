@@ -388,34 +388,52 @@ def _responses_request_contains_input_image(payload: ResponsesRequest) -> bool:
     return any(_json_value_contains_input_image_part(item) for item in input_value)
 
 
+# Model-output items that call a tool or ask for approval. Several of them can
+# come from one response, so they end the current turn only when they open a
+# batch; their results stay in the same turn until the next model output.
+_IMAGE_BYPASS_CALL_ITEM_TYPES = frozenset(
+    {
+        "function_call",
+        "file_search_call",
+        "custom_tool_call",
+        "apply_patch_call",
+        "tool_search_call",
+        "web_search_call",
+        "mcp_call",
+        "mcp_approval_request",
+        "local_shell_call",
+        "image_generation_call",
+        "computer_call",
+        "code_interpreter_call",
+    }
+)
+
+
 def _responses_request_requires_image_bridge_bypass(payload: ResponsesRequest) -> bool:
     """Keep new images and surviving external URLs off bridge pending slots."""
     input_value = payload.input
     if not isinstance(input_value, list):
         return False
     current_turn_has_image = False
+    in_call_batch = False
     for item in input_value:
-        if is_json_mapping(item) and (
-            item.get("role") == "assistant"
-            or item.get("type")
-            in (
-                "reasoning",
-                "function_call",
-                "file_search_call",
-                "custom_tool_call",
-                "apply_patch_call",
-                "tool_search_call",
-                "web_search_call",
-                "mcp_call",
-                "local_shell_call",
-                "image_generation_call",
-                "computer_call",
-                "code_interpreter_call",
-            )
-        ):
+        raw_type = item.get("type") if is_json_mapping(item) else None
+        item_type = raw_type if isinstance(raw_type, str) else None
+        if is_json_mapping(item) and (item.get("role") == "assistant" or item_type == "reasoning"):
             current_turn_has_image = False
-        elif not current_turn_has_image:
-            current_turn_has_image = _json_value_contains_input_image_part(item)
+            in_call_batch = False
+        elif item_type in _IMAGE_BYPASS_CALL_ITEM_TYPES:
+            # A sibling call of the same batch keeps the results already seen.
+            if not in_call_batch:
+                current_turn_has_image = False
+            in_call_batch = True
+        else:
+            is_result = item_type is not None and (
+                item_type.endswith("_output") or item_type == "mcp_approval_response"
+            )
+            in_call_batch = in_call_batch and is_result
+            if not current_turn_has_image:
+                current_turn_has_image = _json_value_contains_input_image_part(item)
         if _json_value_contains_external_input_image(item):
             return True
     return current_turn_has_image

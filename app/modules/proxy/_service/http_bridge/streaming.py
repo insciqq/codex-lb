@@ -1078,9 +1078,15 @@ class _HTTPBridgeStreamingMixin:
             )
             else None
         )
-        if runtime_config.enabled and (
-            (image_request and _responses_request_requires_image_bridge_bypass(payload)) or image_generation_request
-        ):
+        # Replayed history images keep a request on the bridge only for native
+        # Codex history, which the proxy never anchors. Another client's resend
+        # would get the session anchor with only its stored input trimmed, so
+        # the previous answer and its calls would go upstream twice.
+        image_bypass = image_request and (
+            not _http_bridge_native_codex_full_history(payload, headers)
+            or _responses_request_requires_image_bridge_bypass(payload)
+        )
+        if runtime_config.enabled and (image_bypass or image_generation_request):
             record_http_bridge_routing(stage="bypass", reason="image")
             logger.info(
                 "stream_responses bypassing http bridge for image-capable request input_image=%s "

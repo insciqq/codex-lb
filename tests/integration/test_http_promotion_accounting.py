@@ -27,6 +27,8 @@ from tests.integration.test_http_responses_bridge import (
 
 pytestmark = pytest.mark.integration
 
+_CODEX_UA = "codex_exec/0.153.4"
+
 
 async def _key(async_client, name, *, policy=None):
     settings = await async_client.put(
@@ -135,12 +137,19 @@ async def test_promoted_image_bypass_is_counted_without_pinning_http(async_clien
 
 
 @pytest.mark.asyncio
-async def test_historical_image_does_not_pin_later_turns_to_http(async_client, promotion_transport):
-    # Replayed inline images must retain bridge admission on later text turns.
+@pytest.mark.parametrize("native", [True, False], ids=["codex", "sdk"])
+async def test_historical_image_does_not_pin_later_turns_to_http(async_client, promotion_transport, native):
+    # Replayed inline images keep Codex history on the bridge; other clients
+    # bypass it without being pinned to upstream HTTP.
     upstreams, raw_calls, _ = promotion_transport
     history = _image_history("data:image/png;base64,aGVsbG8=", position=0)
-    response = await async_client.post("/v1/responses", json={"model": "gpt-5.4", "input": history})
+    headers = {"user-agent": _CODEX_UA if native else "OpenAI/Python"}
+    response = await async_client.post("/v1/responses", json={"model": "gpt-5.4", "input": history}, headers=headers)
     assert response.status_code == 200, response.text
+    if not native:
+        assert not upstreams
+        assert raw_calls[-1]["upstream_transport"] == "auto"
+        return
     assert not raw_calls
     assert len(upstreams) == 1
     assert json.loads(upstreams[0].sent_text[0])["input"][0] == history[0]
@@ -162,7 +171,9 @@ async def test_replayed_history_inline_image_stays_on_http_bridge(async_client, 
         {"role": "assistant", "content": "screenshot received"},
         {"role": "user", "content": "continue"},
     ]
-    response = await async_client.post("/v1/responses", json={"model": "gpt-5.4", "input": history})
+    response = await async_client.post(
+        "/v1/responses", json={"model": "gpt-5.4", "input": history}, headers={"user-agent": _CODEX_UA}
+    )
     assert response.status_code == 200, response.text
     assert not raw_calls
     assert len(upstreams) == 1
@@ -175,14 +186,59 @@ async def test_replayed_history_inline_image_stays_on_http_bridge(async_client, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_output", [False, True])
+@pytest.mark.parametrize("native", [True, False], ids=["codex", "sdk"])
+async def test_image_thread_keeps_one_bridge_session_and_cache_key_for_codex(async_client, promotion_transport, native):
+    """Once an image is history, later Codex turns share one bridge session and prompt-cache key.
+
+    Bypassing every later turn of the thread opened a new upstream connection
+    per request, so the thread lost its prompt cache from the first image on.
+    Other clients keep bypassing: the bridge would anchor their resent history
+    while trimming only its stored input, and send the previous answer twice.
+    """
+    upstreams, raw_calls, _ = promotion_transport
+    headers = {"user-agent": _CODEX_UA if native else "OpenAI/Python", "session_id": "image-thread"}
+    body = {"model": "gpt-5.4", "instructions": "test", "stream": True, "prompt_cache_key": "image-thread"}
+    image = {"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="}
+    image_turn = [{"role": "user", "content": [{"type": "input_text", "text": "What is this?"}, image]}]
+    second = [*image_turn, {"role": "assistant", "content": "A cat."}, {"role": "user", "content": "Its color?"}]
+    third = [*second, {"role": "assistant", "content": "Grey."}, {"role": "user", "content": "Thanks."}]
+
+    for turn_input in (image_turn, second, third):
+        response = await async_client.post(
+            "/backend-api/codex/responses", json={**body, "input": turn_input}, headers=headers
+        )
+        assert response.status_code == 200, response.text
+
+    if not native:
+        assert len(raw_calls) == 3
+        assert not upstreams
+        return
+    # Only the turn that adds the image bypasses the bridge.
+    assert len(raw_calls) == 1
+    assert len(upstreams) == 1
+    frames = [json.loads(text) for text in upstreams[0].sent_text]
+    assert [frame["prompt_cache_key"] for frame in frames] == ["image-thread", "image-thread"]
+    # Codex resends its complete history unanchored, historical image unchanged.
+    assert ["previous_response_id" in frame for frame in frames] == [False, False]
+    assert [len(frame["input"]) for frame in frames] == [len(second), len(third)]
+    assert all(frame["input"][0] == image_turn[0] for frame in frames)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_output", ["none", "single-call", "parallel-calls"])
 async def test_current_turn_image_still_bypasses_http_bridge(async_client, promotion_transport, tool_output):
     upstreams, raw_calls, _ = promotion_transport
     history = _image_history("data:image/png;base64,aGVsbG8=")
-    if tool_output:
+    if tool_output != "none":
         history[-1:] = [
             {"type": "function_call", "name": "screenshot", "call_id": "call_shot", "arguments": "{}"},
             {"type": "function_call_output", "call_id": "call_shot", "output": history[-1]["content"]},
+        ]
+    if tool_output == "parallel-calls":
+        # A sibling call of the same batch, with its result, follows the screenshot.
+        history += [
+            {"type": "function_call", "name": "list", "call_id": "call_list", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_list", "output": "a.txt"},
         ]
     response = await async_client.post("/v1/responses", json={"model": "gpt-5.4", "input": history})
     assert response.status_code == 200, response.text

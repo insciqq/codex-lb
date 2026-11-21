@@ -4932,6 +4932,7 @@ def test_responses_request_contains_input_image_detects_supported_shapes() -> No
         {"type": "apply_patch_call", "call_id": "call_shot", "operation": {}},
         {"type": "computer_call", "call_id": "call_shot", "action": {"type": "click", "x": 1, "y": 1}},
         {"type": "code_interpreter_call", "call_id": "call_shot", "code": "print(1)"},
+        {"type": "mcp_approval_request", "id": "mcpr_1", "server_label": "s", "name": "t", "arguments": "{}"},
     ],
 )
 @pytest.mark.parametrize("new_image", [False, True])
@@ -4949,6 +4950,29 @@ def test_image_bridge_bypass_current_turn_boundary(boundary, new_image):
         }
     )
     assert proxy_service._responses_request_requires_image_bridge_bypass(payload) is new_image
+
+
+def test_image_bridge_bypass_keeps_a_result_between_sibling_calls_current():
+    """A later call of the same batch does not move an earlier call's new screenshot into history."""
+
+    def call(call_id):
+        return {"type": "function_call", "name": "shot", "call_id": call_id, "arguments": "{}"}
+
+    screenshot = {
+        "type": "function_call_output",
+        "call_id": "call_a",
+        "output": [{"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="}],
+    }
+    text_result = {"type": "function_call_output", "call_id": "call_b", "output": "done"}
+    batch = [{"role": "user", "content": "check both"}, call("call_a"), screenshot, call("call_b"), text_result]
+    answered = [*batch, {"role": "assistant", "content": "seen"}, {"role": "user", "content": "next"}]
+
+    def requires_bypass(input_value):
+        payload = ResponsesRequest.model_validate({"model": "gpt-5.5", "instructions": "hi", "input": input_value})
+        return proxy_service._responses_request_requires_image_bridge_bypass(payload)
+
+    assert requires_bypass(batch) is True
+    assert requires_bypass(answered) is False
 
 
 @pytest.mark.parametrize(
