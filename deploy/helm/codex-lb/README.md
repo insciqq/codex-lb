@@ -8,7 +8,7 @@ This fork publishes no Helm chart. Install the chart from a checkout of a fork
 release tag, and run the `helm` commands in this README from the checkout root:
 
 ```bash
-git clone --depth 1 --branch v1.25.0-fork.1 https://github.com/insciqq/codex-lb
+git clone --depth 1 --branch v1.25.0-fork.2 https://github.com/insciqq/codex-lb
 cd codex-lb
 helm dependency build deploy/helm/codex-lb/
 ```

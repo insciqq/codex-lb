@@ -61,10 +61,10 @@ docker run -d --name codex-lb \
   --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/insciqq/codex-lb:1.25.0-fork.1
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.2
 
 # 或者使用 nix
-nix run github:insciqq/codex-lb/v1.25.0-fork.1
+nix run github:insciqq/codex-lb/v1.25.0-fork.2
 ```
 
 `uvx codex-lb` 安装的是上游的 PyPI 版本，而不是本 fork；本 fork 只发布容器镜像。

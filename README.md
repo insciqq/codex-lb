@@ -65,10 +65,10 @@ docker run -d --name codex-lb \
   --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/insciqq/codex-lb:1.25.0-fork.1
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.2
 
 # or nix
-nix run github:insciqq/codex-lb/v1.25.0-fork.1
+nix run github:insciqq/codex-lb/v1.25.0-fork.2
 ```
 
 `uvx codex-lb` installs upstream's PyPI release, not this fork: the fork publishes container images only.
