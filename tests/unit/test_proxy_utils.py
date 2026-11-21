@@ -4623,6 +4623,30 @@ def test_has_native_codex_transport_headers_requires_allowlisted_originator():
     assert proxy_module._has_native_codex_transport_headers({"originator": "other-client"}) is False
 
 
+@pytest.mark.parametrize(
+    ("headers", "native"),
+    [
+        ({"user-agent": "Codex Desktop/0.130.0 (Mac OS 26.1.0; arm64) unknown (Codex Desktop; 0.130.0)"}, True),
+        ({"user-agent": "Codex Desktop/0.130.0 (Windows 10.0.26100; x86_64)"}, True),
+        ({"user-agent": "codex-tui/0.130.0 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.130.0)"}, True),
+        # Not an allowlisted originator: native only through a native User-Agent.
+        ({"originator": "example_wrapper_originator"}, False),
+        (
+            {
+                "originator": "example_wrapper_originator",
+                "user-agent": "Codex Desktop/0.130.0 (Mac OS 26.1.0; arm64) unknown (Codex Desktop; 0.130.0)",
+            },
+            True,
+        ),
+        # An explicit OpenAI SDK marker overrides a native originator.
+        ({"originator": "Codex Desktop", "user-agent": "OpenAI/Python 2.24.0"}, False),
+        ({"originator": "Codex Desktop", "x-stainless-lang": "python"}, False),
+    ],
+)
+def test_native_codex_client_request_recognizes_real_codex_clients(headers: dict[str, str], native: bool) -> None:
+    assert proxy_module.is_native_codex_client_request(headers) is native
+
+
 def test_resolve_stream_transport_does_not_force_websocket_for_custom_codex_originator(monkeypatch) -> None:
     monkeypatch.setattr(
         proxy_module,

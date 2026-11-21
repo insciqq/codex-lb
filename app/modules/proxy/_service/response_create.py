@@ -706,7 +706,11 @@ def _enforce_response_create_size_limit(request_state: _WebSocketRequestState) -
     warn_bytes = _upstream_response_create_warn_bytes()
     max_bytes = _upstream_response_create_max_bytes()
     if payload_size > warn_bytes:
-        logger.warning(
+        # A native Codex history goes upstream complete on every turn, so a
+        # long thread crosses this size on each request; the limit below still
+        # rejects an oversized frame.
+        logger.log(
+            logging.DEBUG if request_state.native_codex_full_history else logging.WARNING,
             (
                 "Large response.create prepared request_id=%s request_log_id=%s "
                 "transport=%s bytes=%s previous_response_id=%s"

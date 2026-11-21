@@ -7607,7 +7607,11 @@ If the matching cumulative input omits prior output, contains an incomplete or
 orphaned tool call/output sequence, omits any call in the durable manifest,
 reuses a stored-prefix call ID, has no known durable manifest, or otherwise
 lacks either safe context shape, the service MUST retain the existing
-durable-anchor injection and prefix trimming behavior.
+durable-anchor injection and prefix trimming behavior. This anchoring, and
+every scenario below that keeps or injects a `previous_response_id`, applies
+only to requests that are not a native Codex full history; the bridge never
+anchors a native Codex history (Requirement: The proxy never anchors native
+Codex HTTP history).
 
 The service MUST NOT seed the newly created local session with the old durable
 response in a way that re-injects the anchor before the original full resend is
@@ -7637,6 +7641,7 @@ When that proof authorizes a fresh owner-bound bridge and the incoming affinity 
 
 #### Scenario: Omitted parallel tool call remains anchored
 - **GIVEN** the durable prior-response manifest contains two parallel call IDs
+- **AND** the request is not a native Codex full history
 - **WHEN** a matching cumulative input carries a complete call/output pair for only one ID
 - **THEN** the service retains the durable `previous_response_id`
 - **AND** it does not classify the suffix as a complete tool-loop resend
@@ -7646,16 +7651,17 @@ When that proof authorizes a fresh owner-bound bridge and the incoming affinity 
 - **AND** only one call reaches a matching done event before `response.completed`
 - **WHEN** the durable response alias is persisted
 - **THEN** its tool-call manifest is unknown rather than a one-call partial manifest
-- **AND** a later direct tool-loop full resend remains anchored
+- **AND** a later direct tool-loop full resend that is not a native Codex full history remains anchored
 
 #### Scenario: Unsupported parallel client-settled call keeps manifest unknown
 - **GIVEN** a response emits a supported direct call and a parallel client-settled call that the replay proof cannot represent
 - **WHEN** the durable response alias is persisted
 - **THEN** its tool-call manifest is unknown rather than a partial supported-call manifest
-- **AND** a later resend that settles only the supported call remains anchored
+- **AND** a later resend that settles only the supported call, and is not a native Codex full history, remains anchored
 
 #### Scenario: Legacy durable row remains anchored
 - **GIVEN** a durable response row predates the call-manifest migration or otherwise has an unknown manifest
+- **AND** the request is not a native Codex full history
 - **WHEN** a matching cumulative input contains direct tool call/output items without a completed assistant-message boundary
 - **THEN** the service retains the durable `previous_response_id`
 
@@ -7663,10 +7669,11 @@ When that proof authorizes a fresh owner-bound bridge and the incoming affinity 
 - **GIVEN** a durable row has a response-bound tool-call manifest
 - **WHEN** an older rolling-upgrade writer advances `latest_response_id` without updating the manifest column
 - **THEN** readers treat the mismatched manifest as unknown
-- **AND** a later direct tool-loop full resend remains anchored
+- **AND** a later direct tool-loop full resend that is not a native Codex full history remains anchored
 
 #### Scenario: Cumulative prompt without prior output remains anchored
 - **GIVEN** a matching cumulative input contains fresh user input but omits the prior assistant output
+- **AND** the request is not a native Codex full history
 - **WHEN** no reusable bridge exists for its hard durable conversation
 - **THEN** the service retains the durable `previous_response_id`
 - **AND** it trims the verified stored prefix through the existing anchored path
@@ -7674,6 +7681,7 @@ When that proof authorizes a fresh owner-bound bridge and the incoming affinity 
 
 #### Scenario: Failed owner forwarding preserves omitted response context
 - **GIVEN** a matching cumulative input omits prior assistant output and initially resolves to a forwardable durable owner
+- **AND** the request is not a native Codex full history
 - **WHEN** owner forwarding fails before any downstream output and the service performs local takeover
 - **THEN** the local recovery request retains the durable `previous_response_id`
 - **AND** it trims the verified stored prefix instead of submitting the cumulative input unanchored
@@ -11101,3 +11109,68 @@ The native WebSocket adapter MUST retain ordered delivery of at least 256 small 
 - **WHEN** the event or accounted-byte budget would be exceeded
 - **THEN** the connection fails with an account-neutral local-buffer classification
 - **AND** pending sends and the connection are finalized while unrelated connections remain usable
+
+### Requirement: The proxy never anchors native Codex HTTP history
+
+The HTTP Responses bridge MUST treat a request from a native Codex client, identified by the same decision the route uses (a native Codex `User-Agent` or `originator` and no explicit OpenAI SDK marker such as an `x-stainless-*` header or an OpenAI `User-Agent`), that carries no `previous_response_id`, no `conversation`, and a non-empty input list, as the client's complete history, regardless of its length. The bridge MUST NOT add a `previous_response_id` to such a request at any injection point (the fresh-reattach durable anchor, the session-state hydration of the durable anchor, the session-level anchor and the owner-forward recovery anchor), whether or not the socket that produced the stored response is still open, and MUST send the client's input upstream unchanged and untrimmed. Because the request is the client's own complete request and its tools run on the client, the bridge MUST treat it as it treated the verified unanchored body of its anchored form: a recovery checkpoint MUST NOT refuse it, the hard-key retry circuit MUST admit it as it admits a proof-gated full resend, and a transport-only replay (a close or transport loss before any response event) MUST keep the thread's owner account instead of treating it as a fresh request, even when its input is account-neutral. When bridge session creation fails before dispatch and the request is bound to its continuity owner, the service MUST NOT replay it over raw HTTP, which cannot require that owner. Such a request MUST NOT be refused by the delta-only poison fail-closed, and a durable owner recorded by a previous process MUST NOT be excluded from selection for it. Apart from that, the rule MUST NOT change account selection, the durable owner preference, owner routing (including a verified full resend that ignores a stale broad session owner), the prompt cache key, the bridge's existing replay of unanchored requests, retries and failover after explicit upstream errors, or authentication and permanent-failure handling. A client-supplied `previous_response_id`, and requests from clients that are not native Codex clients, MUST keep the existing anchoring behavior.
+
+#### Scenario: Upstream closed the socket that held the stored response
+
+- **GIVEN** a native Codex thread whose last response completed on an upstream socket that upstream has since closed
+- **WHEN** the client sends its complete history without `previous_response_id`
+- **THEN** the bridge sends that input once, unchanged and without `previous_response_id`, on a new socket of the account that served the thread
+- **AND** the prompt cache key and instructions are unchanged
+
+#### Scenario: The producing socket is still open
+
+- **GIVEN** a native Codex thread whose last response completed on the bridge's current upstream socket
+- **WHEN** the client sends its complete history with the tool output
+- **THEN** the bridge sends that input unchanged and without `previous_response_id` on the same socket and account, with the same prompt cache key
+
+#### Scenario: The socket drops before any event
+
+- **GIVEN** a native Codex request whose upstream socket closes before any response event
+- **WHEN** the bridge replays the request and the client retries the same complete history
+- **THEN** every attempt goes upstream unchanged and without `previous_response_id` on the account that served the thread
+- **AND** no recovery checkpoint refuses the client's retry
+
+#### Scenario: The next turn after a recovered request
+
+- **GIVEN** the client's complete history completed on a new socket after a socket loss
+- **WHEN** the client sends the next complete history
+- **THEN** the bridge sends it unchanged and without `previous_response_id` on that socket and account
+
+#### Scenario: The client continues from an earlier response
+
+- **GIVEN** two responses completed on the same socket for the same question
+- **WHEN** the client continues from the first response
+- **THEN** the bridge sends the client's history without `previous_response_id`
+
+#### Scenario: A transport-only replay keeps the owner
+
+- **GIVEN** a native Codex history without item ids and without a turn-state header on the thread's owner account
+- **WHEN** the socket closes cleanly before any response event and the bridge replays the request
+- **THEN** the replay goes to the same owner account with the same prompt cache key
+
+#### Scenario: A recovery checkpoint does not fence native history
+
+- **GIVEN** an UNKNOWN recovery checkpoint whose fingerprint matches the client's complete history and no live bridge session
+- **WHEN** the client sends that history again, repeatedly
+- **THEN** each request is dispatched and completes on the owner account
+
+#### Scenario: An open retry circuit admits native history
+
+- **GIVEN** zero-event clean closes have opened the thread's retry circuit
+- **WHEN** the client sends its next complete history
+- **THEN** the bridge dispatches it on the thread's owner instead of suppressing it or replaying it over raw HTTP
+
+#### Scenario: Raw HTTP fallback does not move an owner-bound history
+
+- **GIVEN** a native Codex history bound to its durable owner account
+- **WHEN** the bridge's upstream WebSocket connect fails before dispatch
+- **THEN** the service makes no raw HTTP request for it and reports the failure
+
+#### Scenario: Other clients and explicit anchors keep their behavior
+
+- **WHEN** a client that is not a native Codex client resends after the socket loss, or a native client supplies its own `previous_response_id`
+- **THEN** the bridge keeps the existing anchoring behavior for that request

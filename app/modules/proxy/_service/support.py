@@ -1089,6 +1089,12 @@ class _WebSocketRequestState:
     # Session headers provide locality, but only a previous response or
     # explicit turn-state header guarantees continuity for stale recovery.
     hard_continuity_anchor: bool = False
+    # A native Codex client's complete history, which the bridge never
+    # anchors. Like a proof-gated full resend it is the client's own
+    # replay-safe request, and it belongs to its thread's owner: a
+    # transport-only replay keeps that owner instead of treating it as a
+    # fresh request.
+    native_codex_full_history: bool = False
     proxy_injected_previous_response_id: bool = False
     # The durable lookup carried an anchor, but its owner was already stale,
     # ownerless, or lease-expired when this request arrived.  Such a request

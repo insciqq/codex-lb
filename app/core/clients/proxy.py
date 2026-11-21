@@ -886,6 +886,27 @@ def _is_native_codex_request(headers: Mapping[str, str]) -> bool:
     return _is_native_codex_originator(originator)
 
 
+def has_explicit_openai_sdk_marker(headers: Mapping[str, str]) -> bool:
+    """Return whether headers name an OpenAI SDK client explicitly.
+
+    An ``x-stainless-*`` header or an OpenAI ``User-Agent`` marks an SDK
+    request even when it also carries a native Codex ``originator``.
+    """
+    user_agent = ""
+    for key, value in headers.items():
+        lowered = key.lower()
+        if lowered.startswith("x-stainless-"):
+            return True
+        if lowered == "user-agent":
+            user_agent = value
+    return "openai" in user_agent.lower()
+
+
+def is_native_codex_client_request(headers: Mapping[str, str]) -> bool:
+    """The single native Codex client decision shared by the route and the bridge."""
+    return _is_native_codex_request(headers) and not has_explicit_openai_sdk_marker(headers)
+
+
 def _normalize_non_native_upstream_fingerprint(headers: dict[str, str]) -> None:
     """Rewrite a non-native request's outbound fingerprint to the Codex CLI
     persona in place: set ``User-Agent`` to a ``codex_cli_rs`` string, strip

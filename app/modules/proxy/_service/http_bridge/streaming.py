@@ -94,6 +94,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_is_explicit_previous_response_rejection,
     _http_bridge_is_previous_response_owner_unavailable,
     _http_bridge_models_compatible,
+    _http_bridge_native_codex_full_history,
     _http_bridge_owner_lookup_unavailable_error_envelope,
     _http_bridge_payload_looks_like_full_resend,
     _http_bridge_payload_without_previous_response_id,
@@ -1593,6 +1594,10 @@ class _HTTPBridgeStreamingMixin:
         durable_full_resend_fresh_bridge_proof: _VerifiedDurableFullResend | None = None
         force_local_recovery_creation = False
         payload_looks_like_full_resend = _http_bridge_payload_looks_like_full_resend(payload)
+        # An anchor the proxy adds is only an optimization, and upstream
+        # resolves a store=false anchor only on the socket that produced it,
+        # so the proxy never adds one to a native Codex history.
+        native_codex_full_history = _http_bridge_native_codex_full_history(payload, headers)
         # First-touch circuit load before any anchor planning: an expired
         # at-threshold poison row recorded by another replica arms this
         # worker's quarantine here, so the suppression checks below see it
@@ -1602,12 +1607,13 @@ class _HTTPBridgeStreamingMixin:
             request_model=payload.model,
         )
         first_touch_circuit_key = bridge_session_key
-        # Set when the quarantine check below suppresses the durable-anchor
-        # injection for a full-resend payload; the session hydration and the
-        # session-level anchor injection further down must honor it so the
-        # dispatch genuinely goes unanchored instead of rebuilding the same
-        # wedged reattach through the session-state side door.
-        fresh_reattach_anchor_suppressed_quarantined = False
+        # Set for a native Codex history, and when the quarantine check below
+        # suppresses the durable-anchor injection for a full-resend payload;
+        # the fresh-reattach, session hydration, session-level and recovery
+        # anchor injections further down must honor it so the dispatch
+        # genuinely goes unanchored instead of rebuilding the anchor through
+        # the session-state side door.
+        fresh_reattach_durable_anchor_suppressed = native_codex_full_history
 
         def replay_projection_retains_required_context(
             replay_projection: AccountNeutralReplayProjection,
@@ -1676,7 +1682,12 @@ class _HTTPBridgeStreamingMixin:
                 durable_full_resend_is_account_neutral = _http_bridge_payload_is_account_neutral_fresh_replay(
                     durable_full_resend_fresh_payload
                 )
-                if durable_lookup is not None:
+                # A recovery checkpoint fences replays of an ambiguous
+                # anchored operation. Native history is the client's own
+                # complete request and its tools run on the client, so a
+                # checkpoint protects nothing for it, and one written by an
+                # older anchored attempt never settles once the session is gone.
+                if durable_lookup is not None and not native_codex_full_history:
                     try:
                         _fresh_state, fresh_replay_text = prepare_bridge_request(
                             _http_bridge_payload_without_previous_response_id(payload)
@@ -1816,7 +1827,7 @@ class _HTTPBridgeStreamingMixin:
                 # hydration, session-level injection, and recovery injection
                 # paths below.
                 fresh_reattach_can_use_durable_anchor = False
-                fresh_reattach_anchor_suppressed_quarantined = True
+                fresh_reattach_durable_anchor_suppressed = True
                 _log_http_bridge_event(
                     "fresh_reattach_anchor_skipped_quarantined",
                     bridge_session_key,
@@ -1845,7 +1856,7 @@ class _HTTPBridgeStreamingMixin:
                         cache_key_family=bridge_session_key.affinity_kind,
                         model_class=_extract_model_class(payload.model) if payload.model else None,
                     )
-                else:
+                elif not fresh_reattach_durable_anchor_suppressed:
                     effective_payload = payload.model_copy(
                         update={"previous_response_id": durable_lookup.latest_response_id}
                     )
@@ -1862,7 +1873,7 @@ class _HTTPBridgeStreamingMixin:
                         cache_key_family=bridge_session_key.affinity_kind,
                         model_class=_extract_model_class(payload.model) if payload.model else None,
                     )
-            elif fresh_reattach_can_use_durable_anchor:
+            elif fresh_reattach_can_use_durable_anchor and not fresh_reattach_durable_anchor_suppressed:
                 effective_payload = payload.model_copy(
                     update={"previous_response_id": durable_lookup.latest_response_id}
                 )
@@ -2477,6 +2488,10 @@ class _HTTPBridgeStreamingMixin:
 
         if (
             dead_owner_anchor
+            # A previous process epoch only means the socket is gone. Native
+            # history already goes unanchored to its durable account, which may
+            # be perfectly healthy; selection decides whether it is usable.
+            and not native_codex_full_history
             and durable_lookup is not None
             and durable_lookup.state == HttpBridgeSessionState.ACTIVE
             and dead_owner_process_epoch_mismatch
@@ -2578,7 +2593,13 @@ class _HTTPBridgeStreamingMixin:
                 # incoming payload would send the new turn alone and silently
                 # drop the prior conversation. Only a payload that already
                 # carries its own continuity is a safe fresh raw-HTTP replay.
-                if effective_payload.previous_response_id != payload.previous_response_id:
+                # Native history bound to its continuity owner is the same
+                # case without the anchor: the raw path cannot require that
+                # owner, and the history may carry the owner's encrypted
+                # reasoning.
+                if effective_payload.previous_response_id != payload.previous_response_id or (
+                    native_codex_full_history and preferred_account_has_continuity_provenance
+                ):
                     setattr(exc, _HTTP_BRIDGE_PREPARED_ANCHOR_ATTR, True)
                 if switch_model_transition_to_account_neutral_fork(exc):
                     continue
@@ -2934,7 +2955,7 @@ class _HTTPBridgeStreamingMixin:
                     # The quarantine skip (#1534) applies to the local recovery
                     # rebind as well: re-injecting the suppressed anchor here
                     # would rebuild the same wedged reattach.
-                    and not fresh_reattach_anchor_suppressed_quarantined
+                    and not fresh_reattach_durable_anchor_suppressed
                     and not durable_full_resend_has_safe_fresh_context
                     and recovery_payload.previous_response_id is None
                     and durable_lookup is not None
@@ -3103,7 +3124,7 @@ class _HTTPBridgeStreamingMixin:
             # into the session either: doing so would let the session-level
             # injection below re-add the exact anchor the quarantine skipped
             # and trim the prefix, rebuilding the wedged reattach.
-            not fresh_reattach_anchor_suppressed_quarantined
+            not fresh_reattach_durable_anchor_suppressed
             and not durable_full_resend_has_safe_fresh_context
             and durable_full_resend_anchor_count is not None
             and durable_full_resend_anchor_fingerprint is not None
@@ -3169,7 +3190,7 @@ class _HTTPBridgeStreamingMixin:
             session.codex_session
             # Honor the quarantine decision end to end: the durable anchor
             # skipped above must not come back as a session-level injection.
-            and not fresh_reattach_anchor_suppressed_quarantined
+            and not fresh_reattach_durable_anchor_suppressed
             and not proxy_injected_previous_response_id
             and effective_payload.previous_response_id is None
             and not effective_payload.conversation
@@ -3246,7 +3267,11 @@ class _HTTPBridgeStreamingMixin:
         has_previous_response_id = (
             proxy_injected_previous_response_id or effective_payload.previous_response_id is not None
         )
-        if not has_previous_response_id and not _http_bridge_payload_looks_like_full_resend(effective_payload):
+        if (
+            not has_previous_response_id
+            and not native_codex_full_history
+            and not _http_bridge_payload_looks_like_full_resend(effective_payload)
+        ):
             # A delta-only payload with no anchor anywhere relies on server
             # memory this proxy may have just abandoned. When the key's
             # poison quarantine is active — or the durable circuit row still

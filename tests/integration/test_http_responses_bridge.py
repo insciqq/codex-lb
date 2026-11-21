@@ -17414,7 +17414,16 @@ def _install_denied_anchor_bridge_fakes(
     upstream: _DeniesAnchoredTurnUpstreamWebSocket,
 ) -> None:
     """Pin selection, token refresh, and the upstream connect to one fake that
-    denies every anchored turn."""
+    denies every anchored turn.
+
+    The bridge never adds an anchor to a native Codex history, so production
+    cannot route a native client's request into the denied-anchor fence. The
+    native tests below pin a combination production does not produce (the
+    route treats the client as native, the bridge does not): they cover only
+    how the route delivers a before-dispatch refusal to a native client, for
+    any refusal raised inside the committed SSE body (issue #2364).
+    """
+    monkeypatch.setattr(http_bridge_helpers_module, "is_native_codex_client_request", lambda headers: False)
 
     async def fake_select_account_with_budget(
         self,

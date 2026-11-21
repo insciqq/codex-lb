@@ -101,6 +101,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_durable_lease_ttl_seconds,
     _http_bridge_is_previous_response_owner_unavailable,
     _http_bridge_key_strength,
+    _http_bridge_native_codex_full_history,
     _http_bridge_payload_looks_like_full_resend,
     _http_bridge_precreated_retry_failure_error,
     _http_bridge_prewarm_enabled,
@@ -725,6 +726,7 @@ class _HTTPBridgeRequestSubmitMixin:
             request_log_id=request_id or get_request_id() or ensure_request_id(None),
             enforce_openai_sdk_contract=enforce_openai_sdk_contract,
             upstream_payload_base=base_payload,
+            native_codex_full_history=_http_bridge_native_codex_full_history(payload, headers),
         )
         (
             request_state.useragent,
@@ -750,6 +752,7 @@ class _HTTPBridgeRequestSubmitMixin:
         request_log_id: str | None = None,
         enforce_openai_sdk_contract: bool = True,
         upstream_payload_base: JsonObject | None = None,
+        native_codex_full_history: bool = False,
     ) -> tuple[_WebSocketRequestState, str]:
         deduped_replayed_input_count: int | None = None
         deduped_replayed_input_fingerprint: str | None = None
@@ -883,6 +886,7 @@ class _HTTPBridgeRequestSubmitMixin:
                     slim_summary["historical_images_slimmed"],
                 )
         request_state.request_text = text_data
+        request_state.native_codex_full_history = native_codex_full_history
         _enforce_response_create_size_limit(request_state)
         return request_state, text_data
 
@@ -1076,13 +1080,18 @@ class _HTTPBridgeRequestSubmitMixin:
         # and submit the identical request repeatedly while the retry circuit
         # is cooling down.  Gate new submissions before any reconnect/send so
         # the circuit turns this into a bounded 503 instead of another
-        # response.create attempt.  A proof-gated full resend remains allowed
-        # because it is the client's own replay-safe request, not an opaque
-        # continuation replay.
+        # response.create attempt.  A proof-gated full resend, and a native
+        # Codex history, remain allowed because each is the client's own
+        # replay-safe request, not an opaque continuation replay.
         allow_proof_gated_continuity_replay = bool(
-            request_state.previous_response_id is not None
-            and request_state.fresh_upstream_request_is_retry_safe
-            and request_state.fresh_upstream_request_text
+            (
+                (
+                    request_state.previous_response_id is not None
+                    and request_state.fresh_upstream_request_is_retry_safe
+                    and request_state.fresh_upstream_request_text
+                )
+                or request_state.native_codex_full_history
+            )
             and request_state.response_event_count == 0
             and request_state.replay_count == 0
         )
@@ -3811,18 +3820,20 @@ class _HTTPBridgeRequestSubmitMixin:
                     fresh_hard_request_account_switch_candidate = (
                         candidate.previous_response_id is None
                         and not candidate.hard_continuity_anchor
+                        and not candidate.native_codex_full_history
                         and not candidate.proxy_injected_previous_response_id
                         and not candidate.file_required_preferred_account
                         and candidate.response_event_count == 0
                         and candidate.replay_count == 0
                     )
                     proof_gated_continuity_replay_candidate = (
-                        candidate.previous_response_id is not None
-                        and candidate.fresh_upstream_request_is_retry_safe
-                        and bool(candidate.fresh_upstream_request_text)
-                        and candidate.response_event_count == 0
-                        and candidate.replay_count == 0
-                    )
+                        (
+                            candidate.previous_response_id is not None
+                            and candidate.fresh_upstream_request_is_retry_safe
+                            and bool(candidate.fresh_upstream_request_text)
+                        )
+                        or candidate.native_codex_full_history
+                    ) and (candidate.response_event_count == 0 and candidate.replay_count == 0)
         if not await self._http_bridge_precreated_retry_allowed(
             session,
             allow_fresh_hard_account_switch=fresh_hard_request_account_switch_candidate,
@@ -3898,6 +3909,9 @@ class _HTTPBridgeRequestSubmitMixin:
                 hard_session_affinity
                 and request_state.previous_response_id is None
                 and not request_state.hard_continuity_anchor
+                # Native history continues its thread on the owner, as its
+                # anchored form did; only explicit failures move it.
+                and not request_state.native_codex_full_history
                 and not request_state.proxy_injected_previous_response_id
                 and not request_state.file_required_preferred_account
             )

@@ -424,3 +424,70 @@ For example, a 256-frame reasoning burst can remain queued while a send
 acknowledgement completes. Sustained overflow still terminates that connection
 without stopping the shared helper reader or unrelated connections. No automatic
 replay is added because a dispatched request may already have had effects.
+
+## Native Codex HTTP history is never anchored
+
+Codex sends its complete local history on every HTTP Responses request. The
+HTTP bridge forwards it over an upstream WebSocket and used to add its own
+`previous_response_id` so that only the new items travel. That anchor is an
+optimization: upstream keeps a `store=false` response only for the socket that
+produced it. After a clean close (1000) or a service restart (1012) the
+response is gone, even though the bridge's durable row still names it, and
+the anchored request failed with `previous_response_not_found`.
+
+The bridge therefore never adds an anchor to native Codex history. It sets the
+same durable-anchor suppression a quarantine sets for full-resend payloads,
+for every native history, so no injection point (fresh reattach, hydration of
+the durable anchor, session-level, owner-forward recovery) adds one, and the
+client's input goes upstream unchanged and untrimmed. The account and prompt
+cache key are unchanged, so upstream prompt caching still matches the prefix;
+the cost is request size only.
+
+For example: a tool turn completes on socket 1, upstream closes socket 1, and
+Codex sends the full history with the tool output. The bridge sends that
+history once, without an anchor, on a new socket of the account that served
+the thread, with the same prompt cache key. The next turn is again the
+complete unanchored history on that socket and account. (A socket-bound
+variant anchored that next turn to the new socket's response; the current
+rule does not.)
+
+The decision is protocol-based. The native decision is the route's: a native
+Codex `User-Agent` or `originator` without an explicit OpenAI SDK marker, no
+client `previous_response_id`, no `conversation`, a non-empty input list.
+Proof that an anchor would be safe needs the producing socket, the response
+the client continued from (duplicate requests leave siblings on one socket)
+and its pending calls; tracking that leaked into replay, retry and
+authentication paths, so the rule needs no proof at all. A client that
+presents native identity but sends only a delta without an anchor is outside
+the Codex HTTP contract; its body is forwarded as written and skips the
+delta-only poison fail-closed. Other clients may send only a delta and rely on
+the durable anchor, so they keep it; a client-supplied `previous_response_id`
+is never dropped by this rule.
+
+Everything else is unchanged. A verified full resend still ignores a stale
+broad session owner and the durable owner stays the preferred account. A
+socket that drops with no events is an ordinary transport failure of an
+unanchored request, which the bridge already replays with the same body, and
+an unanchored native request records no recovery checkpoint that could fence
+the client's identical retry. Capacity retries, the authentication retry and
+permanent-failure marking behave as for any other request. A durable owner
+from a previous process is not excluded from selection: after a restart only
+the socket is gone.
+
+The anchored form also carried protections that the unanchored body has to
+keep explicitly, so the request state marks native history:
+
+- A close before any response event is replayed on the thread's owner. An
+  id-free history looks account-neutral, and without a turn-state header the
+  replay used to treat it as a fresh request and move the same prompt cache
+  key to another account.
+- An open hard-key retry circuit admits it, like the proof-gated full resend
+  its anchored form was.
+- When the bridge connect fails before dispatch for a thread bound to its
+  durable owner, the request is not replayed over raw HTTP: that path cannot
+  require the owner and would send the owner's encrypted reasoning elsewhere.
+  The client receives the failure, as it did when the bridge had prepared an
+  anchor.
+- A recovery checkpoint does not fence it. A checkpoint written by an older
+  anchored attempt never settles once its session is gone, and it used to
+  refuse every identical retry until the body changed.

@@ -28,6 +28,7 @@ from app.core.clients.proxy import (  # noqa: F401  # noqa: F401
     _inline_input_image_urls,
     _ws_transport_payload_budget_bytes,
     filter_inbound_headers,
+    is_native_codex_client_request,
     pop_compact_timeout_overrides,
     pop_stream_timeout_overrides,
     pop_transcribe_timeout_overrides,
@@ -806,6 +807,22 @@ def _http_bridge_stale_inflight_seconds() -> float:
     return max(
         _HTTP_BRIDGE_STALE_INFLIGHT_MIN_SECONDS,
         admission_timeout * _HTTP_BRIDGE_STALE_INFLIGHT_TIMEOUT_MULTIPLIER,
+    )
+
+
+def _http_bridge_native_codex_full_history(payload: ResponsesRequest, headers: Mapping[str, str]) -> bool:
+    """Return whether the request is a native Codex client's complete history.
+
+    Codex sends its complete history on every HTTP request, however short, and
+    never supplies a ``previous_response_id`` there. The client identity is
+    the route's: an explicit OpenAI SDK marker is never native.
+    """
+    return (
+        is_native_codex_client_request(headers)
+        and payload.previous_response_id is None
+        and not payload.conversation
+        and isinstance(payload.input, list)
+        and bool(payload.input)
     )
 
 

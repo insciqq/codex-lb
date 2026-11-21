@@ -69,6 +69,7 @@ from app.core.clients.proxy import (
     _find_sse_separator,
     _is_native_codex_request,
     _safe_retry_after_header,
+    has_explicit_openai_sdk_marker,
 )
 from app.core.clients.proxy_websocket import (
     REALTIME_LIVE_CALL_ID_ROUTE_REGEX,
@@ -759,12 +760,7 @@ def _has_openai_responses_shape(payload: V1ResponsesRequest | Mapping[str, JsonV
 
 
 def _has_explicit_openai_sdk_marker(request: Request) -> bool:
-    for header_name in request.headers:
-        normalized_header = header_name.lower()
-        if normalized_header.startswith("x-stainless-"):
-            return True
-    user_agent = request.headers.get("user-agent", "").lower()
-    return "openai" in user_agent
+    return has_explicit_openai_sdk_marker(request.headers)
 
 
 def _is_openai_sdk_request(
