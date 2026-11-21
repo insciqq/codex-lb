@@ -583,3 +583,166 @@ async def test_quota_warmup_deleted_during_route_resolution_settles_failed(db_se
         assert row.account_id is None
         assert row.upstream_proxy_fail_closed_reason == "account_not_found"
         assert decision is not None and decision.status == "failed"
+
+
+def _caller_token(seat: str | None) -> str:
+    """An unsigned JWT whose auth claim names ``seat`` (or no seat at all)."""
+    import base64
+    import json
+
+    claims = {"https://api.openai.com/auth": {"chatgpt_user_id": seat}} if seat else {"sub": "unregistered"}
+    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"e30.{body}.sig"
+
+
+async def _codex_usage(async_client, seat: str | None):
+    return await async_client.get(
+        "/api/codex/usage",
+        headers={"Authorization": f"Bearer {_caller_token(seat)}", "chatgpt-account-id": "shared-workspace"},
+    )
+
+
+async def _update_seat(account_id: str, **values) -> None:
+    from sqlalchemy import update
+
+    async with SessionLocal() as session:
+        await session.execute(update(Account).where(Account.id == account_id).values(**values))
+        await session.commit()
+
+
+def _dispatched_route(sent: AsyncMock):
+    assert sent.await_args is not None
+    return sent.await_args.kwargs["route"], sent.await_args.kwargs["allow_direct_egress"]
+
+
+def _mock_usage_fetch(monkeypatch, payload=None) -> AsyncMock:
+    from app.core.usage.models import UsagePayload
+
+    fetch = AsyncMock(return_value=payload or UsagePayload(plan_type="plus"))
+    monkeypatch.setattr("app.core.auth.dependencies.fetch_usage", fetch)
+    return fetch
+
+
+@pytest.mark.parametrize("stored_identity", ["column", "id_token"])
+@pytest.mark.parametrize("seat", ["bound-seat", "direct-seat"])
+async def test_codex_usage_identity_uses_the_callers_seat_route(async_client, monkeypatch, seat, stored_identity):
+    await _seed()
+    if stored_identity == "id_token":
+        # Seats imported before the identity column was filled carry it only
+        # in their stored ID token.
+        for account_id in ("bound-seat", "direct-seat"):
+            await _update_seat(
+                account_id,
+                chatgpt_user_id=None,
+                id_token_encrypted=TokenEncryptor().encrypt(_caller_token(account_id)),
+            )
+    fetch = _mock_usage_fetch(monkeypatch)
+
+    response = await _codex_usage(async_client, seat)
+
+    assert response.status_code == 200, response.text
+    fetch.assert_awaited_once()
+    route, allow_direct = _dispatched_route(fetch)
+    if seat == "bound-seat":
+        assert route is not None and route.pool_id == "bound-pool"
+        assert allow_direct is False
+    else:
+        assert route is None
+        assert allow_direct is True
+
+
+@pytest.mark.parametrize("status", [AccountStatus.PAUSED, AccountStatus.DEACTIVATED])
+async def test_codex_usage_identity_rejects_an_inactive_callers_seat_before_dispatch(async_client, monkeypatch, status):
+    """Pausing keeps the binding and leaves the upstream token valid; the
+    paused seat's token must not borrow its active teammate's direct route."""
+    await _seed()
+    await _update_seat("bound-seat", status=status)
+    fetch = _mock_usage_fetch(monkeypatch)
+
+    response = await _codex_usage(async_client, "bound-seat")
+
+    assert response.status_code == 401, response.text
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.parametrize("bound_status", [AccountStatus.ACTIVE, AccountStatus.PAUSED])
+async def test_codex_usage_identity_fails_closed_when_unmatched_seats_route_differently(
+    async_client, monkeypatch, bound_status
+):
+    """An unidentified token could be any seat's; a bound seat counts even
+    while it is paused."""
+    await _seed()
+    await _update_seat("bound-seat", status=bound_status)
+    fetch = _mock_usage_fetch(monkeypatch)
+
+    response = await _codex_usage(async_client, None)
+
+    assert response.status_code == 503, response.text
+    fetch.assert_not_awaited()
+
+
+async def test_codex_usage_identity_uses_shared_route_when_unmatched_seats_agree(async_client, monkeypatch):
+    await _seed()
+    async with SessionLocal() as session:
+        session.add(AccountProxyBinding(id="second-binding", account_id="direct-seat", pool_id="bound-pool"))
+        await session.commit()
+    fetch = _mock_usage_fetch(monkeypatch)
+
+    response = await _codex_usage(async_client, None)
+
+    assert response.status_code == 200, response.text
+    route, allow_direct = _dispatched_route(fetch)
+    assert route is not None and route.pool_id == "bound-pool"
+    assert allow_direct is False
+
+
+@pytest.mark.parametrize(("caller", "status"), [("bound-seat", 401), (None, 503)])
+async def test_codex_usage_identity_seat_deleted_before_route_lookup_never_dispatches(
+    async_client, monkeypatch, caller, status
+):
+    from app.core.auth import dependencies
+
+    await _seed()
+    fetch = _mock_usage_fetch(monkeypatch)
+    _delete_before(monkeypatch, dependencies, "bound-seat", "finalized")
+
+    response = await _codex_usage(async_client, caller)
+
+    assert response.status_code == status, response.text
+    fetch.assert_not_awaited()
+
+
+async def test_codex_reset_credit_consume_keeps_the_identified_seat_through_workspace_reconciliation(
+    async_client, monkeypatch
+):
+    """The workspace reply maps to a teammate's row; the caller's own seat
+    must still route the consume and receive the follow-up refresh."""
+    from app.core.auth import generate_unique_account_id
+    from app.core.clients.usage import ConsumeRateLimitResetCreditResponse
+    from app.core.usage.models import UsagePayload
+
+    await _seed()
+    teammate_id = generate_unique_account_id("shared-workspace", "direct-seat@example.test", "team-alpha")
+    await _update_seat("direct-seat", id=teammate_id, workspace_id="team-alpha")
+    _mock_usage_fetch(monkeypatch, UsagePayload(plan_type="plus", workspace_id="team-alpha"))
+    consume = AsyncMock(return_value=ConsumeRateLimitResetCreditResponse(code="reset", windows_reset=1))
+    refreshed = []
+
+    async def force_refresh(self, account, **kwargs):
+        refreshed.append(account.id)
+        return False
+
+    monkeypatch.setattr("app.modules.proxy.api.consume_rate_limit_reset_credit", consume)
+    monkeypatch.setattr(UsageUpdater, "force_refresh", force_refresh)
+
+    response = await async_client.post(
+        "/api/codex/rate-limit-reset-credits/consume",
+        headers={"Authorization": f"Bearer {_caller_token('bound-seat')}", "chatgpt-account-id": "shared-workspace"},
+        json={"redeem_request_id": "redeem-1"},
+    )
+
+    assert response.status_code == 200, response.text
+    route, allow_direct = _dispatched_route(consume)
+    assert route is not None and route.pool_id == "bound-pool"
+    assert allow_direct is False
+    assert refreshed == ["bound-seat"]

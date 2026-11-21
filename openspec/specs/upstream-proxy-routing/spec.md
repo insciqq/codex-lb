@@ -278,7 +278,7 @@ An upstream proxy endpoint whose scheme is `http`, `socks5`, or `socks5h` and wh
 
 ### Requirement: Operations on a loaded account fail closed when it is deleted
 
-An operation that already loaded an account and holds its credentials MUST read that account's row and its active binding in one statement when it resolves the account's route, and MUST fail with `account_not_found` before any upstream request when the row is gone or marked for deletion. This applies to Force Probe (including the token refresh before the probe and the usage refresh after it), quota warmup, targeted OAuth, the dashboard reset-credit read and consume, background usage refreshes and token refreshes. A missing row MUST NOT be treated as an unbound account, because deleting an account removes its binding by cascade.
+An operation that already loaded an account and holds its credentials MUST read that account's row and its active binding in one statement when it resolves the account's route, and MUST fail with `account_not_found` before any upstream request when the row is gone or marked for deletion. This applies to Force Probe (including the token refresh before the probe and the usage refresh after it), quota warmup, targeted OAuth, the dashboard reset-credit read and consume, background usage refreshes and token refreshes. A missing row MUST NOT be treated as an unbound account, because deleting an account removes its binding by cascade. Codex usage identity validation MUST read its candidate seats the same way, except that a seat pending deletion still counts with its binding.
 
 #### Scenario: Deletion between account load and route lookup
 - **GIVEN** an operation has loaded an account that has an active binding
@@ -307,6 +307,37 @@ An operation that already loaded an account and holds its credentials MUST read 
 - **WHEN** the target is marked for deletion or deleted before the device-code request or the code exchange resolves its route
 - **THEN** the flow MUST fail with `oauth_account_not_found` (404 at start)
 - **AND** no device-code or token request MUST be dispatched
+
+### Requirement: Codex usage identity validation routes by the caller's seat
+
+`GET /api/codex/usage` and the Codex reset-credit consume endpoint, which share its caller check, MUST choose the egress route for the caller's ChatGPT token before any upstream request. Seats sharing the `chatgpt-account-id` are told apart by the seat identity in the token's claims, compared against each local seat's stored seat identity, or the identity in its stored ID token when that column is empty. Matching MUST consider every local seat of that ChatGPT account, inactive ones included.
+
+#### Scenario: Identified seat uses its own route
+- **GIVEN** a bound and an unbound seat share a ChatGPT account id
+- **WHEN** the caller's token identifies one active seat
+- **THEN** usage validation MUST use that seat's route
+
+#### Scenario: Identified inactive seat is rejected before dispatch
+- **GIVEN** the caller's token identifies only paused or deactivated seats
+- **WHEN** usage validation runs
+- **THEN** it MUST reject the caller as unknown or inactive before any upstream request
+
+#### Scenario: Unidentified caller with differing seat routes fails closed
+- **GIVEN** the caller's token identifies no single active seat
+- **AND** the candidate seats, including inactive bound seats, do not all resolve to the same egress
+- **WHEN** usage validation runs
+- **THEN** it MUST fail with the upstream-proxy error before any upstream request
+
+#### Scenario: Unidentified caller with a common route proceeds
+- **GIVEN** every candidate seat resolves to the same pool, or every one to direct egress
+- **WHEN** the caller's token identifies no single seat
+- **THEN** usage validation MUST use that common route
+
+#### Scenario: Workspace reconciliation keeps the identified seat
+- **GIVEN** the caller's token identified one seat
+- **WHEN** the usage reply's workspace maps to a different local row
+- **THEN** the consume request and the follow-up usage refresh MUST use the identified seat and its route
+- **AND** workspace reconciliation MAY switch rows only among the candidate seats whose routes were agreed before dispatch
 
 ### Requirement: Diagnostic probes use the selected local account route
 

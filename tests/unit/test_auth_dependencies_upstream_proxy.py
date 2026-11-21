@@ -154,9 +154,9 @@ async def test_validate_codex_usage_identity_passes_resolved_route(monkeypatch: 
         def __init__(self, session: object) -> None:
             calls["repo_session"] = session
 
-        async def get_active_by_chatgpt_account_id(self, chatgpt_account_id: str) -> Account | None:
+        async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
             calls["lookup"] = chatgpt_account_id
-            return account
+            return [account]
 
     @asynccontextmanager
     async def session_context():
@@ -180,6 +180,7 @@ async def test_validate_codex_usage_identity_passes_resolved_route(monkeypatch: 
     assert calls["lookup"] == "chatgpt_1"
     assert calls["resolve_kwargs"]["account_id"] == "acc_1"
     assert calls["resolve_kwargs"]["operation"] == "usage_identity"
+    assert calls["resolve_kwargs"]["require_account"] is True
     assert calls["fetch_kwargs"]["route"] is route
     assert request.state.codex_usage_identity_access_token == "access"
     assert request.state.codex_usage_identity_chatgpt_account_id == "chatgpt_1"
@@ -188,7 +189,7 @@ async def test_validate_codex_usage_identity_passes_resolved_route(monkeypatch: 
 
 
 @pytest.mark.asyncio
-async def test_validate_codex_usage_identity_reresolves_route_for_workspace_account(
+async def test_validate_codex_usage_identity_fails_closed_when_workspace_seats_route_differently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     account = _account()
@@ -219,8 +220,8 @@ async def test_validate_codex_usage_identity_reresolves_route_for_workspace_acco
         def __init__(self, session: object) -> None:
             pass
 
-        async def get_active_by_chatgpt_account_id(self, chatgpt_account_id: str) -> Account | None:
-            return account if chatgpt_account_id == "chatgpt_1" else None
+        async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
+            return [account, workspace_account] if chatgpt_account_id == "chatgpt_1" else []
 
         async def get_by_id(self, account_id: str) -> Account | None:
             return workspace_account if account_id == workspace_account.id else None
@@ -235,25 +236,25 @@ async def test_validate_codex_usage_identity_reresolves_route_for_workspace_acco
         return workspace_route if account_id == workspace_account.id else owner_route
 
     async def fetch_usage(*args: object, **kwargs: object) -> UsagePayload:
-        assert kwargs["route"] is owner_route
-        return UsagePayload(workspace_id="ws_1", workspace_label="Team")
+        raise AssertionError("a token that could be either seat must not be sent")
 
     monkeypatch.setattr(auth_dependencies, "get_background_session", session_context)
     monkeypatch.setattr(auth_dependencies, "AccountsRepository", Repo)
     monkeypatch.setattr(auth_dependencies, "resolve_upstream_route", resolve_route)
     monkeypatch.setattr(auth_dependencies, "fetch_usage", fetch_usage)
 
-    result = await auth_dependencies.validate_codex_usage_identity(cast(Any, request))
+    # The token carries no seat claim, so it may belong to either row; their
+    # routes differ, so validation fails before any upstream request.
+    with pytest.raises(auth_dependencies.ProxyUpstreamError):
+        await auth_dependencies.validate_codex_usage_identity(cast(Any, request))
 
-    assert result is None
     assert resolved_account_ids == ["acc_1", workspace_account.id]
-    assert request.state.codex_usage_identity_account_id == workspace_account.id
-    assert request.state.codex_usage_identity_route is workspace_route
+    assert not hasattr(request.state, "codex_usage_identity_route")
 
 
 @pytest.mark.parametrize("status", [AccountStatus.RATE_LIMITED, AccountStatus.QUOTA_EXCEEDED])
 @pytest.mark.asyncio
-async def test_validate_codex_usage_identity_reresolves_route_for_limited_workspace_account(
+async def test_validate_codex_usage_identity_switches_to_limited_workspace_account_on_shared_route(
     monkeypatch: pytest.MonkeyPatch,
     status: AccountStatus,
 ) -> None:
@@ -270,11 +271,6 @@ async def test_validate_codex_usage_identity_reresolves_route_for_limited_worksp
         headers={"Authorization": "Bearer access", "chatgpt-account-id": "chatgpt_1"},
         state=SimpleNamespace(),
     )
-    owner_route = ResolvedUpstreamRoute(
-        mode="account_bound",
-        pool_id="owner_pool",
-        endpoint=ResolvedProxyEndpoint("owner_ep", "http", "owner-proxy.test", 8080),
-    )
     workspace_route = ResolvedUpstreamRoute(
         mode="account_bound",
         pool_id="workspace_pool",
@@ -286,8 +282,8 @@ async def test_validate_codex_usage_identity_reresolves_route_for_limited_worksp
         def __init__(self, session: object) -> None:
             pass
 
-        async def get_active_by_chatgpt_account_id(self, chatgpt_account_id: str) -> Account | None:
-            return account if chatgpt_account_id == "chatgpt_1" else None
+        async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
+            return [account, workspace_account] if chatgpt_account_id == "chatgpt_1" else []
 
         async def get_by_id(self, account_id: str) -> Account | None:
             return workspace_account if account_id == workspace_account.id else None
@@ -299,10 +295,11 @@ async def test_validate_codex_usage_identity_reresolves_route_for_limited_worksp
     async def resolve_route(*args: object, **kwargs: object) -> ResolvedUpstreamRoute:
         account_id = cast(str, kwargs["account_id"])
         resolved_account_ids.append(account_id)
-        return workspace_route if account_id == workspace_account.id else owner_route
+        # Both seats share one pool, so either may carry the token.
+        return workspace_route
 
     async def fetch_usage(*args: object, **kwargs: object) -> UsagePayload:
-        assert kwargs["route"] is owner_route
+        assert kwargs["route"] is workspace_route
         return UsagePayload(workspace_id="ws_1", workspace_label="Team")
 
     monkeypatch.setattr(auth_dependencies, "get_background_session", session_context)
@@ -346,8 +343,8 @@ async def test_validate_codex_usage_identity_rejects_inactive_workspace_account(
         def __init__(self, session: object) -> None:
             pass
 
-        async def get_active_by_chatgpt_account_id(self, chatgpt_account_id: str) -> Account | None:
-            return account if chatgpt_account_id == "chatgpt_1" else None
+        async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
+            return [account, workspace_account] if chatgpt_account_id == "chatgpt_1" else []
 
         async def get_by_id(self, account_id: str) -> Account | None:
             return workspace_account if account_id == workspace_account.id else None
@@ -372,7 +369,7 @@ async def test_validate_codex_usage_identity_rejects_inactive_workspace_account(
     with pytest.raises(auth_dependencies.ProxyAuthError):
         await auth_dependencies.validate_codex_usage_identity(cast(Any, request))
 
-    assert resolved_account_ids == ["acc_1"]
+    assert resolved_account_ids == ["acc_1", workspace_account.id]
     assert not hasattr(request.state, "codex_usage_identity_account_id")
     assert not hasattr(request.state, "codex_usage_identity_route")
 
@@ -387,8 +384,8 @@ async def test_validate_codex_usage_identity_fails_closed_when_route_unavailable
         def __init__(self, session: object) -> None:
             pass
 
-        async def get_active_by_chatgpt_account_id(self, chatgpt_account_id: str) -> Account | None:
-            return account
+        async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
+            return [account]
 
     @asynccontextmanager
     async def session_context():

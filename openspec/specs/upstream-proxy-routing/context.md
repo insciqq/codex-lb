@@ -59,8 +59,8 @@ reads the account row and its active binding in one statement and raises
 `account_not_found` when the row is gone or marked for deletion
 (`allow_pending_deletion=True` keeps a deleting row, whose binding still
 exists). Force Probe and the dashboard reset-credit endpoints, quota warmup,
-targeted OAuth, `AuthManager` token refreshes and `UsageUpdater` usage
-fetches use it. The dashboard endpoints answer
+targeted OAuth, `AuthManager` token refreshes, `UsageUpdater` usage fetches
+and Codex usage identity validation use it. The dashboard endpoints answer
 404, as when the account was gone on arrival. Quota warmup logs the failure
 without an account id, because the request-log foreign key can no longer
 point at the row, and skips the account observation.
@@ -72,3 +72,20 @@ suites resolve routes for in-memory accounts without rows, and the request
 path's failure handling is a separate change. Their token refreshes and usage
 fetches go through `AuthManager` and `UsageUpdater` and are strict.
 
+## Codex usage identity and team seats
+
+Seats of one team workspace share `chatgpt-account-id`, so `/api/codex/usage`
+identifies the caller by the seat claim in its bearer token
+(`resolve_seat_identity`) against every local seat of that account, inactive
+ones included. The claim is not signature-checked: it only selects the route
+of the caller's own request, upstream validates the token, and a token with
+altered claims is no longer a working credential. Seats without a stored
+`chatgpt_user_id` fall back to the claim in their stored ID token; import now
+stores the column, and token refreshes keep it current.
+
+Example: seats A (bound to pool P) and B (unbound) share workspace W. A's
+token uses P. If A is paused, its token is rejected before any request,
+instead of leaving through B's direct route. A token without a seat claim is
+sent only if A and B resolve to the same egress; here they differ, so it
+fails with 503. When the usage reply names a workspace whose local row is B,
+an identified caller A keeps its own seat for the consume and refresh.

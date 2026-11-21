@@ -9,9 +9,10 @@ from typing import cast
 
 from fastapi import Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import HTTPConnection
 
-from app.core.auth import generate_unique_account_id
+from app.core.auth import extract_id_token_claims, generate_unique_account_id, resolve_seat_identity
 from app.core.auth.api_key_cache import get_api_key_cache
 from app.core.auth.dashboard_access import (
     STEP_UP_PERMISSIONS,
@@ -42,9 +43,14 @@ from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardAuthError, DashboardPermissionError, ProxyAuthError, ProxyUpstreamError
 from app.core.request_locality import is_local_request
 from app.core.socket_peer import raw_socket_peer_host
-from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
+from app.core.upstream_proxy import (
+    ACCOUNT_NOT_FOUND_REASON,
+    ResolvedUpstreamRoute,
+    UpstreamProxyRouteError,
+    resolve_upstream_route,
+)
 from app.core.utils.time import utcnow
-from app.db.models import AccountStatus, DashboardSettings, DashboardUser, DashboardUserStatus
+from app.db.models import Account, AccountStatus, DashboardSettings, DashboardUser, DashboardUserStatus
 from app.db.session import get_background_session
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -625,22 +631,10 @@ async def validate_codex_usage_identity(request: Request) -> ApiKeyData | None:
         raise ProxyAuthError("Missing chatgpt-account-id header")
 
     async with get_background_session() as session:
-        accounts_repo = AccountsRepository(session)
-        account = await accounts_repo.get_active_by_chatgpt_account_id(account_id)
-        if account is None:
-            raise ProxyAuthError("Unknown or inactive chatgpt-account-id")
-        local_account_id = account.id
-        local_account_email = account.email
-        try:
-            route = await resolve_upstream_route(
-                session,
-                account_id=local_account_id,
-                operation="usage_identity",
-                scope="account",
-                encryptor=TokenEncryptor(),
-            )
-        except UpstreamProxyRouteError as exc:
-            raise ProxyUpstreamError("Unable to resolve upstream proxy route for ChatGPT credentials") from exc
+        seats = await AccountsRepository(session).list_by_chatgpt_account_id(account_id)
+        seat = await _select_codex_usage_seat(session, seats, token)
+    local_account_id = seat.account_id
+    route = seat.route
 
     try:
         usage_payload = await fetch_usage(
@@ -660,27 +654,21 @@ async def validate_codex_usage_identity(request: Request) -> ApiKeyData | None:
     if usage_payload is not None and (usage_payload.workspace_id or usage_payload.workspace_label):
         expected_account_id = generate_unique_account_id(
             account_id,
-            local_account_email,
+            seat.email,
             usage_payload.workspace_id,
             usage_payload.workspace_label,
         )
-        async with get_background_session() as session:
-            accounts_repo = AccountsRepository(session)
-            workspace_account = await accounts_repo.get_by_id(expected_account_id)
+        # The workspace row replaces the selected seat only when the caller
+        # could be that row: it must be one of the candidates the route was
+        # agreed on. A caller identified as one seat keeps that seat, so the
+        # consume and refresh that follow never act through a teammate's row.
+        if expected_account_id != local_account_id and expected_account_id in seat.candidate_ids:
+            async with get_background_session() as session:
+                workspace_account = await AccountsRepository(session).get_by_id(expected_account_id)
             if workspace_account is not None and workspace_account.chatgpt_account_id == account_id:
-                if workspace_account.status in _CODEX_USAGE_IDENTITY_INACTIVE_WORKSPACE_STATUSES:
+                if not _codex_usage_seat_is_active(workspace_account):
                     raise ProxyAuthError("Unknown or inactive chatgpt-account-id")
                 local_account_id = workspace_account.id
-                try:
-                    route = await resolve_upstream_route(
-                        session,
-                        account_id=local_account_id,
-                        operation="usage_identity",
-                        scope="account",
-                        encryptor=TokenEncryptor(),
-                    )
-                except UpstreamProxyRouteError as exc:
-                    raise ProxyUpstreamError("Unable to resolve upstream proxy route for ChatGPT credentials") from exc
     request.state.codex_usage_identity_access_token = token
     request.state.codex_usage_identity_chatgpt_account_id = account_id
     request.state.codex_usage_identity_account_id = local_account_id
@@ -695,6 +683,105 @@ async def validate_codex_provider_usage_identity(request: Request) -> ApiKeyData
     if request.headers.getlist(CODEX_LB_REQUIRED_CAPABILITY_HEADER):
         return await validate_required_proxy_api_key_authorization(request.headers.get("authorization"))
     return await validate_codex_usage_identity(request)
+
+
+@dataclass(frozen=True, slots=True)
+class _CodexUsageSeat:
+    account_id: str
+    email: str
+    route: ResolvedUpstreamRoute | None
+    # Every local seat the caller's token could belong to; all of them
+    # resolved to ``route``.
+    candidate_ids: frozenset[str]
+
+
+def _codex_usage_seat_is_active(account: Account) -> bool:
+    return (
+        account.status not in _CODEX_USAGE_IDENTITY_INACTIVE_WORKSPACE_STATUSES and account.delete_requested_at is None
+    )
+
+
+def _stored_seat_identity(account: Account, encryptor: TokenEncryptor) -> str | None:
+    if account.chatgpt_user_id:
+        return account.chatgpt_user_id
+    # Rows imported before the seat identity was stored carry it only in
+    # their ID token, as targeted reauthentication also reads it.
+    try:
+        claims = extract_id_token_claims(encryptor.decrypt(account.id_token_encrypted))
+    except Exception:
+        return None
+    return resolve_seat_identity(claims, claims.auth)
+
+
+async def _select_codex_usage_seat(session: AsyncSession, seats: list[Account], token: str) -> _CodexUsageSeat:
+    """Choose the local seat and egress route for a caller's ChatGPT token.
+
+    Seats of a team workspace share the ``chatgpt-account-id`` header, so the
+    header alone does not say whose token this is. The token's seat claim
+    identifies the caller among all local seats, inactive ones included, so
+    a paused or deleting seat's token is rejected before any upstream I/O
+    instead of borrowing an active teammate's route.
+
+    The claim is read without verifying the signature. That is safe for
+    this purpose: the claim only chooses the route of this one request,
+    upstream validates the token itself, and a token whose claims were
+    altered is no longer a working credential, so no seat's valid token can
+    be steered to another seat's route.
+
+    A token that identifies no single active seat may belong to any
+    candidate, so it is sent only when every candidate, bound inactive
+    seats included, resolves to the same egress; otherwise the request
+    fails before dispatch.
+    """
+    if not seats:
+        raise ProxyAuthError("Unknown or inactive chatgpt-account-id")
+    encryptor = TokenEncryptor()
+    caller = resolve_seat_identity(extract_id_token_claims(token))
+    matched = [seat for seat in seats if caller is not None and _stored_seat_identity(seat, encryptor) == caller]
+    if matched:
+        active_matched = [seat for seat in matched if _codex_usage_seat_is_active(seat)]
+        if not active_matched:
+            raise ProxyAuthError("Unknown or inactive chatgpt-account-id")
+        if len(active_matched) == 1:
+            selected = active_matched[0]
+            route = await _codex_usage_seat_route(session, selected, allow_pending_deletion=False)
+            return _CodexUsageSeat(selected.id, selected.email, route, frozenset({selected.id}))
+        candidates = active_matched
+    else:
+        candidates = seats
+    active = [seat for seat in candidates if _codex_usage_seat_is_active(seat)]
+    if not active:
+        raise ProxyAuthError("Unknown or inactive chatgpt-account-id")
+    routes = {seat.id: await _codex_usage_seat_route(session, seat, allow_pending_deletion=True) for seat in candidates}
+    if len({route.pool_id if route is not None else None for route in routes.values()}) != 1:
+        raise ProxyUpstreamError("Unable to resolve upstream proxy route for ChatGPT credentials")
+    selected = active[0]
+    return _CodexUsageSeat(selected.id, selected.email, routes[selected.id], frozenset(routes))
+
+
+async def _codex_usage_seat_route(
+    session: AsyncSession,
+    seat: Account,
+    *,
+    allow_pending_deletion: bool,
+) -> ResolvedUpstreamRoute | None:
+    try:
+        return await resolve_upstream_route(
+            session,
+            account_id=seat.id,
+            operation="usage_identity",
+            scope="account",
+            encryptor=TokenEncryptor(),
+            # The seats were listed by an earlier statement; a deletion since
+            # then must not turn a bound seat into direct egress.
+            require_account=True,
+            allow_pending_deletion=allow_pending_deletion,
+        )
+    except UpstreamProxyRouteError as exc:
+        if exc.reason == ACCOUNT_NOT_FOUND_REASON and not allow_pending_deletion:
+            # The identified seat itself is gone.
+            raise ProxyAuthError("Unknown or inactive chatgpt-account-id") from exc
+        raise ProxyUpstreamError("Unable to resolve upstream proxy route for ChatGPT credentials") from exc
 
 
 def _extract_bearer_token(authorization: str | None) -> str | None:

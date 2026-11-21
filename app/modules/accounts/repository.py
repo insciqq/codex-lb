@@ -300,14 +300,16 @@ class AccountsRepository:
             return dict(summaries)
         return summaries
 
-    async def get_active_by_chatgpt_account_id(self, chatgpt_account_id: str) -> Account | None:
+    async def list_by_chatgpt_account_id(self, chatgpt_account_id: str) -> list[Account]:
+        """Every local seat of one ChatGPT account, in any status, by id.
+
+        Team workspaces share one ChatGPT account id across several seats, so
+        callers must identify the seat rather than take an arbitrary match.
+        """
         result = await self._session.execute(
-            select(Account)
-            .where(Account.chatgpt_account_id == chatgpt_account_id)
-            .where(Account.status.notin_((AccountStatus.DEACTIVATED, AccountStatus.PAUSED)))
-            .limit(1)
+            select(Account).where(Account.chatgpt_account_id == chatgpt_account_id).order_by(Account.id)
         )
-        return result.scalar_one_or_none()
+        return list(result.scalars().all())
 
     async def upsert(
         self,
