@@ -84,6 +84,12 @@ floating tags. Images are built by GitHub Actions, never locally.
 * It builds once and pushes by digest, signs build provenance for that
   digest, and only then points both tags at it. A re-run of failed jobs
   re-signs or re-tags the same digest without rebuilding.
+* The dashboard's update notice compares the running version with
+  upstream's latest GitHub release and ignores `+fork.N`. On the 1.25.0
+  line an upstream `v1.25.0` is therefore not announced, a later upstream
+  release is, and the notice links to upstream's release page. Fork
+  releases are listed on the fork's
+  [Releases page](https://github.com/insciqq/codex-lb/releases).
 * Images carry `org.opencontainers.image.revision`, `.version` and `.source`.
   The job summary prints the digest.
 * Deploy by the `sha-<full>` tag or by digest, not by the version tag, and

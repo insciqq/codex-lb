@@ -767,7 +767,7 @@ effective value only while the dashboard field is left empty (shown as
 inherited). Once an operator saves a dashboard value, changing the chart value
 and rolling the pods has no effect until the dashboard field is cleared. The
 same precedence applies to every setting marked `T3 (dashboard)` in the
-[settings reference](https://soju06.github.io/codex-lb/reference/settings/) when
+[settings reference](../../../docs/reference/settings.md) when
 it is passed through `extraEnv` (request budgets, stream idle timeout, SSE
 keepalive, soft drain, deterministic failover, routing weights, overload
 isolation, per-account caps).
