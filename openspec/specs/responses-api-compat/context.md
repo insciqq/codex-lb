@@ -479,6 +479,18 @@ account-selection change, or new event-size policy is involved.
 
 Issue #2149 bounds aggregate detached-session lock waiting during request finalization. A sweep shares five seconds: if its first attempt consumes three seconds, the next receives two, and later attempts stop at expiry. Deferred generations remain tracked for later requests and their lifecycle owners. The deadline does not cancel resource-close owners or replace their existing close timeout.
 
+## Reader failure retirement
+
+The reader-failure funnel hands session retirement to a separate task so a
+cancellation cannot interrupt it, and the reader awaits that task. The close
+inside the retirement used to recognise the reader only by comparing with the
+current task, which is the retirement task there, so it cancelled the reader
+and waited for it while the reader waited for the close. Every reader failure
+then stalled for the one-second task-cancellation timeout and logged a
+cancellation warning before the close went on. The funnel now passes its
+reader to the retirement, which releases it from the close just as a reader
+closing its session directly does; the reader exits right after.
+
 ## Routed file transport failover
 
 File operations follow the existing pre-visible unary retry policy. The file client carries typed dispatch provenance through its service adapter so a refused account-proxy connection can retry another eligible account even though credential-safe transport messages omit low-level details. Typed replay eligibility takes precedence over message text: a proxy endpoint named `timeout-primary` must not turn a TLS verification failure into a retry.

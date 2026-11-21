@@ -13851,6 +13851,73 @@ async def test_v1_responses_http_bridge_stream_failure_remains_valid_sse(
 
 
 @pytest.mark.asyncio
+async def test_v1_responses_http_bridge_reader_failure_retires_without_waiting_on_its_own_reader(
+    async_client,
+    app_instance,
+    monkeypatch,
+    caplog,
+):
+    """A reader that fails a turn retires its own session; the close must not
+    wait for that same reader to be cancelled. The reader is suspended on the
+    retirement it handed to a separate task, so that wait can only end at the
+    cancellation timeout and logged a warning after every reader failure."""
+    _install_bridge_settings(monkeypatch, enabled=True)
+    account_id = await _import_account(
+        async_client,
+        "acc_http_bridge_reader_self_wait",
+        "http-bridge-reader-self-wait@example.com",
+    )
+    account = await _get_account(account_id)
+    upstreams: list[_CreatedThenCloseUpstreamWebSocket] = []
+
+    async def fake_select_account_with_budget(self, deadline, **kwargs):
+        del self, deadline, kwargs
+        return AccountSelection(account=account, error_message=None, error_code=None)
+
+    async def fake_ensure_fresh_with_budget(self, target, *, force=False, timeout_seconds):
+        del self, force, timeout_seconds
+        return target
+
+    async def fake_connect_responses_websocket(headers, access_token, account_id_header, **kwargs):
+        del headers, access_token, account_id_header, kwargs
+        upstreams.append(_CreatedThenCloseUpstreamWebSocket())
+        return upstreams[-1]
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+    caplog.set_level(logging.WARNING, logger="app.modules.proxy.service")
+
+    async with async_client.stream(
+        "POST",
+        "/v1/responses",
+        json={
+            "model": "gpt-5.1",
+            "instructions": "Return exactly OK.",
+            "input": "trigger-reader-failure",
+            "prompt_cache_key": "reader-self-wait-key",
+            "stream": True,
+        },
+    ) as response:
+        assert response.status_code == 200
+        lines = [line async for line in response.aiter_lines() if line.startswith("data: ")]
+
+    events = [json.loads(line[6:]) for line in lines if line[6:] != "[DONE]"]
+    assert [event["type"] for event in events] == ["response.created", "response.failed"]
+
+    service = get_proxy_service_for_app(app_instance)
+    started = time.monotonic()
+    while not upstreams[-1].closed and time.monotonic() - started < 5.0:
+        await asyncio.sleep(0.01)
+    assert upstreams[-1].closed
+    # The socket closes right after the reader wait; before the fix that wait
+    # always ran into the cancellation timeout first.
+    assert time.monotonic() - started < 0.5
+    assert not service._http_bridge_sessions
+    assert not [record for record in caplog.records if "cancellation" in record.getMessage()]
+
+
+@pytest.mark.asyncio
 async def test_v1_responses_http_bridge_upstream_failure_attributes_api_key_in_request_log(
     async_client,
     app_instance,

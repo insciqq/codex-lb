@@ -3445,6 +3445,7 @@ class _HTTPBridgeRequestSubmitMixin:
         retry_circuit_attempt_selection: _HTTPBridgeRetryCircuitAttemptSelection | None = None,
         retired_request_states: list[_WebSocketRequestState] | None = None,
         allow_liveness_revive: bool = True,
+        retiring_reader: asyncio.Task[Any] | None = None,
     ) -> None:
         async with session.pending_lock:
             if retired_request_states is None:
@@ -3673,6 +3674,12 @@ class _HTTPBridgeRequestSubmitMixin:
             if should_close:
                 session.upstream_close_attempted = True
         if should_close:
+            if retiring_reader is not None and session.upstream_reader is retiring_reader:
+                # The reader-failure funnel runs this retirement in its own
+                # task and the reader awaits it, so the reader cannot finish
+                # until the close returns. Release it from the close like a
+                # reader closing its session directly; it exits right after.
+                session.upstream_reader = None
             await self._close_http_bridge_session_bounded(session, reason="retire_stale_pending")
         _log_http_bridge_event(
             "retire_stale_pending",

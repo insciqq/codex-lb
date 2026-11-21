@@ -2971,6 +2971,13 @@ When an HTTP bridge request is still pending before upstream `response.completed
 - **AND** the waiting request or prewarm cannot submit on the crashed bridge
 - **AND** the crashed bridge session is removed from local reuse and its upstream resources are closed
 
+#### Scenario: Reader failure retirement does not wait on the failing reader
+
+- **WHEN** an HTTP bridge upstream reader fails its pending requests and retires its own session
+- **THEN** the session close releases the upstream socket, leases and pending state without waiting for that reader to be cancelled
+- **AND** no bounded task-cancellation timeout elapses and no cancellation-timeout warning is logged for that reader
+- **AND** the reader exits once the retirement returns
+
 #### Scenario: Prewarm cleanup does not consume visible queue slots
 
 - **WHEN** a prewarm request is rejected or interrupted after response-create gate admission

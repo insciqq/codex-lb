@@ -1744,6 +1744,11 @@ class _HTTPBridgeUpstreamEventsMixin:
     ) -> bool:
         scheduler = scheduler_for(self)
         session.closed = True
+        # The retirement below runs in its own task; hand it the failing
+        # reader so the close does not wait for a reader that awaits it.
+        retiring_reader_kwargs = (
+            {"retiring_reader": session.upstream_reader} if session.upstream_reader is asyncio.current_task() else {}
+        )
         async with session.pending_lock:
             failed_pending_count = sum(
                 1
@@ -1963,6 +1968,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                             # rehydration can spoof without upstream evidence)
                             # would only leave a readerless session registered.
                             allow_liveness_revive=False,
+                            **retiring_reader_kwargs,
                             **retry_circuit_attempt_kwargs,
                         )
                         return True
@@ -2009,6 +2015,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                         # See the poison branch above: reader-failure
                         # retirement never revives a condemned session.
                         allow_liveness_revive=False,
+                        **retiring_reader_kwargs,
                         **retry_circuit_attempt_kwargs,
                     )
                 else:
@@ -2029,6 +2036,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                         # See the poison branch above: reader-failure
                         # retirement never revives a condemned session.
                         allow_liveness_revive=False,
+                        **retiring_reader_kwargs,
                         **retry_circuit_attempt_kwargs,
                     )
                 # The failed requests are already drained and finalized, so a
