@@ -179,7 +179,7 @@ title = "fix(proxy): preserve newer quarantine during response cleanup"
 state = "open"
 status = "rejected"
 issues = [2268]
-reason = "Bundles a process-wide poison-overflow fence: once tripped, unrelated sessions are treated as poisoned and get 404s. The stale-cleanup race of issue 2268 is left to a narrower fix."
+reason = "Bundles a process-wide poison-overflow fence: once tripped, unrelated sessions are treated as poisoned and get 404s. The stale-cleanup race of issue 2268 is fixed by the fork's own commits (see PR 2345)."
 
 [pr.2277]
 title = "fix(proxy): preserve continuation anchors during input normalization"
@@ -425,7 +425,7 @@ title = "fix(proxy): surface native transport give-up terminals"
 state = "open"
 status = "rejected"
 issues = [2470]
-reason = "Its stream-lease release was split out upstream as PR 2616. The remaining give-up terminal changes alter the native error contract and had unresolved review findings (among them a concurrent close of model-source streams it introduced); not taken."
+reason = "Its stream-lease release was split out upstream as PR 2616, which the fork takes; issue 2470 is fixed by that PR and the fork's own commits. The remaining give-up terminal changes alter the native error contract and had unresolved review findings (among them a concurrent close of model-source streams it introduced)."
 
 [pr.2486]
 title = "fix(balancer): admit a hard continuity owner serving its own transient backoff"
@@ -1002,14 +1002,14 @@ reason = "PR 2690 carries the same or newer versions."
 [pr.2665]
 title = "fix(proxy): use configuration_update reasoning effort"
 state = "open"
-status = "rejected"
+status = "own-fix"
 issues = [2664]
-reason = "An enforced-model alias masks disallowed efforts, compact trimming drops the authorizing update, and model-source egress changes the cache-sensitive starting effort. Issue 2664 is fixed by the fork's own commits."
+reason = "Issue 2664 is fixed by the fork's own commits. The PR itself is not taken: an enforced-model alias masks disallowed efforts, compact trimming drops the authorizing update, and model-source egress changes the cache-sensitive starting effort."
 
 [pr.2666]
 title = "fix(proxy): recover complete native HTTP tool resends"
 state = "open"
-status = "rejected"
+status = "own-fix"
 reason = "The complete native HTTP resend after a bridge reconnect is fixed by the fork's own change, which never adds a proxy anchor to native Codex HTTP history; the PR's owner-bound replay proof can accept incomplete history and relocate owner content."
 
 [pr.2667]
@@ -1385,7 +1385,7 @@ status = "pending"
 title = "fix(proxy): bounded inline images on the HTTP responses bridge"
 state = "open"
 status = "out-of-scope"
-reason = "Inline images on the HTTP bridge, on by default, with a new setting; the narrower PRs 2503 and 2539 address the related defects."
+reason = "Inline images on the HTTP bridge, on by default, with a new setting; PR 2503 (taken) and PR 2539 (deferred) address the related defects."
 
 [pr.2733]
 title = "docs(images): clarify model discovery and direct API usage"
@@ -1711,7 +1711,7 @@ title = "bug: default Docker port 1455 mapping can intercept Codex Desktop OAuth
 state = "open"
 status = "fixed-upstream"
 prs = [2079, 2098]
-reason = "The callback listener left bound after an abandoned browser sign-in is fixed in upstream main by PR 2079; whether to stop publishing host port 1455 by default (PR 2098) is a deployment-default decision."
+reason = "The callback listener left bound after an abandoned browser sign-in is fixed in upstream main by PR 2079; whether to stop publishing host port 1455 by default (PR 2098) is a deployment-default decision. Until then, Codex Desktop on the same host can sign in when the 1455 mapping is omitted or through the device code flow."
 
 [issue.2081]
 title = "bug: direct websocket terminal failures lose transport and owner evidence"
@@ -1824,8 +1824,8 @@ reason = "Not reproducible: on upstream main the enclosing labels already give e
 [issue.2304]
 title = "feat(images): support GPT Image 2.5 Flare and Sunburst in the Images API"
 state = "open"
-status = "out-of-scope"
-reason = "Feature request: accept two new image model names in the Images API."
+status = "not-fixed"
+reason = "Compatibility request to accept two more image model names in the Images API. Upstream reports that the backend accepts any image model name, so accepting these IDs needs evidence that the backend serves them; without it a request could silently get a different model."
 
 [issue.2309]
 title = "docs: align agent instructions with Astra prompt guidance"
@@ -1855,9 +1855,9 @@ reason = "Feature request: forward explicit compact requests to Responses model 
 [issue.2327]
 title = "fix(accounts): recover stale holds after verified matching operator probes"
 state = "open"
-status = "out-of-scope"
+status = "not-fixed"
 prs = [2330]
-reason = "Feature request: recover stale holds after verified operator probes."
+reason = "A restart keeps the persisted rate-limit hold but drops the in-memory early-recovery evidence, so an account can stay excluded until the old deadline. The taken PRs 2626 and 2640 do not change this: they keep the upstream reset horizon in retry health and lift a hold after an upstream-confirmed reset credit. The proposed fix (PR 2330) persists hold generations through new database migrations, and the fork keeps the upstream schema."
 
 [issue.2343]
 title = "feat(health): expose request-persistence ownership during drain"
