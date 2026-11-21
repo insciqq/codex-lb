@@ -308,11 +308,13 @@ from app.modules.proxy.images_observability import (
     record_images_route_observability,
 )
 from app.modules.proxy.rate_limit_events import (
-    hide_upstream_quota_for_api_key_clients as _hide_upstream_quota_for_api_key_clients,
-)
-from app.modules.proxy.rate_limit_events import (
+    CodexQuotaView,
+    is_codex_rate_limits_block,
     project_codex_rate_limit_event,
     rate_limit_headers_for_client,
+)
+from app.modules.proxy.rate_limit_events import (
+    hide_upstream_quota_for_api_key_clients as _hide_upstream_quota_for_api_key_clients,
 )
 from app.modules.proxy.request_policy import (
     api_key_pins_reasoning_effort,
@@ -5307,7 +5309,10 @@ async def _source_responses_response(
                     enforce_openai_sdk_contract=enforce_openai_sdk_contract,
                     native_codex_heartbeat=native_codex_heartbeat,
                     preserve_native_failure_lifecycle=preserve_native_failure_lifecycle,
-                    codex_rate_limit_headers=rate_limit_headers,
+                    codex_quota_view=CodexQuotaView(
+                        hidden=await _hide_upstream_quota_for_api_key_clients(api_key),
+                        headers=rate_limit_headers,
+                    ),
                 ),
             )
             return SourceStreamingResponse(
@@ -6227,7 +6232,7 @@ async def _wrap_source_responses_public_stream(
     enforce_openai_sdk_contract: bool = True,
     native_codex_heartbeat: bool = False,
     preserve_native_failure_lifecycle: bool = False,
-    codex_rate_limit_headers: Mapping[str, str] | None = None,
+    codex_quota_view: CodexQuotaView | None = None,
 ) -> AsyncIterator[str]:
     """Normalize and keep source-routed Responses SSE proxy-timeout friendly.
 
@@ -6248,7 +6253,7 @@ async def _wrap_source_responses_public_stream(
         enforce_openai_sdk_contract=enforce_openai_sdk_contract,
         forward_unparseable_data=True,
         preserve_native_failure_lifecycle=preserve_native_failure_lifecycle,
-        codex_rate_limit_headers=codex_rate_limit_headers,
+        codex_quota_view=codex_quota_view,
     )
     keepalive_stream = (
         normalized
@@ -6842,7 +6847,11 @@ async def _stream_responses(
         ),
         enforce_openai_sdk_contract=enforce_openai_sdk_contract,
         preserve_native_failure_lifecycle=preserve_native_failure_lifecycle,
-        codex_rate_limit_headers=rate_limit_headers if include_rate_limit_headers else None,
+        codex_quota_view=(
+            CodexQuotaView(hidden=await _hide_upstream_quota_for_api_key_clients(api_key), headers=rate_limit_headers)
+            if include_rate_limit_headers
+            else None
+        ),
     )
     service_stream = stream
     use_codex_keepalive = native_codex_heartbeat or not enforce_openai_sdk_contract
@@ -9310,7 +9319,7 @@ async def _normalize_public_responses_stream(
     enforce_openai_sdk_contract: bool = True,
     forward_unparseable_data: bool = False,
     preserve_native_failure_lifecycle: bool = False,
-    codex_rate_limit_headers: Mapping[str, str] | None = None,
+    codex_quota_view: CodexQuotaView | None = None,
 ) -> AsyncGenerator[str, None]:
     """Normalize upstream SSE for public-contract and native Codex clients.
 
@@ -9326,12 +9335,11 @@ async def _normalize_public_responses_stream(
             requests), retain vendor events and skip public-only synthesis
             and terminal output backfill. Shared normalization can still
             rewrite reasoning, error, and terminal response payloads.
-        codex_rate_limit_headers: the pooled quota header snapshot of the
-            origin instance. A mapping makes this hop project native
-            codex.rate_limits events from it, and an empty mapping (quota
-            hidden or no pooled window) suppresses them. None means this hop
-            is not the origin (an owner-to-origin forward), so the events
-            pass through unchanged for the origin to project.
+        codex_quota_view: the origin instance's quota view of the client,
+            which omits, projects or passes through native codex.rate_limits
+            events (see ``CodexQuotaView``). None means this hop is not the
+            origin (an owner-to-origin forward), so the events are relayed
+            verbatim for the origin to handle.
     """
     stream = _normalize_reasoning_summary_stream(stream)
 
@@ -9459,12 +9467,16 @@ async def _normalize_public_responses_stream(
                         failure_phase="upstream",
                     )
             raw_event_type = payload.get("type")
-            if raw_event_type == "codex.rate_limits" and codex_rate_limit_headers is not None:
+            if is_codex_rate_limits_block(payload, event_block):
                 if enforce_openai_sdk_contract:
                     continue
-                pooled_event = project_codex_rate_limit_event(payload, codex_rate_limit_headers)
-                if pooled_event is not None:
-                    yield format_sse_event(pooled_event)
+                if codex_quota_view is None:
+                    # Owner hop: relay the block with its event name intact so
+                    # the origin recognises it and applies its own policy.
+                    yield event_block
+                elif not codex_quota_view.hidden:
+                    pooled_event = project_codex_rate_limit_event(payload, codex_quota_view.headers)
+                    yield event_block if pooled_event is None else format_sse_event(pooled_event)
                 continue
             if (
                 enforce_openai_sdk_contract

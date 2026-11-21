@@ -512,7 +512,7 @@ from app.modules.proxy.http_bridge_forwarding import (
     OwnerForwardRelayFailure as OwnerForwardRelayFailure,
 )
 from app.modules.proxy.load_balancer import AccountLease, effective_account_concurrency_caps
-from app.modules.proxy.rate_limit_events import project_codex_rate_limit_event, rate_limit_headers_for_client
+from app.modules.proxy.rate_limit_events import codex_quota_view_for_client, project_codex_rate_limit_event
 from app.modules.proxy.request_policy import (
     apply_api_key_enforcement,
     apply_enforced_service_tier_model_fallback,
@@ -1102,14 +1102,17 @@ async def _process_and_forward_upstream_websocket_text(
         # Raw account telemetry has already been processed/archived. Only the
         # client projection changes; quota lookups must not fail inference.
         try:
-            quota_headers = await rate_limit_headers_for_client(api_key, proxy.rate_limit_headers)
+            quota_view = await codex_quota_view_for_client(api_key, proxy.rate_limit_headers)
         except Exception as exc:
             _facade().logger.warning("Unable to load pooled websocket quota metadata: %s", type(exc).__name__)
-            quota_headers = {}
-        pooled_event = project_codex_rate_limit_event(parsed_frame.payload or {}, quota_headers)
-        if pooled_event is None:
+            quota_view = None
+        pooled_event = None
+        if quota_view is None or quota_view.hidden:
             upstream_control.suppress_downstream_event = True
         else:
+            # An event the pool cannot represent passes through unchanged.
+            pooled_event = project_codex_rate_limit_event(parsed_frame.payload or {}, quota_view.headers)
+        if pooled_event is not None:
             downstream_text = json.dumps(pooled_event, ensure_ascii=True, separators=(",", ":"))
     suppress_downstream_event = upstream_control.suppress_downstream_event
     downstream_texts = upstream_control.downstream_texts

@@ -1743,18 +1743,63 @@ async def test_normalize_public_responses_stream_forward_hop_passes_quota_event_
                 ),
             ),
             enforce_openai_sdk_contract=False,
-            codex_rate_limit_headers=None,
+            codex_quota_view=None,
         )
     ]
 
+    assert blocks[0] == quota_block
     payloads = [proxy_api_module._parse_sse_payload(b) for b in blocks]
-    assert payloads[0] == proxy_api_module._parse_sse_payload(quota_block)
     assert [p["type"] for p in payloads if p is not None] == ["codex.rate_limits", "response.failed"]
 
 
+_NAMED_QUOTA_BLOCK = (
+    'event: codex.rate_limits\ndata: {"plan_type":"pro","rate_limits":{"primary":{"used_percent":97}}}\n\n'
+)
+_POOLED_HEADERS = {"x-codex-secondary-used-percent": "66.5", "x-codex-secondary-window-minutes": "10080"}
+
+
 @pytest.mark.asyncio
-async def test_normalize_public_responses_stream_codex_route_omits_unknown_quota_without_synthesis() -> None:
-    """Unknown pool quotas are omitted without changing native failures."""
+@pytest.mark.parametrize("view", ["owner_hop", "hidden", "visible", "visible_without_pool"])
+async def test_normalize_public_responses_stream_recognises_quota_event_by_sse_name(view: str) -> None:
+    """A source may name the quota event only in the SSE ``event:`` field."""
+    quota_view = {
+        "owner_hop": None,
+        "hidden": proxy_api_module.CodexQuotaView(hidden=True, headers={}),
+        "visible": proxy_api_module.CodexQuotaView(hidden=False, headers=_POOLED_HEADERS),
+        "visible_without_pool": proxy_api_module.CodexQuotaView(hidden=False, headers={}),
+    }[view]
+    blocks = [
+        block
+        async for block in proxy_api_module._normalize_public_responses_stream(
+            _iter_blocks(
+                _NAMED_QUOTA_BLOCK,
+                'data: {"type":"response.completed","response":{"id":"resp_named","output":[]}}\n\n',
+            ),
+            enforce_openai_sdk_contract=False,
+            codex_quota_view=quota_view,
+        )
+    ]
+
+    if view == "hidden":
+        assert "rate_limits" not in "".join(blocks)
+    elif view == "visible":
+        assert proxy_api_module._parse_sse_payload(blocks[0]) == {
+            "type": "codex.rate_limits",
+            "rate_limits": {
+                "primary": None,
+                "secondary": {"used_percent": 66.5, "window_minutes": 10080, "reset_at": None},
+            },
+        }
+    else:
+        # The owner relays the block with its event name; a visible client
+        # without a pooled window receives it unchanged.
+        assert blocks[0] == _NAMED_QUOTA_BLOCK
+    assert any('"type":"response.completed"' in block for block in blocks)
+
+
+@pytest.mark.asyncio
+async def test_normalize_public_responses_stream_codex_route_omits_hidden_quota_without_synthesis() -> None:
+    """Hidden quotas are omitted without changing native failures."""
     blocks = [
         block
         async for block in proxy_api_module._normalize_public_responses_stream(
@@ -1767,13 +1812,13 @@ async def test_normalize_public_responses_stream_codex_route_omits_unknown_quota
                 ),
             ),
             enforce_openai_sdk_contract=False,
-            codex_rate_limit_headers={},
+            codex_quota_view=proxy_api_module.CodexQuotaView(hidden=True, headers={}),
         )
     ]
 
     payloads = [proxy_api_module._parse_sse_payload(b) for b in blocks]
     event_types = [p["type"] for p in payloads if p is not None]
-    # No aggregate is available to publish.
+    # The client may not see quota.
     assert "codex.rate_limits" not in event_types
     # response.created MUST NOT be synthesized
     assert "response.created" not in event_types

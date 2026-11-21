@@ -11794,20 +11794,24 @@ references, or an unverified input prefix.
 ### Requirement: Native Codex stream quotas describe the pool
 
 Native Codex Responses SSE and WebSocket egress MUST NOT forward an account's
-raw `codex.rate_limits` payload. Default-family events MUST be rebuilt using
+raw `codex.rate_limits` payload when a pooled replacement exists or the client
+may not see upstream quota. Default-family events MUST be rebuilt using
 the pooled downstream quota-header snapshot, including its normalized window
 durations, reset timestamps, and credits. HTTP SSE MUST use its response's
 quota-header snapshot; WebSocket egress MUST use the existing aggregate cache.
-Source-routed SSE MUST follow the same rule. The service MUST suppress quota
-events when no aggregate window is available and MUST NOT substitute a global
-aggregate for model-specific or otherwise unrepresented limit families.
+Source-routed SSE MUST follow the same rule. An SSE block is a quota event when
+its JSON `type` is `codex.rate_limits` or, when the JSON has no `type`, when its
+SSE `event` field is `codex.rate_limits`. For a client that may see upstream
+quota, an event the pool cannot represent (a model-specific or otherwise
+unrepresented limit family, or no pooled primary or secondary window) MUST pass
+through unchanged; the service MUST NOT substitute a global aggregate for it.
 Projection MUST happen after original upstream usage ingestion and MUST NOT
 change normal response lifecycle events or account attribution. Failure to
 read quota metadata on an established WebSocket MUST suppress the quota event
 without interrupting inference; cancellation MUST still propagate. Only the
 origin instance that answers the client MUST project or suppress the event; an
-owner instance serving a forwarded HTTP bridge request MUST pass the upstream
-event through unchanged so the origin can project it.
+owner instance serving a forwarded HTTP bridge request MUST relay the upstream
+block unchanged, including its SSE event name, so the origin can project it.
 
 #### Scenario: A nearly exhausted account serves a pool with capacity
 
@@ -11818,9 +11822,16 @@ event through unchanged so the origin can project it.
 
 #### Scenario: Unrepresented quota events cannot overwrite the pool
 
-- **WHEN** an upstream quota event belongs to a model-specific family or no pooled window is known
-- **THEN** the downstream stream omits that quota event
+- **GIVEN** a client that may see upstream quota
+- **WHEN** an upstream quota event belongs to a model-specific family or no pooled primary or secondary window is known
+- **THEN** the downstream stream carries that quota event unchanged
 - **AND** response deltas and terminal events remain deliverable
+
+#### Scenario: A quota event named only by its SSE event field
+
+- **GIVEN** a source sends `event: codex.rate_limits` with JSON data that has no `type`
+- **WHEN** the client may not see upstream quota
+- **THEN** the downstream stream omits the block
 
 #### Scenario: A quota cache read fails on an established WebSocket
 

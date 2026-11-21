@@ -735,8 +735,15 @@ keeps its account attribution. No upstream refresh runs on the display path.
 When `hide_upstream_quota_from_api_keys` is enabled, quota events are omitted
 for API-key callers, just like quota headers. Publishing pool percentages
 requires the existing visibility setting to allow them. The Codex usage API
-still describes an API key's own configured budget. Unknown or model-specific
-quota families are omitted because global pool usage does not describe them.
+still describes an API key's own configured budget. For a client that may see
+quota, unknown or model-specific families, and every event of a pool without a
+primary or secondary window (for example a pool that only reports
+`x-codex-monthly-*` headers), pass through unchanged: global pool usage does
+not describe them, and dropping them would leave the client with no quota
+status at all. A source may name the quota event only in the SSE `event:`
+field; such a block counts as a quota event too, so it cannot reach a hidden
+client as a data-only block. The HTTP upstream path rebuilds its blocks from
+the JSON alone; the Codex backend always types its frames.
 If the WebSocket quota lookup fails, quota telemetry is omitted and inference
 continues; cancellation still propagates.
 

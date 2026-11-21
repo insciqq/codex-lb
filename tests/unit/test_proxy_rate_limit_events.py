@@ -86,10 +86,14 @@ def test_reset_windows_do_not_reuse_upstream_reset_or_credits():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("named_only", [False, True])
 @pytest.mark.parametrize("visible", [False, True])
-async def test_source_sse_projects_split_quota_events_and_preserves_terminal(visible):
+async def test_source_sse_projects_split_quota_events_and_preserves_terminal(visible, named_only):
+    # ``named_only``: the source names the quota event only in the SSE event
+    # field, and its JSON carries no type.
+    json_type = b"" if named_only else b'"type":"codex.rate_limits",'
     raw = (
-        b'event: codex.rate_limits\r\ndata: {"type":"codex.rate_limits","plan_type":"pro",'
+        b"event: codex.rate_limits\r\ndata: {" + json_type + b'"plan_type":"pro",'
         b'"rate_limits":{"primary":{"used_percent":97,"window_minutes":10080}}}\r\n\r\n'
         b'data: {"type":"response.completed","response":{"id":"resp_source","output":[]}}\n\n'
     )
@@ -108,16 +112,19 @@ async def test_source_sse_projects_split_quota_events_and_preserves_terminal(vis
         async for chunk in proxy_api._wrap_source_responses_public_stream(
             source(),
             enforce_openai_sdk_contract=False,
-            codex_rate_limit_headers={
-                "x-codex-secondary-used-percent": "66.5",
-                "x-codex-secondary-window-minutes": "10080",
-            }
+            codex_quota_view=proxy_api.CodexQuotaView(
+                hidden=False,
+                headers={
+                    "x-codex-secondary-used-percent": "66.5",
+                    "x-codex-secondary-window-minutes": "10080",
+                },
+            )
             if visible
-            else {},
+            else proxy_api.CodexQuotaView(hidden=True, headers={}),
         )
     ]
     events = [proxy_api._parse_sse_payload(chunk) for chunk in chunks]
-    events = [event for event in events if event and event["type"] != "codex.keepalive"]
+    events = [event for event in events if event and event.get("type") != "codex.keepalive"]
     assert events[-1]["type"] == "response.completed"
     assert "plan_type" not in "".join(chunks)
     assert "97" not in "".join(chunks)

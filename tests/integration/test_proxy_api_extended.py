@@ -3256,8 +3256,8 @@ async def test_wrap_source_responses_native_codex_preserves_codex_events_and_kee
         delayed_body(),
         enforce_openai_sdk_contract=False,
         native_codex_heartbeat=True,
-        # The source route is always the origin; no pooled window is known.
-        codex_rate_limit_headers={},
+        # The source route is always the origin; this client may not see quota.
+        codex_quota_view=proxy_api_module.CodexQuotaView(hidden=True, headers={}),
     )
     iterator = stream.__aiter__()
     first = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
@@ -3667,7 +3667,7 @@ async def test_backend_desktop_openai_shape_preserves_native_event_order(
     )
 
     event_types = [event.get("type") for event in _sse_data_events(lines)]
-    assert "codex.rate_limits" not in event_types
+    assert event_types[0] == "codex.rate_limits"
     assert "codex.keepalive" not in event_types
     assert "response.created" not in event_types
     assert "response.completed" in event_types

@@ -116,18 +116,25 @@ class QuotaUpstream:
         self.closed = True
 
 
-def _assert_downstream(events, *, hidden, reset_at):
+def _assert_downstream(events, *, hidden, reset_at, pool="windows"):
     quotas = [event for event in events if event["type"] == "codex.rate_limits"]
+    upstream_quotas = [event for event in _upstream_events() if event["type"] == "codex.rate_limits"]
     if hidden:
         assert quotas == []
+    elif pool == "monthly_only":
+        # The pool has no primary/secondary window to rebuild the events
+        # from; a client that may see quota gets them unchanged.
+        assert quotas == upstream_quotas
     else:
-        assert len(quotas) == 1
+        assert len(quotas) == 2
         assert quotas[0]["rate_limits"] == {
             "primary": None,
             "secondary": {"used_percent": 66.5, "window_minutes": 10080, "reset_at": reset_at},
         }
         assert "plan_type" not in quotas[0]
         assert "account_id" not in quotas[0]
+        # Another limit family is not relabelled as pool usage; it passes through.
+        assert quotas[1] == upstream_quotas[1]
     assert [event["type"] for event in events if event["type"] != "codex.rate_limits"] == [
         "response.created",
         "response.output_text.delta",
@@ -136,7 +143,21 @@ def _assert_downstream(events, *, hidden, reset_at):
     assert next(event for event in events if event["type"] == "response.output_text.delta")["delta"] == "OK"
 
 
-@pytest.mark.parametrize("transport", ["http", "bridge"])
+def _sse_events(text):
+    events = [
+        json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    return [event for event in events if event["type"] != "codex.keepalive"]
+
+
+async def _monthly_only_pool(self):
+    return {"x-codex-monthly-used-percent": "40", "x-codex-monthly-window-minutes": "43200"}
+
+
+@pytest.mark.parametrize(
+    ("transport", "variant"),
+    [("http", "typed"), ("bridge", "typed"), ("http", "monthly_only"), ("bridge", "monthly_only")],
+)
 @pytest.mark.parametrize("hidden", [False, True])
 @pytest.mark.parametrize("path", ["/backend-api/codex/responses", "/backend-api/codex/responses/"])
 async def test_native_sse_projects_pool_and_honors_privacy(
@@ -145,6 +166,7 @@ async def test_native_sse_projects_pool_and_honors_privacy(
     monkeypatch,
     quota_pool,
     transport,
+    variant,
     hidden,
     path,
 ):
@@ -185,6 +207,8 @@ async def test_native_sse_projects_pool_and_honors_privacy(
     monkeypatch.setattr(proxy_service.ProxyService, "_ensure_fresh_with_budget", fresh)
     monkeypatch.setattr(proxy_service, "connect_responses_websocket", connect)
     monkeypatch.setattr(proxy_service, "core_stream_responses", stream)
+    if variant == "monthly_only":
+        monkeypatch.setattr(proxy_service.ProxyService, "rate_limit_headers", _monthly_only_pool)
     service = get_proxy_service_for_app(app_instance)
     try:
         response = await async_client.post(
@@ -196,16 +220,13 @@ async def test_native_sse_projects_pool_and_honors_privacy(
             json={"model": "gpt-5.6-sol", "instructions": "", "input": "hi", "stream": True},
         )
         assert response.status_code == 200, response.text
-        events = [
-            json.loads(line[6:])
-            for line in response.text.splitlines()
-            if line.startswith("data: ") and line != "data: [DONE]"
-        ]
-        events = [event for event in events if event["type"] != "codex.keepalive"]
-        _assert_downstream(events, hidden=hidden, reset_at=quota_pool.reset_at)
+        events = _sse_events(response.text)
+        expected_pool = "monthly_only" if variant == "monthly_only" else "windows"
+        _assert_downstream(events, hidden=hidden, reset_at=quota_pool.reset_at, pool=expected_pool)
         if hidden:
+            assert "must-not-leak" not in response.text
             assert not any(name.startswith("x-codex-secondary-") for name in response.headers)
-        else:
+        elif variant != "monthly_only":
             assert float(response.headers["x-codex-secondary-used-percent"]) == 66.5
         if transport == "bridge":
             assert any(
@@ -289,7 +310,7 @@ async def test_owner_forward_hop_relays_upstream_quota_event_to_origin(
 
 
 @pytest.mark.parametrize("path", ["/backend-api/codex/responses", "/v1/responses"])
-@pytest.mark.parametrize("mode", ["visible", "hidden", "unavailable"])
+@pytest.mark.parametrize("mode", ["visible", "hidden", "unavailable", "monthly_only"])
 async def test_websocket_projects_pool_without_interrupting_responses(
     async_client,
     app_instance,
@@ -313,6 +334,8 @@ async def test_websocket_projects_pool_without_interrupting_responses(
     monkeypatch.setattr(proxy_service.ProxyService, "_connect_proxy_websocket", connect)
     if mode == "unavailable":
         monkeypatch.setattr(proxy_service.ProxyService, "rate_limit_headers", unavailable)
+    if mode == "monthly_only":
+        monkeypatch.setattr(proxy_service.ProxyService, "rate_limit_headers", _monthly_only_pool)
 
     def run_client():
         with TestClient(app_instance) as client:
@@ -324,4 +347,9 @@ async def test_websocket_projects_pool_without_interrupting_responses(
                 return events
 
     events = await asyncio.to_thread(run_client)
-    _assert_downstream(events, hidden=mode != "visible", reset_at=quota_pool.reset_at)
+    _assert_downstream(
+        events,
+        hidden=mode in {"hidden", "unavailable"},
+        reset_at=quota_pool.reset_at,
+        pool="monthly_only" if mode == "monthly_only" else "windows",
+    )

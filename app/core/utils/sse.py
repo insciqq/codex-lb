@@ -274,6 +274,18 @@ def extract_sse_data(event_block: str) -> str | None:
     return data
 
 
+def extract_sse_event_name(event_block: str) -> str | None:
+    """Return the block's ``event:`` field; the last one wins, as SSE parsers read it."""
+    event_name: str | None = None
+    for raw_line in _SSE_LINE_BOUNDARY.split(event_block):
+        if not raw_line or raw_line.startswith(":"):
+            continue
+        field, value = _parse_sse_field(raw_line)
+        if field == "event":
+            event_name = value
+    return event_name or None
+
+
 def _extract_sse_data_lines(event_block: str) -> list[str] | None:
     data_lines: list[str] = []
     for raw_line in _SSE_LINE_BOUNDARY.split(event_block):
