@@ -36931,8 +36931,9 @@ def test_http_bridge_quarantine_eventless_strikes_require_threshold(caplog: pyte
 
 
 def test_http_bridge_quarantine_cleared_by_completed_response(caplog: pytest.LogCaptureFixture) -> None:
-    service = SimpleNamespace()
     session = _make_bridge_session(key_value="quarantine-clear")
+    # Only the session registered for the key may clear its quarantine.
+    service = SimpleNamespace(_http_bridge_sessions={session.key: session})
     http_bridge_quarantine_module._record_http_bridge_quarantine_eventless_timeout(service, session)
 
     # A healthy completion resets the strike counter before the threshold.
@@ -37032,8 +37033,9 @@ def test_http_bridge_quarantine_expired_strike_is_not_resurrected() -> None:
 
 
 def test_http_bridge_quarantine_clear_restores_session_reusability() -> None:
-    service = SimpleNamespace()
     session = _make_bridge_session(key_value="quarantine-clear-flag")
+    # Only the session registered for the key may clear its quarantine.
+    service = SimpleNamespace(_http_bridge_sessions={session.key: session})
     http_bridge_quarantine_module._quarantine_http_bridge_session(
         service,
         session,
@@ -44643,6 +44645,8 @@ async def test_a_durable_only_poison_row_is_cleared_by_its_own_completion(
     # row before capturing its fences.
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     session = _make_bridge_session(key_value="bridge-durable-only-poison-clear")
+    # Only the session registered for the key may clear its quarantine.
+    service._http_bridge_sessions[session.key] = session
     poison_row = SimpleNamespace(
         consecutive_failures=2,
         cooldown_until_epoch=time.time() + 60.0,
@@ -44803,6 +44807,8 @@ async def test_a_blind_fence_recaptures_after_the_settle(
     # the fresh anchor registering.
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     session = _make_bridge_session(key_value="bridge-blind-fence-recapture")
+    # Only the session registered for the key may clear its quarantine.
+    service._http_bridge_sessions[session.key] = session
     poison_row = SimpleNamespace(
         consecutive_failures=2,
         cooldown_until_epoch=time.time() + 60.0,

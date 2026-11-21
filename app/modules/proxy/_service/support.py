@@ -1362,7 +1362,7 @@ class _HTTPBridgeOwnerForward:
     key: _HTTPBridgeSessionKey
 
 
-@dataclass(slots=True, weakref_slot=True)
+@dataclass(slots=True)
 class _HTTPBridgeSession:
     key: _HTTPBridgeSessionKey
     headers: dict[str, str]

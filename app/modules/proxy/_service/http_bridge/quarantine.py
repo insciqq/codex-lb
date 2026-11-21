@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import weakref
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,8 +47,6 @@ class _HTTPBridgeQuarantineEntry:
     # downgrade, never restarted per entry: a completion's captured fence
     # must not match an entry that was popped and re-created for the key.
     generation: int = 0
-    # The session whose arm or strike last recorded evidence on this entry.
-    owner_ref: weakref.ReferenceType[Any] | None = None
     quarantined_until: float = 0.0
     consecutive_eventless_timeouts: int = 0
     last_touched_monotonic: float = 0.0
@@ -89,22 +86,14 @@ def _next_http_bridge_quarantine_generation(service: Any) -> int:
     return generation
 
 
-def _record_http_bridge_quarantine_owner(entry: _HTTPBridgeQuarantineEntry, session: Any) -> None:
-    # A planning-time key probe arms on behalf of no session; evidence it
-    # records belongs to whichever session is registered for the key.
-    entry.owner_ref = weakref.ref(session) if isinstance(session, _HTTPBridgeSession) else None
+def _http_bridge_session_registered_for_key(service: Any, session: Any) -> bool:
+    """Return whether ``session`` is the one now registered for its key.
 
-
-def _http_bridge_quarantine_owned_by(service: Any, session: Any, entry: _HTTPBridgeQuarantineEntry) -> bool:
-    """Return whether a completion on ``session`` may clear this entry.
-
-    The session that recorded the evidence owns it, and so does the session
-    now registered for the key: the replacement a quarantine forces is the
-    one whose healthy completion disproves the wedge. A late completion on a
-    retired session must not clear evidence recorded for its replacement.
+    Only that session's healthy completion speaks for the key: the
+    replacement a quarantine forces clears the evidence that forced it,
+    while a late completion on a retired session must not clear evidence
+    recorded for its replacement.
     """
-    if entry.owner_ref is not None and entry.owner_ref() is session:
-        return True
     return getattr(service, "_http_bridge_sessions", {}).get(session.key) is session
 
 
@@ -308,7 +297,6 @@ def _quarantine_http_bridge_session(
     prior_reason = entry.reason
     prior_quarantined_until = entry.quarantined_until
     entry.generation = _next_http_bridge_quarantine_generation(service)
-    _record_http_bridge_quarantine_owner(entry, session)
     ttl_seconds = _HTTP_BRIDGE_QUARANTINE_TTL_SECONDS
     if minimum_seconds is not None:
         ttl_seconds = max(ttl_seconds, minimum_seconds)
@@ -401,7 +389,6 @@ def _record_http_bridge_quarantine_eventless_timeout(service: Any, session: _HTT
     # A strike is evidence too: it moves the fence, so a completion that
     # captured the entry before this strike cannot erase it.
     entry.generation = _next_http_bridge_quarantine_generation(service)
-    _record_http_bridge_quarantine_owner(entry, session)
     entry.consecutive_eventless_timeouts += 1
     entry.last_touched_monotonic = now
     if entry.consecutive_eventless_timeouts < _HTTP_BRIDGE_QUARANTINE_EVENTLESS_TIMEOUT_THRESHOLD:
@@ -428,9 +415,9 @@ def _clear_http_bridge_quarantine(
     awaits is fresh evidence this response does not disprove, and it
     survives the clear. Generations come from one service-lifetime sequence,
     so a fence never matches an entry re-created after the captured one was
-    removed, and the completing session clears its own key only when it owns
-    the entry (see ``_http_bridge_quarantine_owned_by``). A poison entry fences on its own provenance — a
-    weaker arm during the window bumps the raw generation without disproving
+    removed, and the completing session clears its own key only while it is
+    the session registered for that key. A poison entry fences on its own
+    provenance — a weaker arm during the window bumps the raw generation without disproving
     the recovery — and a matched clear downgrades to a concurrent weaker
     fence instead of evicting it.
     """
@@ -441,7 +428,7 @@ def _clear_http_bridge_quarantine(
         entry = registry.get(key)
         if entry is None:
             return True
-        if key == session.key and not _http_bridge_quarantine_owned_by(service, session, entry):
+        if key == session.key and not _http_bridge_session_registered_for_key(service, session):
             return False
         if entry.quarantined_until <= now:
             # An inactive entry still carries the eventless strike counter;

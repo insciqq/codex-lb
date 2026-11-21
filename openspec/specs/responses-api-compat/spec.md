@@ -637,9 +637,8 @@ captured fence cannot match a replacement entry armed after the capture.
 An eventless strike MUST move the fence too: a healthy completion resets an
 inactive entry's strike counter only when no strike was recorded after its
 fence was captured, and an entry that did not exist at capture survives the
-clear. The completing session MUST clear its own key's entry only when it
-owns that evidence: the entry was last armed or struck by that session, or
-that session is the one now registered for the key — the replacement a
+clear. The completing session MUST clear its own key's entry only while it
+is the session registered for that key — including the replacement a
 quarantine forces, whose healthy completion is what disproves the wedge. A
 late completion on a session that was retired from the key MUST NOT clear
 evidence recorded for its replacement. The clear MUST also
