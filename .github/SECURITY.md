@@ -36,8 +36,8 @@ also report it to upstream yourself through
 
 A good report makes triage much faster:
 
-- **Affected version(s)**: the fork release tag (`v<upstream base>-fork.<n>`),
-  the image digest, or the commit SHA.
+- **Affected version(s)**: the fork release tag (`v<upstream base>-fork.<n>` or
+  `v<major>.<minor>.<patch>`), the image digest, or the commit SHA.
 - **Deployment**: Docker image / Helm chart from a release tag / from source.
 - **Impact**: what can an attacker do? (data disclosure, account takeover,
   RCE, DoS, auth bypass, log injection, etc.)
@@ -90,7 +90,8 @@ release deadlines.
 ## Supported versions
 
 Only the **latest fork release** receives security fixes. Fork releases are
-tagged `v<upstream base>-fork.<n>` on the fork's `main` branch; see
+tagged `v<upstream base>-fork.<n>`, or plain `v<major>.<minor>.<patch>` for a
+release of the fork's own, on the fork's `main` branch; see
 [Releases](https://github.com/insciqq/codex-lb/releases). Older releases do
 not receive backports — please upgrade.
 

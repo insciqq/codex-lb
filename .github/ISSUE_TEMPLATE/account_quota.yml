@@ -29,7 +29,7 @@ body:
     id: version
     attributes:
       label: codex-lb version
-      placeholder: "<upstream base>+fork.<n> (dashboard status bar, `GET /api/runtime/version`), or the deployed image tag or digest"
+      placeholder: "<upstream base>+fork.<n> or <major>.<minor>.<patch> (dashboard status bar, `GET /api/runtime/version`), or the deployed image tag or digest"
     validations:
       required: true
 

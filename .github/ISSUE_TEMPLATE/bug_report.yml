@@ -31,7 +31,7 @@ body:
     attributes:
       label: codex-lb version
       description: Version shown in the dashboard status bar (or `GET /api/runtime/version`), or the image tag you deployed.
-      placeholder: "<upstream base>+fork.<n> (dashboard status bar, `GET /api/runtime/version`), or the deployed image tag or digest"
+      placeholder: "<upstream base>+fork.<n> or <major>.<minor>.<patch> (dashboard status bar, `GET /api/runtime/version`), or the deployed image tag or digest"
     validations:
       required: true
 

@@ -1,6 +1,8 @@
 name: Fork image
 
-# Publishes the fork's container image for a `v<upstream base>-fork.<n>` tag.
+# Publishes the fork's container image for a release tag: `v<upstream base>-fork.<n>`
+# while the fork is an upstream base plus fixes, or a plain `v<major>.<minor>.<patch>`
+# for a release of the fork's own (app/modules/runtime/release_version.py).
 # Upstream's release.yml and publish-beta-release.yml stay disabled and
 # untouched; this workflow only builds and pushes the image, with no PyPI,
 # Helm chart, GitHub release or floating tags.
@@ -9,7 +11,8 @@ name: Fork image
 # --ref v<version>`. The run's commit is then the tag commit, so the
 # provenance attestation names the commit that was built.
 #
-# verify  the tag commit is reachable from origin/main (the fork's main), has a successful
+# verify  the tag is a release tag, its commit is reachable from origin/main (the
+#         fork's main) and not from the upstream-main mirror, has a successful
 #         full CI run (checks are per commit, so the green wip/merge-* run of
 #         the same SHA counts) and carries the tag's version in every
 #         release-managed file.
@@ -28,7 +31,7 @@ name: Fork image
 
 on:
   push:
-    tags: ["v*-fork.*"]
+    tags: ["v*"]
   workflow_dispatch:
 
 concurrency:
@@ -57,17 +60,13 @@ jobs:
       version: ${{ steps.tag.outputs.version }}
 
     steps:
-      - name: Validate tag name
+      - name: Require a tag ref
         env:
           REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
           if [[ "${REF_TYPE}" != tag ]]; then
             echo "::error::run this workflow on a tag ref: gh workflow run \"Fork image\" --ref v<version>"
-            exit 1
-          fi
-          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[1-9][0-9]*$ ]]; then
-            echo "::error::tag ${RELEASE_TAG} does not match v<major>.<minor>.<patch>-fork.<n>"
             exit 1
           fi
 
@@ -78,35 +77,50 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Require the run commit to be the tag commit
+      # The tag forms and their ordering come from the same module the
+      # dashboard's update notice uses; any other tag shape fails here.
+      - name: Require a release tag on the tag commit
         id: tag
         run: |
           set -euo pipefail
+          forms="$(python3 -m app.modules.runtime.release_version forms "${RELEASE_TAG}")" || {
+            echo "::error::tag ${RELEASE_TAG} is not a release tag: v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-fork.<n>"
+            exit 1
+          }
           sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
           if [[ "${sha}" != "${GITHUB_SHA}" ]]; then
             echo "::error::run commit ${GITHUB_SHA} is not the commit of ${RELEASE_TAG} (${sha})"
             exit 1
           fi
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
-          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "version=$(sed -n 's/^semver=//p' <<< "${forms}")" >> "$GITHUB_OUTPUT"
+          echo "pep440=$(sed -n 's/^pep440=//p' <<< "${forms}")" >> "$GITHUB_OUTPUT"
           echo "${RELEASE_TAG} -> ${sha}"
 
-      - name: Require the commit on the fork's main
+      # A plain vX.Y.Z tag also names upstream's releases; an upstream commit
+      # pushed with such a tag is reachable from main but is no fork release.
+      - name: Require the commit on the fork's main and not upstream's
         env:
           SHA: ${{ steps.tag.outputs.sha }}
         run: |
           set -euo pipefail
           git rev-parse --verify refs/remotes/origin/main > /dev/null
+          git rev-parse --verify refs/remotes/origin/upstream-main > /dev/null
           if ! git merge-base --is-ancestor "${SHA}" refs/remotes/origin/main; then
             echo "::error::${SHA} is not reachable from origin/main"
+            exit 1
+          fi
+          if git merge-base --is-ancestor "${SHA}" refs/remotes/origin/upstream-main; then
+            echo "::error::${SHA} is an upstream commit (reachable from origin/upstream-main), not a fork release"
             exit 1
           fi
 
       # Python and the dashboard use the PEP 440 form X.Y.Z+fork.N; the Helm
       # chart uses the tag's SemVer form X.Y.Z-fork.N, which image tags and
-      # Kubernetes label values accept.
+      # Kubernetes label values accept. A plain release is X.Y.Z in both.
       - name: Require the tag version in the project files
         env:
+          PEP440: ${{ steps.tag.outputs.pep440 }}
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
@@ -119,7 +133,7 @@ jobs:
           from pathlib import Path
 
           semver = os.environ["VERSION"]
-          pep440 = semver.replace("-fork.", "+fork.", 1)
+          pep440 = os.environ["PEP440"]
           chart = Path("deploy/helm/codex-lb/Chart.yaml").read_text()
           uv_lock = Path("uv.lock").read_text()
 
@@ -142,21 +156,49 @@ jobs:
           print(f"project version {pep440}, chart version {semver}")
           PY
 
-      # The README, docs and chart README name the release in their commands.
+      # The README, docs and chart README name the release in their commands:
+      # every X.Y.Z-fork.N or X.Y.Z+fork.N, and every version in a fork image
+      # tag (ghcr.io/insciqq/codex-lb:X.Y.Z), nix ref (github:insciqq/codex-lb/vX.Y.Z)
+      # or checkout (--branch vX.Y.Z), must be the tag's version.
       - name: Require the tag version in the user docs
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
-          stale="$(git grep -ohE '[0-9]+\.[0-9]+\.[0-9]+[-+]fork\.[0-9]+' -- \
-            README.md README.zh-CN.md docs deploy/helm/codex-lb/README.md |
-            tr '+' '-' | sort -u | grep -vxF "${VERSION}" || true)"
-          if [[ -n "${stale}" ]]; then
-            echo "::error::docs name other fork versions than ${VERSION}: ${stale//$'\n'/, }"
-            git grep -nE '[0-9]+\.[0-9]+\.[0-9]+[-+]fork\.[0-9]+' -- \
-              README.md README.zh-CN.md docs deploy/helm/codex-lb/README.md | grep -vF "${VERSION}" || true
-            exit 1
-          fi
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          release = r"\d+\.\d+\.\d+(?:[-+]fork\.\d+)?"
+          patterns = [
+              re.compile(r"\b(\d+\.\d+\.\d+[-+]fork\.\d+)\b"),
+              re.compile(rf"insciqq/codex-lb:v?({release})(?![\w.+-])"),
+              re.compile(rf"github:insciqq/codex-lb/v({release})(?![\w.+-])"),
+              re.compile(rf"--branch v({release})(?![\w.+-])"),
+          ]
+          paths = ["README.md", "README.zh-CN.md", "docs", "deploy/helm/codex-lb/README.md"]
+          files = subprocess.run(["git", "ls-files", "--", *paths], check=True, capture_output=True, text=True).stdout.split()
+          stale = []
+          for name in files:
+              try:
+                  text = Path(name).read_text(encoding="utf-8")
+              except UnicodeDecodeError:
+                  continue
+              for number, line in enumerate(text.splitlines(), 1):
+                  for pattern in patterns:
+                      for found in pattern.findall(line):
+                          if found.replace("+", "-") != version:
+                              stale.append(f"{name}:{number}: {found}")
+          if stale:
+              print(f"::error::docs name other fork versions than {version}: {', '.join(sorted(set(s.rsplit(': ', 1)[1] for s in stale)))}")
+              print("\n".join(dict.fromkeys(stale)))
+              sys.exit(1)
+          print(f"user docs name only {version}")
+          PY
 
       # Only full-suite runs count: pull_request runs skip jobs by path.
       - name: Require a successful CI run for the commit

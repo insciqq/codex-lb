@@ -53,8 +53,16 @@ async def test_runtime_version_reports_newer_fork_release() -> None:
         # A build without the fork suffix compares as fork 0.
         ("1.25.0", "v1.25.0-fork.1", True),
         ("1.26.0", "v1.25.0-fork.4", False),
+        # A plain release counts as fork 0: newer than any fork of an older base,
+        # older than any fork of its own base.
+        ("1.25.0+fork.9", "v1.26.0", True),
+        ("1.26.0", "v1.26.0", False),
+        ("1.26.0", "v1.26.1", True),
+        ("1.25.0+fork.2", "v1.25.0", False),
+        ("1.26.0", "v1.26.0-fork.1", True),
         # A running version that is not a release spelling never shows a notice.
         ("1.25.0-beta.9", "v1.25.0-fork.2", False),
+        ("1.25.0-fork.2", "v1.26.0", False),
     ],
 )
 async def test_runtime_version_compares_fork_numbers(
@@ -71,7 +79,10 @@ async def test_runtime_version_compares_fork_numbers(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("latest_tag", ["v1.26.0", "v1.25.0-beta.1", "v1.25.0-fork.0", "latest"])
+@pytest.mark.parametrize(
+    "latest_tag",
+    ["v1.25.0-beta.1", "v1.25.0-fork.0", "v1.25.0+fork.1", "1.26.0", "v1.26", "v01.26.0", "latest"],
+)
 async def test_runtime_version_ignores_tags_that_are_not_fork_releases(latest_tag: str) -> None:
     service = RuntimeVersionService(current_version="1.25.0+fork.1", ttl_seconds=60)
     session = _mock_session(_mock_response(json_data={"tag_name": latest_tag}))

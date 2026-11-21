@@ -543,3 +543,4 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | chore(release): 1.25.0-fork.2 | - | fork release version |
 | fix(telemetry): preview without minting an identity | - | bug found in production or review |
 | fix(fork): recheck fork releases while the dashboard stays open | - | fork release channel |
+| feat(fork): accept plain vX.Y.Z release tags next to -fork.N | - | fork release tooling |

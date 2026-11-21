@@ -72,33 +72,44 @@ after a rebuild. They are recovery points, not versions.
 The fork publishes container images only: no PyPI package, Helm chart or
 floating tags. Images are built by GitHub Actions, never locally.
 
-* Version tags are `v<upstream base>-fork.<n>`, for example `v1.25.0-fork.1`
-  on upstream's 1.25.0 train. `pyproject.toml`, `app/__init__.py`, `uv.lock`
-  and `frontend/package.json` carry the PEP 440 form `1.25.0+fork.1`, which
-  the dashboard and `X-App-Version` show. The Helm chart's `version` and
-  `appVersion` use `1.25.0-fork.1`, like the image tag, because image tags
-  and Kubernetes label values do not allow `+`.
+* Version tags take one of two forms; the owner picks the form per release:
+  * `v<upstream base>-fork.<n>`, for example `v1.25.0-fork.1` on upstream's
+    1.25.0 train, while the fork is an upstream base plus fixes.
+    `pyproject.toml`, `app/__init__.py`, `uv.lock` and
+    `frontend/package.json` carry the PEP 440 form `1.25.0+fork.1`, which
+    the dashboard and `X-App-Version` show. The Helm chart's `version` and
+    `appVersion` use `1.25.0-fork.1`, like the image tag, because image tags
+    and Kubernetes label values do not allow `+`.
+  * plain `v<major>.<minor>.<patch>`, for example `v1.26.0`, once the fork
+    ships minor releases of its own. Every file above carries `1.26.0`.
+
+  Releases order as the numbers `(major, minor, patch, n)`, where a plain
+  version has `n = 0`: `1.25.0 < 1.25.0-fork.2 < 1.25.0-fork.10 < 1.26.0`.
+  Pick a version above every earlier release, because the update notice
+  only announces a higher one. The parsing and the order live in
+  `app/modules/runtime/release_version.py`, which the workflow and the
+  update notice share.
 * Pushing a version tag runs `.github/workflows/fork-image.yml`, which
   publishes `ghcr.io/insciqq/codex-lb:<version>` and
   `ghcr.io/insciqq/codex-lb:sha-<full commit SHA>` for linux/amd64 and
   linux/arm64. There is no `latest`, and a tag that already names another
   digest is never moved.
 * The workflow runs on the tag ref only. Before building, it requires the
-  run's commit to be the tag commit, the commit to be reachable from the
-  fork's `main`, a successful full CI run for that exact commit, the tag's
-  version in every release-managed file listed above and in the fork
-  versions named by the READMEs, `docs/` and the chart README, and that
-  `:<version>` is not published yet. Whether a tag exists is read from the
+  run's commit to be the tag commit, a tag of either form, the commit to be
+  reachable from the fork's `main` and not from `upstream-main` (a plain tag
+  on an upstream commit is not a fork release), a successful full CI run for
+  that exact commit, the tag's version in every release-managed file listed
+  above and in the fork versions named by the READMEs, `docs/` and the chart
+  README, and that `:<version>` is not published yet. Whether a tag exists is read from the
   registry for that exact tag; only HTTP 404 counts as missing, and any
   other answer fails the run.
 * It builds once and pushes by digest, signs build provenance for that
   digest, and only then points both tags at it. A re-run of failed jobs
   re-signs or re-tags the same digest without rebuilding.
 * The dashboard's update notice polls the fork's latest GitHub release.
-  It compares the tag `v<major>.<minor>.<patch>-fork.<n>` with the running
-  `<major>.<minor>.<patch>+fork.<n>` as numbers (a build without `+fork.N`
-  counts as fork 0), ignores tags of any other shape, and links to the
-  fork's release page. Upstream releases are never announced.
+  It compares the release tag with the running version in the order above
+  (a build without `+fork.N` counts as fork 0), ignores tags of any other
+  shape, and links to the fork's release page. Upstream releases are never announced.
 * A fork release is a version tag plus its GHCR image, and each version tag
   also gets a GitHub Release with release notes: see the fork's
   [Releases](https://github.com/insciqq/codex-lb/releases) and
@@ -118,8 +129,9 @@ floating tags. Images are built by GitHub Actions, never locally.
 
 * The Helm chart defaults to `ghcr.io/insciqq/codex-lb:<appVersion>`, and
   the README, `docs/` and the chart README name the fork image and release
-  tag (`git grep -n 'fork\.[0-9]'`). Bump them with the version; the fork
-  publishes no Helm chart or Python package.
+  tag (`git grep -nE 'fork\.[0-9]|insciqq/codex-lb[:/]v?[0-9]|--branch v[0-9]'`).
+  Bump them with the version; the fork publishes no Helm chart or Python
+  package.
 * Both READMEs open with the upstream triage result: a snapshot date and
   counts. At each release, after `python3 scripts/fork_registry.py check
   --strict`, refresh them from the "Summary" of `fork/REGISTRY.md`: the
