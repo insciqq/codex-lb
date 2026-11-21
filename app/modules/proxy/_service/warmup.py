@@ -123,6 +123,7 @@ class _WarmupUsageSnapshot:
 class _WarmupAccountSnapshot:
     id: str
     chatgpt_account_id: str | None
+    codex_installation_id: str | None
     email: str
     plan_type: str
     access_token_encrypted: bytes
@@ -147,6 +148,7 @@ def _snapshot_warmup_account(account: Account) -> _WarmupAccountSnapshot:
     return _WarmupAccountSnapshot(
         id=account.id,
         chatgpt_account_id=account.chatgpt_account_id,
+        codex_installation_id=account.codex_installation_id,
         email=account.email,
         plan_type=account.plan_type,
         access_token_encrypted=account.access_token_encrypted,
@@ -164,6 +166,7 @@ def _materialize_warmup_account(account: _WarmupAccountSnapshot) -> Account:
     return Account(
         id=account.id,
         chatgpt_account_id=account.chatgpt_account_id,
+        codex_installation_id=account.codex_installation_id,
         email=account.email,
         plan_type=account.plan_type,
         access_token_encrypted=account.access_token_encrypted,

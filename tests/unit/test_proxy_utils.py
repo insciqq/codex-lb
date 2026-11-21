@@ -2555,6 +2555,20 @@ def test_request_log_client_fields_detect_conversation(headers, expected):
     assert proxy_service._request_log_client_fields(headers)[2] == expected
 
 
+def test_warmup_account_snapshot_keeps_the_installation_id():
+    # The warmup dispatch resolves its route for the materialized account;
+    # without the row's installation id a re-imported account under the same
+    # id could not be told apart from the loaded one.
+    account = _make_account("acc_warmup_installation")
+    account.codex_installation_id = "install-warmup"
+
+    materialized = proxy_warmup_service._materialize_warmup_account(
+        proxy_warmup_service._snapshot_warmup_account(account)
+    )
+
+    assert materialized.codex_installation_id == "install-warmup"
+
+
 @pytest.mark.asyncio
 async def test_warmup_persists_conversation_id_in_request_log(monkeypatch):
     request_logs = _RequestLogsRecorder()
