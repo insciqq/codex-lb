@@ -2529,7 +2529,16 @@ def test_compact_anchored_output_does_not_reattach_consumed_reused_call_pair():
     assert historical_output not in dumped_input
 
 
-def test_compact_anchored_output_does_not_reattach_small_consumed_pair():
+@pytest.mark.parametrize(
+    "trailing",
+    [
+        pytest.param([], id="output-last"),
+        # The old hoist removed a trailing developer message, so the output is
+        # still the terminal item for the consumed-pair cleanup.
+        pytest.param([{"role": "developer", "content": "Continue."}], id="trailing-developer"),
+    ],
+)
+def test_compact_anchored_output_does_not_reattach_small_consumed_pair(trailing):
     historical_call = _compact_call_item("function_call", "call-reused-small")
     historical_output = {
         "type": "function_call_output",
@@ -2545,7 +2554,13 @@ def test_compact_anchored_output_does_not_reattach_small_consumed_pair():
         "model": "gpt-5.6-sol",
         "instructions": "",
         "previous_response_id": "resp_anchor",
-        "input": [historical_call, historical_output, {"role": "assistant", "content": "x" * 500_000}, terminal_output],
+        "input": [
+            historical_call,
+            historical_output,
+            {"role": "assistant", "content": "x" * 500_000},
+            terminal_output,
+            *trailing,
+        ],
     }
 
     dumped_input = ResponsesCompactRequest.model_validate(payload).to_payload()["input"]

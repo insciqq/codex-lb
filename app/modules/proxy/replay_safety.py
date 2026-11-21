@@ -913,6 +913,11 @@ def responses_payload_is_account_neutral_fresh_replay(payload: Mapping[str, Json
         return False
     if _contains_account_scoped_input_state(input_items):
         return False
+    # The frame is what the replacement account receives: an item id on any
+    # forwarded item, including a developer message the base view moved, is
+    # response-owned state that must not cross accounts.
+    if any(isinstance(item, dict) and item.get("id") not in (None, "") for item in input_items):
+        return False
 
     tools = payload.get("tools")
     if tools is None:

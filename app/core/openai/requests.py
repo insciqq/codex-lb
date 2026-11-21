@@ -451,12 +451,18 @@ class BaseHoist:
     from a Lite request keeps its developer messages inline. ``json_kept`` holds
     the canonical JSON of the developer messages the hoist kept for JSON mode,
     decided on the raw content before part sanitization (``None``: decide from
-    the text with ``json_mode``).
+    the text with ``json_mode``). ``legacy_instructions`` is the
+    ``instructions`` text the old hoist produced from the raw request (system
+    and developer text in their input order), and ``instructions`` the value
+    the current normalizer produced, so a frame can be rebuilt in its old
+    shape.
     """
 
     json_mode: bool = False
     lite: bool | None = None
     json_kept: frozenset[str] | None = None
+    legacy_instructions: str | None = None
+    instructions: str | None = None
 
 
 NO_BASE_HOIST = BaseHoist()
@@ -466,7 +472,7 @@ def _canonical_item(item: JsonValue) -> str:
     return json.dumps(item, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
 
 
-def _base_hoist_from_raw(data: JsonValue) -> BaseHoist:
+def _base_hoist_from_raw(data: JsonValue, *, instructions: str | None) -> BaseHoist:
     """Record the old hoist's decisions from a raw Responses request body."""
     if not is_json_mapping(data):
         return NO_BASE_HOIST
@@ -475,9 +481,18 @@ def _base_hoist_from_raw(data: JsonValue) -> BaseHoist:
     if not is_json_list(input_value):
         return BaseHoist(json_mode=json_mode)
     lite = responses_input_uses_lite_tools(input_value)
-    if lite or not json_mode:
-        return BaseHoist(json_mode=json_mode, lite=lite, json_kept=frozenset())
+    raw_instructions = data.get("instructions")
+    existing = raw_instructions if isinstance(raw_instructions, str) else ""
+    if lite:
+        return BaseHoist(
+            json_mode=json_mode,
+            lite=lite,
+            json_kept=frozenset(),
+            legacy_instructions=existing,
+            instructions=instructions,
+        )
     kept: list[JsonValue] = []
+    instruction_parts: list[str] = []
     for item in input_value:
         item_mapping = _json_mapping_or_none(item)
         if (
@@ -486,14 +501,18 @@ def _base_hoist_from_raw(data: JsonValue) -> BaseHoist:
             or _is_preserved_non_message_directive(item_mapping)
         ):
             continue
-        _, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=True)
-        if kept_item is not None and _json_mapping_or_none(kept_item) is not None:
-            if cast(Mapping[str, JsonValue], kept_item).get("role") == "developer":
-                kept.append(kept_item)
+        instruction_text, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=json_mode)
+        if instruction_text:
+            instruction_parts.append(instruction_text)
+        kept_mapping = _json_mapping_or_none(kept_item) if kept_item is not None else None
+        if json_mode and kept_mapping is not None and kept_mapping.get("role") == "developer":
+            kept.append(kept_item)
     return BaseHoist(
         json_mode=json_mode,
         lite=lite,
         json_kept=frozenset(_canonical_item(item) for item in _sanitize_input_items(kept)),
+        legacy_instructions=_merge_responses_instructions(existing, instruction_parts),
+        instructions=instructions,
     )
 
 
@@ -559,14 +578,17 @@ def base_equivalent_wire_prefix_end(
     return positions[count - 1][0] + 1
 
 
-def base_hoisted_request_text(text: str) -> str | None:
+def base_hoisted_request_text(text: str, *, hoist: BaseHoist | None = None) -> str | None:
     """Re-serialize a request frame in the shape it had before developer messages stayed inline.
 
     Durable operation and recovery-attempt keys hash the serialized frame. A
     turn recorded before the change carried its developer text in
     ``instructions``; this rebuilds that frame (same key order and separators)
-    so an identical retry still finds its record. Returns ``None`` when the
-    frame has no developer message the old hoist would have moved.
+    so an identical retry still finds its record. With the request's
+    ``hoist``, the old ``instructions`` text is the one recorded from the raw
+    request (system and developer text in input order, blank developer text
+    included). Returns ``None`` when the frame has no developer message the
+    old hoist would have moved.
     """
     try:
         payload = json.loads(text)
@@ -575,9 +597,14 @@ def base_hoisted_request_text(text: str) -> str | None:
     if not isinstance(payload, dict):
         return None
     input_value = payload.get("input")
-    if not isinstance(input_value, list) or responses_input_uses_lite_tools(input_value):
+    if not isinstance(input_value, list):
         return None
-    json_mode = _requests_json_object_format(payload.get("text"))
+    effective_hoist = (
+        hoist if hoist is not None else BaseHoist(json_mode=_requests_json_object_format(payload.get("text")))
+    )
+    lite = effective_hoist.lite if effective_hoist.lite is not None else responses_input_uses_lite_tools(input_value)
+    if lite:
+        return None
     instruction_parts: list[str] = []
     base_items: list[JsonValue] = []
     moved = False
@@ -590,21 +617,39 @@ def base_hoisted_request_text(text: str) -> str | None:
         ):
             base_items.append(item)
             continue
-        instruction_text, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=json_mode)
-        if kept_item is item_mapping or kept_item == item_mapping:
+        if effective_hoist.json_kept is not None:
+            json_kept = _canonical_item(item) in effective_hoist.json_kept
+        else:
+            json_kept = effective_hoist.json_mode and _mentions_json(
+                _split_responses_instruction_item_content(item_mapping)[0]
+            )
+        if json_kept:
             base_items.append(item)
             continue
+        instruction_text, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=False)
         moved = True
         if instruction_text:
             instruction_parts.append(instruction_text)
         if kept_item is not None:
             base_items.append(kept_item)
+    legacy_instructions = effective_hoist.legacy_instructions
+    current_instructions = effective_hoist.instructions
+    frame_instructions = payload.get("instructions")
+    frame_text = frame_instructions if isinstance(frame_instructions, str) else ""
+    if (
+        legacy_instructions is not None
+        and current_instructions is not None
+        and legacy_instructions != current_instructions
+        and frame_text.endswith(current_instructions)
+    ):
+        # Recorded from the raw request: the exact old text and order. A
+        # prefix the proxy added to the frame (cache scope) is kept.
+        moved = True
+        payload["instructions"] = frame_text[: len(frame_text) - len(current_instructions)] + legacy_instructions
+    elif moved:
+        payload["instructions"] = _merge_responses_instructions(frame_text, instruction_parts)
     if not moved:
         return None
-    existing = payload.get("instructions")
-    payload["instructions"] = _merge_responses_instructions(
-        existing if isinstance(existing, str) else "", instruction_parts
-    )
     payload["input"] = base_items
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
@@ -956,7 +1001,7 @@ class ResponsesRequest(BaseModel):
         if isinstance(data, ResponsesRequest):
             request._codex_lb_base_hoist = data._codex_lb_base_hoist
         elif request._codex_lb_base_hoist is None:
-            request._codex_lb_base_hoist = _base_hoist_from_raw(data)
+            request._codex_lb_base_hoist = _base_hoist_from_raw(data, instructions=request.instructions)
         return request
 
     model: str = Field(min_length=1)
@@ -1550,6 +1595,28 @@ def _compact_has_continuity_anchor(payload: Mapping[str, JsonValue]) -> bool:
     )
 
 
+def _compact_effective_terminal_index(input_value: list[JsonValue]) -> tuple[int, int | None]:
+    """Return the compact request's terminal item index and its trailing trigger index.
+
+    A trailing ``compaction_trigger`` is set aside. The terminal item is judged
+    on the base-equivalent input: trailing developer messages the old hoist
+    removed do not hide the tool output or call before them. A trigger that is
+    the only item is its own terminal index.
+    """
+    latest_index = len(input_value) - 1
+    latest_mapping = _json_mapping_or_none(input_value[latest_index])
+    trigger_index: int | None = None
+    if latest_mapping is not None and latest_mapping.get("type") == "compaction_trigger":
+        trigger_index = latest_index
+        if latest_index == 0:
+            return latest_index, trigger_index
+        latest_index -= 1
+    base_item_indices = {index for index, _ in base_equivalent_input_positions(input_value)}
+    while latest_index > 0 and latest_index not in base_item_indices:
+        latest_index -= 1
+    return latest_index, trigger_index
+
+
 def _compact_discard_consumed_continuity_output_pairs(
     input_value: list[JsonValue],
     *,
@@ -1558,15 +1625,11 @@ def _compact_discard_consumed_continuity_output_pairs(
 ) -> None:
     if not input_value:
         return
-    latest_index = len(input_value) - 1
+    latest_index, trigger_index = _compact_effective_terminal_index(input_value)
+    if trigger_index == latest_index:
+        return
     latest_mapping = _json_mapping_or_none(input_value[latest_index])
     latest_type = latest_mapping.get("type") if latest_mapping is not None else None
-    if latest_type == "compaction_trigger":
-        if latest_index == 0:
-            return
-        latest_index -= 1
-        latest_mapping = _json_mapping_or_none(input_value[latest_index])
-        latest_type = latest_mapping.get("type") if latest_mapping is not None else None
     if (
         latest_mapping is None
         or not isinstance(latest_type, str)
@@ -1597,26 +1660,12 @@ def _compact_terminal_required_indices(
     if not input_value:
         return set(), False, False
 
-    latest_index = len(input_value) - 1
+    latest_index, trigger_index = _compact_effective_terminal_index(input_value)
+    terminal_trigger_indices: set[int] = set() if trigger_index is None else {trigger_index}
+    if trigger_index == latest_index:
+        return terminal_trigger_indices, True, False
     latest_mapping = _json_mapping_or_none(input_value[latest_index])
     latest_type = latest_mapping.get("type") if latest_mapping is not None else None
-    terminal_trigger_indices: set[int] = set()
-    if latest_type == "compaction_trigger":
-        terminal_trigger_indices.add(latest_index)
-        if latest_index == 0:
-            return terminal_trigger_indices, True, False
-        latest_index -= 1
-        latest_mapping = _json_mapping_or_none(input_value[latest_index])
-        latest_type = latest_mapping.get("type") if latest_mapping is not None else None
-
-    # The terminal item is judged on the base-equivalent input: trailing
-    # developer messages the old hoist removed (state anchors kept anyway) do
-    # not hide the tool output or call before them.
-    base_item_indices = {index for index, _ in base_equivalent_input_positions(input_value)}
-    while latest_index > 0 and latest_index not in base_item_indices:
-        latest_index -= 1
-        latest_mapping = _json_mapping_or_none(input_value[latest_index])
-        latest_type = latest_mapping.get("type") if latest_mapping is not None else None
 
     def with_terminal_trigger(indices: set[int]) -> set[int]:
         return indices | terminal_trigger_indices
@@ -2100,14 +2149,15 @@ def responses_request_contains_goal_continuation_context(payload: ResponsesReque
         return True
     if not is_json_list(payload.input):
         return responses_input_contains_goal_continuation_context(payload.input)
-    # Judge as before developer messages stayed inline: the text of a developer
-    # message the old hoist moved counts line by line, like ``instructions``.
+    # Judge as before developer messages stayed inline: the text the old hoist
+    # moved out of a developer message (whole, or leaving its non-text parts as
+    # a user item) counts line by line, like ``instructions``.
     input_items = payload.input
     base_positions = base_equivalent_input_positions(input_items, hoist=responses_payload_base_hoist(payload))
-    base_indices = {index for index, _ in base_positions}
+    base_items = dict(base_positions)
     for index, item in enumerate(input_items):
         item_mapping = _json_mapping_or_none(item)
-        if index in base_indices or item_mapping is None:
+        if item_mapping is None or item_mapping.get("role") != "developer" or base_items.get(index) == item:
             continue
         hoisted_text, _ = _split_responses_instruction_item_content(item_mapping)
         if any(line.lstrip().startswith(_GOAL_CONTINUATION_CONTEXT_PREFIX) for line in hoisted_text.splitlines()):

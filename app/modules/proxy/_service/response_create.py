@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import sys
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -272,13 +273,27 @@ def _input_context(input_items: Sequence[JsonValue], *, hoist: BaseHoist = NO_BA
     return len(base_items), _fingerprint_input_items(base_items)
 
 
+def _hoist_altered_developer_indices(items: list[JsonValue], *, hoist: BaseHoist) -> set[int]:
+    """Wire indices of developer messages the old hoist would have moved or changed.
+
+    That is every developer message the hoist removed, and one whose non-text
+    parts it kept as a ``user`` item while moving its text.
+    """
+    base_items = dict(base_equivalent_input_positions(items, hoist=hoist))
+    return {
+        index
+        for index, item in enumerate(items)
+        if is_json_mapping(item) and item.get("role") == "developer" and base_items.get(index, None) != item
+    }
+
+
 def _input_developer_fingerprints(
     input_items: Sequence[JsonValue], *, hoist: BaseHoist = NO_BASE_HOIST
-) -> frozenset[str]:
-    """Fingerprints of the developer messages the old hoist would have moved out of ``input``."""
+) -> tuple[str, ...]:
+    """Fingerprints, in input order, of the developer messages the old hoist would have moved or changed."""
     items = list(input_items)
-    base_indices = {index for index, _ in base_equivalent_input_positions(items, hoist=hoist)}
-    return frozenset(_fingerprint_input_items([item]) for index, item in enumerate(items) if index not in base_indices)
+    altered = _hoist_altered_developer_indices(items, hoist=hoist)
+    return tuple(_fingerprint_input_items([item]) for index, item in enumerate(items) if index in altered)
 
 
 def _wire_remainder_after_stored_prefix(
@@ -286,32 +301,36 @@ def _wire_remainder_after_stored_prefix(
     stored_count: int,
     *,
     hoist: BaseHoist = NO_BASE_HOIST,
-    stored_developer_fingerprints: frozenset[str] | None,
+    stored_developer_fingerprints: tuple[str, ...] | None,
 ) -> list[JsonValue]:
     """Return what an anchored request sends after the anchor covers a stored prefix.
 
-    The stored prefix is ``stored_count`` base-equivalent items. Its history
-    items, and the developer messages up to the next history item that the
-    stored turn already sent (``stored_developer_fingerprints``), are carried by
-    the anchor and go; a new or changed developer message in that range stays,
-    in order, because the anchor cannot supply it. An unknown set (a stored
-    context recorded without it) keeps every developer message in the range.
+    The stored prefix is ``stored_count`` base-equivalent items; the range
+    runs up to the next base-equivalent item after it. Its history items go
+    (the anchor carries them). Developer messages the old hoist would have
+    moved or changed are matched in order against the stored turn's
+    (``stored_developer_fingerprints``): each match consumes one recorded
+    occurrence and goes, and a new, changed or extra occurrence is sent, in
+    client order, because the anchor cannot supply it. An unknown record
+    (``None``) sends every such message in the range.
     """
     items = list(input_items)
     if stored_count <= 0:
         return items
     positions = base_equivalent_input_positions(items, hoist=hoist)
     range_end = positions[stored_count][0] if stored_count < len(positions) else len(items)
-    base_indices = {index for index, _ in positions}
-    kept = [
-        item
-        for index, item in enumerate(items[:range_end])
-        if index not in base_indices
-        and (
-            stored_developer_fingerprints is None
-            or _fingerprint_input_items([item]) not in stored_developer_fingerprints
-        )
-    ]
+    altered = _hoist_altered_developer_indices(items, hoist=hoist)
+    remaining = Counter(stored_developer_fingerprints) if stored_developer_fingerprints is not None else None
+    kept: list[JsonValue] = []
+    for index, item in enumerate(items[:range_end]):
+        if index not in altered:
+            continue
+        if remaining is not None:
+            fingerprint = _fingerprint_input_items([item])
+            if remaining[fingerprint] > 0:
+                remaining[fingerprint] -= 1
+                continue
+        kept.append(item)
     return [*kept, *items[range_end:]]
 
 

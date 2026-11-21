@@ -571,13 +571,26 @@ async def test_repeated_developer_instruction_is_no_proof_for_cross_transport_fa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("json_mode", "expected_previous_response_ids"),
+    [
+        pytest.param(False, ["resp_dev_id_cross_transport", None], id="hoisted-id-is-dropped"),
+        # The raw reasoning part mentions JSON, so the old hoist kept the
+        # message (and its id) in ``input``; sanitization then removes that
+        # part. The id is on the frame the replacement would receive.
+        pytest.param(True, ["resp_dev_id_cross_transport"], id="json-kept-id-stays-with-owner"),
+    ],
+)
 async def test_developer_item_id_does_not_strand_a_verified_cross_transport_failover(
     monkeypatch: pytest.MonkeyPatch,
+    json_mode: bool,
+    expected_previous_response_ids: list[str | None],
 ) -> None:
-    """A complete transcript whose only item id sits on a developer message still fails over.
+    """A complete transcript whose only item id sits on a developer message fails over as before.
 
-    The hoist dropped that id with the message; it now never reaches upstream,
-    so the replacement body passes the account-neutrality gate as before.
+    The hoist dropped that id with a message it moved; it now never reaches
+    upstream, so the replacement body passes the account-neutrality gate. An id
+    the hoist kept is judged on the actual frame and keeps the turn on its owner.
     """
     from tests.unit.test_proxy_utils import (
         AccountSelection,
@@ -600,7 +613,11 @@ async def test_developer_item_id_does_not_strand_a_verified_cross_transport_fail
         "type": "message",
         "role": "developer",
         "id": "msg_rules",
-        "content": "Keep rules",
+        "content": (
+            [{"type": "reasoning", "text": "Use JSON"}, {"type": "input_text", "text": "Use metric."}]
+            if json_mode
+            else "Keep rules"
+        ),
     }
     initial_input: list[proxy_service.JsonValue] = [{"role": "user", "content": "first turn"}]
     service._websocket_continuity_index[(session_id, None)] = proxy_service._WebSocketContinuityState(
@@ -645,32 +662,57 @@ async def test_developer_item_id_does_not_strand_a_verified_cross_transport_fail
             "model": "gpt-5.6-sol",
             "instructions": "",
             "input": [
-                developer,
                 *initial_input,
+                developer,
                 {"role": "assistant", "content": [{"type": "output_text", "text": "Prior answer"}]},
-                {"role": "user", "content": "Continue"},
+                {"role": "user", "content": "Continue in JSON" if json_mode else "Continue"},
             ],
             "previous_response_id": previous_response_id,
             "stream": True,
+            **({"text": {"format": {"type": "json_object"}}} if json_mode else {}),
         }
     )
 
     [chunk async for chunk in service.stream_responses(payload, {"session_id": session_id})]
 
-    assert [streamed.previous_response_id for streamed in streamed_payloads] == [previous_response_id, None]
-    replayed_developer = cast(list[dict[str, Any]], streamed_payloads[1].input)[0]
-    assert replayed_developer["role"] == "developer" and "id" not in replayed_developer
+    assert [streamed.previous_response_id for streamed in streamed_payloads] == expected_previous_response_ids
+    if len(streamed_payloads) > 1:
+        replayed_developer = cast(list[dict[str, Any]], streamed_payloads[1].input)[1]
+        assert replayed_developer["role"] == "developer" and "id" not in replayed_developer
+
+
+# Frames the base normalizer (before developer messages stayed inline)
+# produced for these inputs through ``_prepare_http_bridge_request``; captured
+# from that revision, not rebuilt by the helper under test.
+_PRE_UPGRADE_CONTINUE = {"role": "user", "content": "continue"}
+_PRE_UPGRADE_FRAMES = {
+    "developer": (
+        [{"role": "developer", "content": "review only"}, _PRE_UPGRADE_CONTINUE],
+        '{"model":"gpt-5.6","instructions":"review only","input":[{"role":"user","content":"continue"}],'
+        '"store":false,"include":[],"previous_response_id":"resp-parent","type":"response.create"}',
+    ),
+    "developer-then-system": (
+        [{"role": "developer", "content": "D"}, {"role": "system", "content": "S"}, _PRE_UPGRADE_CONTINUE],
+        '{"model":"gpt-5.6","instructions":"D\\nS","input":[{"role":"user","content":"continue"}],'
+        '"store":false,"include":[],"previous_response_id":"resp-parent","type":"response.create"}',
+    ),
+    "blank-developer": (
+        [{"role": "developer", "content": "  "}, {"role": "developer", "content": "D"}, _PRE_UPGRADE_CONTINUE],
+        '{"model":"gpt-5.6","instructions":"  \\nD","input":[{"role":"user","content":"continue"}],'
+        '"store":false,"include":[],"previous_response_id":"resp-parent","type":"response.create"}',
+    ),
+}
 
 
 @pytest.mark.asyncio
-async def test_retry_of_a_pre_upgrade_operation_finds_its_record(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("case", sorted(_PRE_UPGRADE_FRAMES))
+async def test_retry_of_a_pre_upgrade_operation_finds_its_record(monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     """An operation recorded before developer messages stayed inline still fences its identical retry.
 
-    Its key hashed the frame with the developer text in ``instructions``; the
-    retry must find that row instead of dispatching the turn a second time.
+    Its key hashed the frame the old normalizer built (developer and system
+    text in ``instructions``, in input order); the retry must find that row
+    instead of dispatching the turn a second time.
     """
-    from app.core.openai.requests import base_hoisted_request_text
-    from app.modules.proxy._service.http_bridge import request_submit as request_submit_module
     from app.modules.proxy.durable_bridge_repository import (
         durable_bridge_api_key_scope,
         durable_bridge_operation_fingerprint,
@@ -678,24 +720,23 @@ async def test_retry_of_a_pre_upgrade_operation_finds_its_record(monkeypatch: py
     )
     from tests.unit.test_proxy_http_bridge import _make_bridge_session
 
+    raw_input, legacy_text = _PRE_UPGRADE_FRAMES[case]
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     send_text = AsyncMock()
     session = _make_bridge_session(key_value="pre-upgrade-operation")
     session.upstream = cast(UpstreamWebSocket, SimpleNamespace(send_text=send_text, close=AsyncMock()))
     session.durable_session_id = "durable-pre-upgrade-operation"
     session.durable_owner_epoch = 4
-    request_text = json.dumps(
-        {
-            "type": "response.create",
-            "model": "gpt-5.6",
-            "instructions": "",
-            "previous_response_id": "resp-parent",
-            "input": [{"role": "developer", "content": "review only"}, {"role": "user", "content": "continue"}],
-        },
-        separators=(",", ":"),
+    payload = proxy_service.ResponsesRequest.model_validate(
+        {"model": "gpt-5.6", "instructions": "", "previous_response_id": "resp-parent", "input": raw_input}
     )
-    legacy_text = base_hoisted_request_text(request_submit_module._text_without_account_installation_id(request_text))
-    assert legacy_text is not None and '"instructions":"review only"' in legacy_text
+    request_state, request_text = service._prepare_http_bridge_request(
+        payload, {}, api_key=None, api_key_reservation=None
+    )
+    assert request_text != legacy_text
+    request_state.request_id = "req-pre-upgrade-operation"
+    request_state.hard_continuity_anchor = True
+    request_state.skip_request_log = True
     legacy_fingerprint = durable_bridge_operation_fingerprint(
         api_key_scope=durable_bridge_api_key_scope(session.key.api_key_id), request_text=legacy_text
     )
@@ -728,19 +769,6 @@ async def test_retry_of_a_pre_upgrade_operation_finds_its_record(monkeypatch: py
         del kwargs
         return abandoned if request_fingerprint == legacy_fingerprint else fresh
 
-    request_state = proxy_service._WebSocketRequestState(
-        request_id="req-pre-upgrade-operation",
-        model="gpt-5.6",
-        service_tier=None,
-        reasoning_effort=None,
-        api_key_reservation=None,
-        started_at=0.0,
-        hard_continuity_anchor=True,
-        previous_response_id="resp-parent",
-        request_text=request_text,
-        transport="http",
-        skip_request_log=True,
-    )
     service._durable_bridge = cast(
         Any,
         SimpleNamespace(

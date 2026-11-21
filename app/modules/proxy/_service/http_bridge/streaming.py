@@ -1630,7 +1630,7 @@ class _HTTPBridgeStreamingMixin:
         client_full_resend_fresh_upstream_request_account_neutral: bool | None = None
         previous_response_trimmed_input_count: int | None = None
         previous_response_trimmed_input_fingerprint: str | None = None
-        previous_response_trimmed_developer_fingerprints: frozenset[str] | None = None
+        previous_response_trimmed_developer_fingerprints: tuple[str, ...] | None = None
         durable_full_resend_anchor_count: int | None = None
         durable_full_resend_anchor_fingerprint: str | None = None
         durable_full_resend_fresh_payload: ResponsesRequest | None = None
@@ -1742,10 +1742,9 @@ class _HTTPBridgeStreamingMixin:
                 # older anchored attempt never settles once the session is gone.
                 if durable_lookup is not None and not native_codex_full_history:
                     try:
-                        _fresh_state, fresh_replay_text = prepare_bridge_request(
+                        fresh_state, fresh_replay_text = prepare_bridge_request(
                             _http_bridge_payload_without_previous_response_id(payload)
                         )
-                        del _fresh_state
                         existing_attempt = await self._durable_bridge.lookup_recovery_attempt(
                             session_id=durable_lookup.session_id,
                             request_fingerprint=_http_bridge_recovery_attempt_fingerprint(fresh_replay_text),
@@ -1753,7 +1752,7 @@ class _HTTPBridgeStreamingMixin:
                         # An attempt recorded before developer messages stayed
                         # inline hashed the frame with the developer text in
                         # ``instructions``.
-                        legacy_replay_text = base_hoisted_request_text(fresh_replay_text)
+                        legacy_replay_text = base_hoisted_request_text(fresh_replay_text, hoist=fresh_state.base_hoist)
                         if existing_attempt is None and legacy_replay_text is not None:
                             existing_attempt = await self._durable_bridge.lookup_recovery_attempt(
                                 session_id=durable_lookup.session_id,
@@ -3025,7 +3024,7 @@ class _HTTPBridgeStreamingMixin:
                 recovery_payload = effective_payload
                 recovery_anchor_input_count: int | None = None
                 recovery_anchor_input_fingerprint: str | None = None
-                recovery_anchor_developer_fingerprints: frozenset[str] | None = None
+                recovery_anchor_developer_fingerprints: tuple[str, ...] | None = None
                 recovery_anchor_fence_generation: int | None = None
                 recovery_anchor_fence_was_already_denied = False
                 recovery_anchor_fence_response_id: str | None = None
@@ -3106,9 +3105,16 @@ class _HTTPBridgeStreamingMixin:
                             session.last_pending_tool_calls = {}
                         session.last_completed_response_id = durable_lookup.latest_response_id
                         session.last_completed_response_account_id = durable_lookup.account_id
+                        # A durable row carries no developer record: the in-memory one stays only
+                        # when the row describes the same response and stored context.
+                        if (
+                            session.last_completed_input_developer_response_id != durable_lookup.latest_response_id
+                            or session.last_completed_input_count != durable_full_resend_anchor_count
+                            or session.last_completed_input_prefix_fingerprint != durable_full_resend_anchor_fingerprint
+                        ):
+                            session.last_completed_input_developer_fingerprints = None
                         session.last_completed_input_count = durable_full_resend_anchor_count
                         session.last_completed_input_prefix_fingerprint = durable_full_resend_anchor_fingerprint
-                        session.last_completed_input_developer_fingerprints = None
                         _log_http_bridge_event(
                             "owner_forward_recovery_anchor_injected",
                             bridge_session_key,
@@ -3237,9 +3243,16 @@ class _HTTPBridgeStreamingMixin:
             # cross-account previous_response_id (upstream cannot resolve it and
             # would stall with no response.created — a wedged response-create gate).
             session.last_completed_response_account_id = durable_lookup.account_id
+            # A durable row carries no developer record: the in-memory one stays only
+            # when the row describes the same response and stored context.
+            if (
+                session.last_completed_input_developer_response_id != durable_lookup.latest_response_id
+                or session.last_completed_input_count != durable_full_resend_anchor_count
+                or session.last_completed_input_prefix_fingerprint != durable_full_resend_anchor_fingerprint
+            ):
+                session.last_completed_input_developer_fingerprints = None
             session.last_completed_input_count = durable_full_resend_anchor_count
             session.last_completed_input_prefix_fingerprint = durable_full_resend_anchor_fingerprint
-            session.last_completed_input_developer_fingerprints = None
         # --- Session-level previous_response_id injection ---
         # If the client didn't send previous_response_id and the durable
         # lookup didn't inject one, but this bridge session is carrying
@@ -3419,7 +3432,7 @@ class _HTTPBridgeStreamingMixin:
         store_context_trim_applied = False
         store_context_original_count = 0
         store_context_original_fingerprint: str | None = None
-        store_context_original_developer_fingerprints: frozenset[str] | None = None
+        store_context_original_developer_fingerprints: tuple[str, ...] | None = None
         # The stored context is measured on the base-equivalent input (as the
         # old hoist left it); match on that list and trim the wire up to the
         # item behind the stored prefix.
@@ -3452,7 +3465,15 @@ class _HTTPBridgeStreamingMixin:
                             incoming_input_list,
                             stored_count,
                             hoist=store_context_hoist,
-                            stored_developer_fingerprints=session.last_completed_input_developer_fingerprints,
+                            # Only the anchored response's own record applies;
+                            # branching from an older response keeps every
+                            # developer message.
+                            stored_developer_fingerprints=(
+                                session.last_completed_input_developer_fingerprints
+                                if effective_payload.previous_response_id
+                                == session.last_completed_input_developer_response_id
+                                else None
+                            ),
                         )
                     }
                 )

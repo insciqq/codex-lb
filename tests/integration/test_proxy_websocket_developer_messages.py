@@ -181,6 +181,19 @@ def _developer_with(**extra: object) -> dict[str, object]:
     return {**_message("developer", "<permissions instructions>sandbox</permissions instructions>"), **extra}
 
 
+def _receive_terminal(websocket) -> dict[str, object]:
+    while True:
+        event = json.loads(websocket.receive_text())
+        if event.get("type") in {"response.completed", "response.failed", "error"}:
+            return event
+
+
+def _terminal_error_code(terminal: dict[str, object]) -> object:
+    response = terminal.get("response")
+    error = response.get("error") if isinstance(response, dict) else terminal.get("error")
+    return error.get("code") if isinstance(error, dict) else None
+
+
 def _run_anchor_rejection(
     app_instance,
     monkeypatch: pytest.MonkeyPatch,
@@ -188,8 +201,14 @@ def _run_anchor_rejection(
     turn: dict[str, object],
     prewarm: dict[str, object] | None,
     path: str = "/backend-api/codex/responses",
+    resends: tuple[dict[str, object], ...] = (),
 ) -> tuple[dict[str, object], _SequencedUpstreamWebSocket, list[int]]:
-    """Send ``turn`` after an optional prewarm; upstream rejects the turn's anchor."""
+    """Send ``turn`` after an optional prewarm; upstream rejects the turn's anchor.
+
+    Returns the turn's terminal event. ``resends`` are the frames the client
+    sends next on the same socket, as a client told to drop the anchor does;
+    each must complete, the first as ``resp_ws_resent_1`` and so on.
+    """
     first_upstream = _SequencedUpstreamWebSocket(
         [],
         deferred_message_batches=[
@@ -197,7 +216,15 @@ def _run_anchor_rejection(
             _previous_response_not_found("resp_ws_anchor"),
         ],
     )
-    replay_upstream = _SequencedUpstreamWebSocket([], deferred_message_batches=[_response_batch("resp_ws_replayed")])
+    replay_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            *(_response_batch(f"resp_ws_resent_{index}") for index in range(1, len(resends) + 1)),
+            # A replay the proxy must not make still completes, so the
+            # assertions see it.
+            _response_batch("resp_ws_replayed"),
+        ],
+    )
     connects = _install_upstreams(monkeypatch, [first_upstream, replay_upstream])
     headers = _connection_headers("thread-ws-developer-replay")
 
@@ -210,10 +237,10 @@ def _run_anchor_rejection(
                     "response.completed",
                 ]
             websocket.send_text(json.dumps(turn))
-            while True:
-                terminal = json.loads(websocket.receive_text())
-                if terminal.get("type") in {"response.completed", "response.failed", "error"}:
-                    break
+            terminal = _receive_terminal(websocket)
+            for frame in resends:
+                websocket.send_text(json.dumps(frame))
+                assert _receive_terminal(websocket)["type"] == "response.completed"
     return terminal, replay_upstream, connects
 
 
@@ -305,26 +332,32 @@ def test_v1_messages_alias_delta_with_empty_developer_is_not_replayed(app_instan
     assert connects[0] == 1
 
 
-def test_standard_codex_first_turn_after_empty_prewarm_recovers_as_before(app_instance, monkeypatch):
-    """A captured standard Codex first turn chained to an empty prewarm still recovers.
+def test_standard_codex_first_turn_after_empty_prewarm_is_resent_without_its_lost_anchor(app_instance, monkeypatch):
+    """A captured standard Codex first turn chained to an empty prewarm loses its anchor.
 
-    Its developer message no longer moves into ``instructions``; the replay
-    decision must not change because of that.
+    A client-supplied anchor is never replayed without it: the client is told
+    the response is gone and resends the turn without it. The resent turn keeps
+    its developer message in ``input``, without its client item id, as the
+    hoist dropped it.
     """
     body = json.loads(Path("tests/fixtures/codex_bodies/captured_gpt55_standard_http.json").read_text())
     prewarm = {**body, "type": "response.create", "generate": False, "input": []}
     turn = {**body, "type": "response.create", "previous_response_id": "resp_ws_anchor"}
 
-    terminal, replay_upstream, connects = _run_anchor_rejection(app_instance, monkeypatch, turn=turn, prewarm=prewarm)
+    terminal, replay_upstream, connects = _run_anchor_rejection(
+        app_instance, monkeypatch, turn=turn, prewarm=prewarm, resends=({**body, "type": "response.create"},)
+    )
 
-    assert terminal["type"] == "response.completed"
+    assert terminal["type"] == "response.failed"
+    assert _terminal_error_code(terminal) == "previous_response_not_found"
     assert connects[0] == 2
-    # The developer message's client item id is dropped, as the hoist dropped it.
     expected_input = [
         {key: value for key, value in item.items() if not (item.get("role") == "developer" and key == "id")}
         for item in body["input"]
     ]
-    assert json.loads(replay_upstream.sent_text[0])["input"] == expected_input
+    [resent] = [json.loads(text) for text in replay_upstream.sent_text]
+    assert resent.get("previous_response_id") is None
+    assert resent["input"] == expected_input
 
 
 def test_anchored_tool_continuation_trims_echoed_output_around_a_developer_update(app_instance, monkeypatch):
@@ -391,18 +424,36 @@ def test_anchored_tool_continuation_trims_echoed_output_around_a_developer_updat
         ),
     ],
 )
-def test_first_turn_after_empty_prewarm_recovers_as_before(app_instance, monkeypatch, first_turn_input):
-    """Inputs the old hoist kept (a JSON-mode instruction, non-text parts) still count as history."""
+def test_first_turn_resent_after_a_lost_anchor_anchors_the_next_turn(app_instance, monkeypatch, first_turn_input):
+    """Inputs the old hoist kept (a JSON-mode instruction, non-text parts) stay history.
+
+    A chained first turn after an empty prewarm loses its anchor and is not
+    replayed without it; the client resends it without the anchor. The resent
+    turn's stored context is the one its raw request had, so the client's next
+    full history anchors to the resent response and sends only the new turn.
+    """
     turn = _turn(first_turn_input)
     if first_turn_input[0]["role"] == "system":
         turn["text"] = {"format": {"type": "json_object"}}
+    resend = {key: value for key, value in turn.items() if key != "previous_response_id"}
+    next_user = _message("user", "Explain the previous answer in JSON.")
+    follow_up = {**resend, "input": [*first_turn_input, next_user]}
 
-    terminal, _, connects = _run_anchor_rejection(
-        app_instance, monkeypatch, turn=turn, prewarm=dict(_prewarm_frame(), input=[])
+    terminal, replay_upstream, connects = _run_anchor_rejection(
+        app_instance,
+        monkeypatch,
+        turn=turn,
+        prewarm=dict(_prewarm_frame(), input=[]),
+        resends=(resend, follow_up),
     )
 
-    assert terminal["type"] == "response.completed"
+    assert terminal["type"] == "response.failed"
+    assert _terminal_error_code(terminal) == "previous_response_not_found"
     assert connects[0] == 2
+    resent, anchored = [json.loads(text) for text in replay_upstream.sent_text]
+    assert resent.get("previous_response_id") is None
+    assert anchored["previous_response_id"] == "resp_ws_resent_1"
+    assert anchored["input"] == [next_user]
 
 
 def test_full_resend_after_developer_only_turn_is_not_anchored(app_instance, monkeypatch):
@@ -494,31 +545,44 @@ def test_trimmed_lite_resend_keeps_developer_boundaries_for_tool_call_dedupe(app
     assert [item["call_id"] for item in second["input"] if item.get("type") == "function_call"] == ["c1", "c2"]
 
 
-def test_warm_socket_anchor_forwards_a_changed_developer_message(app_instance, monkeypatch):
+_WS_QUESTION = _message("user", "first question")
+_WS_ANSWER = {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "OK"}]}
+_WS_FOLLOW_UP = _message("user", "second question")
+_WS_CHANGED = _message("developer", "sandbox=danger-full-access")
+_WS_FRENCH = _message("developer", "Use French.")
+_WS_ENGLISH = _message("developer", "Use English.")
+
+
+@pytest.mark.parametrize(
+    ("first_input", "second_input", "expected_second_input"),
+    [
+        pytest.param(
+            [_message("developer", "sandbox=read-only"), _WS_QUESTION],
+            [_WS_CHANGED, _WS_QUESTION, _WS_ANSWER, _WS_FOLLOW_UP],
+            [_WS_CHANGED, _WS_ANSWER, _WS_FOLLOW_UP],
+            id="changed-developer",
+        ),
+        # One stored occurrence covers one occurrence: the repeated French
+        # instruction reverses the stored English one and must still go.
+        pytest.param(
+            [_WS_FRENCH, _WS_ENGLISH, _WS_QUESTION],
+            [_WS_FRENCH, _WS_ENGLISH, _WS_QUESTION, _WS_FRENCH, _WS_ANSWER, _WS_FOLLOW_UP],
+            [_WS_FRENCH, _WS_ANSWER, _WS_FOLLOW_UP],
+            id="repeated-instruction-reverses-a-later-one",
+        ),
+    ],
+)
+def test_warm_socket_anchor_forwards_a_changed_developer_message(
+    app_instance, monkeypatch, first_input, second_input, expected_second_input
+):
     """The session anchor carries what the stored turn sent; a changed developer message still goes."""
     upstream = _SequencedUpstreamWebSocket(
         [], deferred_message_batches=[_response_batch("resp_ws_first"), _response_batch("resp_ws_second")]
     )
     _install_upstreams(monkeypatch, [upstream])
-    question = _message("user", "first question")
-    answer = {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "OK"}]}
-    changed = _message("developer", "sandbox=danger-full-access")
-    follow_up = _message("user", "second question")
     frames = [
-        {
-            "type": "response.create",
-            "model": "gpt-5.6-sol",
-            "instructions": "",
-            "input": [_message("developer", "sandbox=read-only"), question],
-            "stream": True,
-        },
-        {
-            "type": "response.create",
-            "model": "gpt-5.6-sol",
-            "instructions": "",
-            "input": [changed, question, answer, follow_up],
-            "stream": True,
-        },
+        {"type": "response.create", "model": "gpt-5.6-sol", "instructions": "", "input": turn_input, "stream": True}
+        for turn_input in (first_input, second_input)
     ]
 
     with TestClient(app_instance) as client:
@@ -535,4 +599,4 @@ def test_warm_socket_anchor_forwards_a_changed_developer_message(app_instance, m
 
     second = json.loads(upstream.sent_text[1])
     assert second["previous_response_id"] == "resp_ws_first"
-    assert second["input"] == [changed, answer, follow_up]
+    assert second["input"] == expected_second_input

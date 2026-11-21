@@ -238,9 +238,11 @@ async def test_proxy_stream_bare_session_spills_under_cap_without_rebinding(asyn
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_attachment", [False, True], ids=["text-marker", "marker-beside-attachment"])
 async def test_codex_goal_restart_retires_unavailable_legacy_owner_and_stays_on_replacement(
     async_client,
     monkeypatch,
+    with_attachment,
 ):
     from sqlalchemy import select
 
@@ -289,14 +291,22 @@ async def test_codex_goal_restart_retires_unavailable_legacy_owner_and_stays_on_
 
     monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
     headers = {"session_id": raw_session}
+    marker_text = '<codex_internal_context source="goal">\nContinue working toward the active thread goal.'
+    # The old hoist moved the marker text out of a mixed message and kept the
+    # self-contained file as a user item; the marker still counts.
+    marker_content: object = (
+        [
+            {"type": "input_text", "text": marker_text},
+            {"type": "input_file", "filename": "notes.txt", "file_data": "data:text/plain;base64,bm90ZXM="},
+        ]
+        if with_attachment
+        else marker_text
+    )
     restart_payload = {
         "model": "gpt-5.1",
         "instructions": "Continue the existing task.",
         "input": [
-            {
-                "role": "developer",
-                "content": ('<codex_internal_context source="goal">\nContinue working toward the active thread goal.'),
-            },
+            {"role": "developer", "content": marker_content},
             {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
         ],
         "stream": True,

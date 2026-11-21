@@ -3405,7 +3405,7 @@ class _WebSocketMixin:
             responses_payload = responses_payload.model_copy(update={"client_metadata": client_metadata})
         previous_response_trimmed_input_count: int | None = None
         previous_response_trimmed_input_fingerprint: str | None = None
-        previous_response_trimmed_developer_fingerprints: frozenset[str] | None = None
+        previous_response_trimmed_developer_fingerprints: tuple[str, ...] | None = None
         # A client-supplied ``previous_response_id`` is never replayed without
         # its anchor: the proxy cannot tell the client's delta from a full
         # history, so a stale anchor surfaces ``previous_response_not_found``
@@ -3431,7 +3431,7 @@ class _WebSocketMixin:
         original_full_resend_payload: ResponsesRequest | None = None
         original_input_item_count: int | None = None
         original_input_fingerprint: str | None = None
-        original_input_developer_fingerprints: frozenset[str] | None = None
+        original_input_developer_fingerprints: tuple[str, ...] | None = None
         # Classify restart authority from the complete normalized client body,
         # before ordinary direct-WebSocket continuity injects a
         # ``previous_response_id`` and trims historical input. That injected

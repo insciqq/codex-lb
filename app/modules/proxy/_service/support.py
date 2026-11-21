@@ -28,6 +28,7 @@ from app.core.errors import OpenAIErrorEnvelope, OpenAIErrorParam, openai_error
 from app.core.openai.model_registry import get_model_registry
 from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import classify_event_type
+from app.core.openai.requests import BaseHoist
 from app.core.plan_types import account_plan_matches_allowed
 from app.core.resilience.network_recovery import PROCESS_NETWORK_UNAVAILABLE_CODE
 from app.core.resilience.overload import is_local_overload_error_code
@@ -1286,7 +1287,9 @@ class _WebSocketRequestState:
     input_full_fingerprint: str | None = None
     # Fingerprints of the developer messages the old hoist would have moved,
     # in the full client input (``None``: unknown).
-    input_developer_fingerprints: frozenset[str] | None = None
+    input_developer_fingerprints: tuple[str, ...] | None = None
+    # The old hoist's decisions for this request's raw body (see ``BaseHoist``).
+    base_hoist: BaseHoist | None = None
     api_key_reservation_last_touch_at: float = field(default_factory=time.monotonic)
     api_key_reservation_heartbeat_stop: asyncio.Event | None = None
     api_key_reservation_heartbeat_task: asyncio.Task[None] | None = None
@@ -1412,8 +1415,10 @@ class _HTTPBridgeSession:
     turn_state_alias_registration_generations: dict[str, int] = field(default_factory=dict)
     previous_response_alias_registration_generations: dict[str, int] = field(default_factory=dict)
     last_completed_input_count: int = 0
-    # Developer messages of the stored input (see ``input_developer_fingerprints``).
-    last_completed_input_developer_fingerprints: frozenset[str] | None = None
+    # Developer messages of the stored input (see ``input_developer_fingerprints``),
+    # and the completed response they belong to.
+    last_completed_input_developer_fingerprints: tuple[str, ...] | None = None
+    last_completed_input_developer_response_id: str | None = None
     last_completed_response_id: str | None = None
     # Account that owns ``last_completed_response_id``. A previous_response_id
     # anchor is account-scoped upstream, so it may only be replayed on the same
@@ -1597,7 +1602,7 @@ class _WebSocketContinuityState:
     last_completed_input_count: int = 0
     last_completed_response_id: str | None = None
     last_completed_input_prefix_fingerprint: str | None = None
-    last_completed_input_developer_fingerprints: frozenset[str] | None = None
+    last_completed_input_developer_fingerprints: tuple[str, ...] | None = None
     last_pending_function_call_ids: list[str] = field(default_factory=list)
     last_pending_tool_call_types: dict[str, str] = field(default_factory=dict)
     responses_lite_model: str | None = None
@@ -1608,7 +1613,7 @@ class _WebSocketContinuityState:
 class _WebSocketContinuityAnchor:
     previous_response_id: str
     stored_input_item_count: int
-    stored_developer_fingerprints: frozenset[str] | None = None
+    stored_developer_fingerprints: tuple[str, ...] | None = None
 
 
 @dataclass(slots=True)

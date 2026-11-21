@@ -781,7 +781,7 @@ class _HTTPBridgeRequestSubmitMixin:
     ) -> tuple[_WebSocketRequestState, str]:
         deduped_replayed_input_count: int | None = None
         deduped_replayed_input_fingerprint: str | None = None
-        deduped_replayed_developer_fingerprints: frozenset[str] | None = None
+        deduped_replayed_developer_fingerprints: tuple[str, ...] | None = None
         hoist = responses_payload_base_hoist(payload)
         deduped_replayed_tool_call_count = 0
         if payload.previous_response_id is not None and isinstance(payload.input, list):
@@ -828,7 +828,7 @@ class _HTTPBridgeRequestSubmitMixin:
         forwarded_service_tier = _normalize_service_tier_value(upstream_payload.get("service_tier"))
         input_item_count = 0
         input_full_fingerprint: str | None = None
-        input_developer_fingerprints: frozenset[str] | None = None
+        input_developer_fingerprints: tuple[str, ...] | None = None
         payload_input = payload.input
         if isinstance(payload_input, list):
             payload_input_list = cast(list[JsonValue], payload_input)
@@ -881,6 +881,7 @@ class _HTTPBridgeRequestSubmitMixin:
             generate_false_prewarm=generate_false_prewarm,
         )
         request_state.input_developer_fingerprints = input_developer_fingerprints
+        request_state.base_hoist = hoist
         if deduped_replayed_input_count is not None:
             request_state.input_item_count = deduped_replayed_input_count
             request_state.input_full_fingerprint = deduped_replayed_input_fingerprint
@@ -1390,7 +1391,9 @@ class _HTTPBridgeRequestSubmitMixin:
                     # A turn recorded before developer messages stayed inline
                     # hashed its frame with the developer text in
                     # ``instructions``; keep matching that record.
-                    legacy_text = base_hoisted_request_text(_text_without_account_installation_id(text_data))
+                    legacy_text = base_hoisted_request_text(
+                        _text_without_account_installation_id(text_data), hoist=request_state.base_hoist
+                    )
                     if legacy_text is None:
                         return None
                     legacy_fingerprint = durable_bridge_operation_fingerprint(

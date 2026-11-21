@@ -1436,7 +1436,9 @@ def _refresh_websocket_request_input_fingerprint_from_text(request_state: _WebSo
         request_state.input_full_fingerprint = None
         request_state.input_developer_fingerprints = None
         return
-    hoist = responses_payload_base_hoist(payload)
+    # The frame is sanitized; the request's own hoist decisions (recorded on
+    # the raw body) keep the stored context the next turn will match.
+    hoist = request_state.base_hoist if request_state.base_hoist is not None else responses_payload_base_hoist(payload)
     request_state.input_item_count, request_state.input_full_fingerprint = _facade()._input_context(
         cast(list[JsonValue], input_items), hoist=hoist
     )
