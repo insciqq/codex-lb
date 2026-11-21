@@ -90,7 +90,7 @@ The Helm chart auto-configures HTTP `/responses` owner handoff for multi-replica
 
 In multi-replica setups, replicas must share the same encryption key (the Helm chart default) for bootstrap-token restart recovery and encrypted-data access to work.
 
-**Upgrading to the release that keeps developer messages in `input`:** stop the old replicas first in a multi-replica install. A replica of this release signs owner handoffs with developer messages inline; a replica of an earlier release hoists them while validating the forwarded body, so its signature check fails and the turn returns `400 bridge_forward_invalid` while both releases serve. The chart's default `RollingUpdate` keeps old and new pods serving side by side, so scale to zero before `helm upgrade` (or stop the old colour of a blue/green pair). Single-replica installs are not affected.
+**Upgrading to the release that keeps developer messages in `input`:** stop the old replicas first in a multi-replica install. A replica of this release signs owner handoffs with developer messages inline; a replica of an earlier release hoists them while validating the forwarded body, so its signature check fails and the turn returns `400 bridge_forward_invalid` while both releases serve. The chart's default `RollingUpdate` keeps old and new pods serving side by side, so scale to zero before `helm upgrade` (`kubectl scale statefulset/<name> --replicas=0`; the chart deploys a StatefulSet), or stop the old colour of a blue/green pair. Single-replica installs are not affected.
 
 ### Account concurrency caps are cluster-wide
 

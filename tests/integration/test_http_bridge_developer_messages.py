@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import cast
 
 import pytest
@@ -75,6 +76,23 @@ _ENGLISH = _m("developer", "Use English.")
 _MIXED_ENGLISH = _mixed_developer("Use English")
 _MIXED_FRENCH = _mixed_developer("only use French")
 
+
+def _collaboration_mode(mode: str) -> dict[str, object]:
+    return _m("developer", f"<collaboration_mode># {mode} Mode</collaboration_mode>")
+
+
+def _baseline_developer(skills: str) -> dict[str, object]:
+    """A captured-style two-part developer message: the Default mode and the skills list."""
+    item = _collaboration_mode("Default")
+    cast(list[object], item["content"]).append({"type": "input_text", "text": skills})
+    return item
+
+
+_BASELINE_OLD = _baseline_developer("Skills: testing")
+_BASELINE_NEW = _baseline_developer("Skills: testing, linting")
+_PLAN = _collaboration_mode("Plan")
+_PLAN_HISTORY = [_ENV, _U1, _A1, _PLAN, _U2]
+
 _INSERT_CASES = {
     "append-after-output": ([_DEV0, _ENV, _U1], [_DEV0, _ENV, _U1, _A1, _DEV_NEW, _U2], [_A1, _DEV_NEW, _U2]),
     "insert-inside-prefix": ([_DEV0, _ENV, _U1], [_DEV0, _DEV_NEW, _ENV, _U1, _A1, _U2], [_DEV_NEW, _A1, _U2]),
@@ -96,6 +114,13 @@ _INSERT_CASES = {
         [_FRENCH, _ENGLISH, _U1],
         [_FRENCH, _ENGLISH, _U1, _FRENCH, _A1, _U2],
         [_FRENCH, _A1, _U2],
+    ),
+    # Refreshing an earlier developer message must not make it the last one:
+    # every later developer message of the range follows it again.
+    "skills-refresh": (
+        [_BASELINE_OLD, *_PLAN_HISTORY],
+        [_BASELINE_NEW, *_PLAN_HISTORY, _A1, _U3],
+        [_BASELINE_NEW, _PLAN, _A1, _U3],
     ),
 }
 
@@ -191,3 +216,47 @@ async def test_warm_bridge_judges_developer_messages_against_the_anchored_respon
     frames = [json.loads(text) for text in upstreams[0].sent_text]
     assert len(frames) == 3
     assert missing in json.dumps(frames[2])
+
+
+_MODE_PATTERN = re.compile(r"<collaboration_mode># (\w+) Mode</collaboration_mode>")
+
+
+def _last_collaboration_mode(items: list[dict[str, object]]) -> str | None:
+    modes = [
+        mode
+        for item in items
+        if item.get("role") == "developer"
+        for mode in _MODE_PATTERN.findall(json.dumps(item.get("content")))
+    ]
+    return modes[-1] if modes else None
+
+
+_U4 = _m("user", "fourth question")
+_U5 = _m("user", "fifth question")
+_MODE_ROUND_TRIP_TURNS = [
+    [_BASELINE_OLD, _ENV, _U1],
+    [_BASELINE_OLD, _ENV, _U1, _A1, _PLAN, _U2],
+    [_BASELINE_NEW, _ENV, _U1, _A1, _PLAN, _U2, _A1, _U3],
+    [_BASELINE_NEW, _ENV, _U1, _A1, _PLAN, _U2, _A1, _U3, _A1, _collaboration_mode("Default"), _U4],
+    [_BASELINE_NEW, _ENV, _U1, _A1, _PLAN, _U2, _A1, _U3, _A1, _collaboration_mode("Default"), _U4, _A1, _U5],
+]
+
+
+@pytest.mark.asyncio
+async def test_warm_bridge_keeps_the_clients_last_collaboration_mode(async_client, app_instance, monkeypatch):
+    """Default, then Plan, a skills refresh, then Default again: the chain upstream ends with the client's mode."""
+    del app_instance
+    upstreams = await _run_bridge_turns(
+        async_client, monkeypatch, "mode_round_trip", [(turn, None) for turn in _MODE_ROUND_TRIP_TURNS]
+    )
+
+    assert len(upstreams) == 1
+    frames = [json.loads(text) for text in upstreams[0].sent_text]
+    assert [frame.get("previous_response_id") for frame in frames] == [
+        None,
+        *(f"resp_conn1_{index}" for index in range(1, len(frames))),
+    ]
+    chain: list[dict[str, object]] = []
+    for frame, client_input in zip(frames, _MODE_ROUND_TRIP_TURNS, strict=True):
+        chain.extend(frame["input"])
+        assert _last_collaboration_mode(chain) == _last_collaboration_mode(client_input)

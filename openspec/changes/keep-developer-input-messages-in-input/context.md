@@ -45,7 +45,8 @@ question about it):
   `instructions`) and skips one the stored turn already sent. The stored turn's developer messages are recorded for that exact
   response: a request anchored to another response, a turn without a stored prefix, or a reattach from a durable row
   that differs from the in-memory record leaves them unknown, so that one request sends the developer messages of the
-  trimmed range again. Each recorded occurrence covers one occurrence on the next request; a developer message whose
+  trimmed range again. Each recorded occurrence covers one occurrence on the next request, and once one developer message of the range is
+  sent every later one in it is sent too, so the last instruction upstream is the client's last one; a developer message whose
   attachment the hoist kept as a `user` item is matched as a whole message.
 - Operation keys: durable operation and recovery-attempt records from before the change still match an identical
   retry, through a second lookup of the key rebuilt in the old frame shape (the `instructions` text the old hoist
@@ -64,6 +65,8 @@ question about it):
   single-replica deployments are unaffected.
 - Transitional: a recovery checkpoint recorded before the change in the `REPLAYED` state is keyed with the developer
   text in `instructions`; an identical retry after the upgrade records a new checkpoint under the new key and can
-  dispatch that consumed turn once more.
+  dispatch that consumed turn once more. Rollback to the previous release is not symmetric for operation keys either:
+  records written in the new frame shape are not found under the old key, so an identical retry of a consumed turn
+  can dispatch once more.
 - Limitation: `system` messages are still hoisted, because upstream rejects them in `input`. A `system` message on a
   request chained through `previous_response_id` therefore applies to that request only.

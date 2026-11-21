@@ -267,7 +267,8 @@ MUST leave it unknown. The trimmed range runs up to the next base-equivalent
 item after the prefix; within it, each such developer message MUST consume one
 recorded occurrence of its fingerprint and is then not sent again, and a new,
 changed or additional occurrence MUST be sent, in client order, ahead of the
-remainder. The record MUST be used only when the request is anchored to the
+remainder, and once one is sent every later such message in the range MUST be
+sent too. The record MUST be used only when the request is anchored to the
 response it was recorded for. When it is unknown (or a stored context was
 hydrated from a durable row that differs from it), every such developer
 message in that range MUST be sent.
@@ -319,6 +320,11 @@ keep the request on its owner.
 - **GIVEN** a warm session whose stored turn sent `Use French`, then `Use English`
 - **WHEN** the next request repeats both and adds `Use French` again after the stored history
 - **THEN** the anchored request sends the added `Use French`
+
+#### Scenario: A refreshed earlier developer message does not override a later one
+- **GIVEN** a warm session whose stored turn sent a Default-mode developer message with a skills list, history, and a later Plan-mode developer message
+- **WHEN** the next request refreshes only the skills list
+- **THEN** the anchored request sends the refreshed message followed by the Plan-mode message
 
 #### Scenario: A changed instruction beside an unchanged attachment reaches upstream
 - **GIVEN** a warm session whose stored turn sent a developer message with text and a file

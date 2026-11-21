@@ -55,3 +55,5 @@
   developer-only turn), pre-upgrade operation keys against frames captured from the old normalizer (developer before
   system, blank developer), a JSON-kept developer id that keeps failover on the owner, the next turn after a WebSocket
   resend, compact consumed-pair cleanup behind a trailing developer message, and the goal marker beside an attachment.
+- [x] 2.7 A skills refresh of an earlier developer message keeps the later Plan-mode message, and a Default, Plan,
+  Default round trip keeps the client's last collaboration mode upstream (HTTP bridge and WebSocket).

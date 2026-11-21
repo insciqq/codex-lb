@@ -311,7 +311,10 @@ def _wire_remainder_after_stored_prefix(
     moved or changed are matched in order against the stored turn's
     (``stored_developer_fingerprints``): each match consumes one recorded
     occurrence and goes, and a new, changed or extra occurrence is sent, in
-    client order, because the anchor cannot supply it. An unknown record
+    client order, because the anchor cannot supply it. Once one is sent, every
+    later developer message in the range is sent too, so the instruction order
+    upstream ends with the client's last one (a refreshed earlier message must
+    not override a later one the anchor already carries). An unknown record
     (``None``) sends every such message in the range.
     """
     items = list(input_items)
@@ -325,7 +328,7 @@ def _wire_remainder_after_stored_prefix(
     for index, item in enumerate(items[:range_end]):
         if index not in altered:
             continue
-        if remaining is not None:
+        if remaining is not None and not kept:
             fingerprint = _fingerprint_input_items([item])
             if remaining[fingerprint] > 0:
                 remaining[fingerprint] -= 1

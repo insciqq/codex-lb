@@ -8,8 +8,11 @@ replay heuristics must still judge conversation history without them.
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -553,6 +556,22 @@ _WS_FRENCH = _message("developer", "Use French.")
 _WS_ENGLISH = _message("developer", "Use English.")
 
 
+def _ws_mode(mode: str) -> dict[str, object]:
+    return _message("developer", f"<collaboration_mode># {mode} Mode</collaboration_mode>")
+
+
+def _ws_baseline(skills: str) -> dict[str, object]:
+    """A captured-style two-part developer message: the Default mode and the skills list."""
+    item = _ws_mode("Default")
+    return {**item, "content": [*cast(list[object], item["content"]), {"type": "input_text", "text": skills}]}
+
+
+_WS_BASELINE_OLD = _ws_baseline("Skills: testing")
+_WS_BASELINE_NEW = _ws_baseline("Skills: testing, linting")
+_WS_PLAN = _ws_mode("Plan")
+_WS_THIRD = _message("user", "third question")
+
+
 @pytest.mark.parametrize(
     ("first_input", "second_input", "expected_second_input"),
     [
@@ -569,6 +588,14 @@ _WS_ENGLISH = _message("developer", "Use English.")
             [_WS_FRENCH, _WS_ENGLISH, _WS_QUESTION, _WS_FRENCH, _WS_ANSWER, _WS_FOLLOW_UP],
             [_WS_FRENCH, _WS_ANSWER, _WS_FOLLOW_UP],
             id="repeated-instruction-reverses-a-later-one",
+        ),
+        # A refreshed earlier developer message is followed again by the later
+        # ones of the range, so Plan stays the last mode.
+        pytest.param(
+            [_WS_BASELINE_OLD, _WS_QUESTION, _WS_ANSWER, _WS_PLAN, _WS_FOLLOW_UP],
+            [_WS_BASELINE_NEW, _WS_QUESTION, _WS_ANSWER, _WS_PLAN, _WS_FOLLOW_UP, _WS_ANSWER, _WS_THIRD],
+            [_WS_BASELINE_NEW, _WS_PLAN, _WS_ANSWER, _WS_THIRD],
+            id="skills-refresh",
         ),
     ],
 )
@@ -600,3 +627,65 @@ def test_warm_socket_anchor_forwards_a_changed_developer_message(
     second = json.loads(upstream.sent_text[1])
     assert second["previous_response_id"] == "resp_ws_first"
     assert second["input"] == expected_second_input
+
+
+_WS_MODE_PATTERN = re.compile(r"<collaboration_mode># (\w+) Mode</collaboration_mode>")
+
+
+def _ws_last_mode(items: Sequence[Mapping[str, object]]) -> str | None:
+    modes = [
+        mode
+        for item in items
+        if item.get("role") == "developer"
+        for mode in _WS_MODE_PATTERN.findall(json.dumps(item.get("content")))
+    ]
+    return modes[-1] if modes else None
+
+
+def test_warm_socket_keeps_the_clients_last_collaboration_mode(app_instance, monkeypatch):
+    """Default, then Plan, a skills refresh, then Default again: the chain upstream ends with the client's mode."""
+    history = [_WS_QUESTION, _WS_ANSWER, _WS_PLAN, _WS_FOLLOW_UP]
+    default_again = [_WS_ANSWER, _ws_mode("Default"), _message("user", "fourth question")]
+    turns: list[list[Mapping[str, object]]] = [
+        [_WS_BASELINE_OLD, _WS_QUESTION],
+        [_WS_BASELINE_OLD, *history],
+        [_WS_BASELINE_NEW, *history, _WS_ANSWER, _WS_THIRD],
+        [_WS_BASELINE_NEW, *history, _WS_ANSWER, _WS_THIRD, *default_again],
+        [_WS_BASELINE_NEW, *history, _WS_ANSWER, _WS_THIRD, *default_again, _WS_ANSWER, _message("user", "fifth")],
+    ]
+    upstream = _SequencedUpstreamWebSocket(
+        [], deferred_message_batches=[_response_batch(f"resp_ws_mode_{index}") for index in range(len(turns))]
+    )
+    _install_upstreams(monkeypatch, [upstream])
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"session_id": "thread-ws-mode-round-trip", "openai-beta": "responses_websockets=2026-02-06"},
+        ) as websocket:
+            for turn_input in turns:
+                websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "response.create",
+                            "model": "gpt-5.6-sol",
+                            "instructions": "",
+                            "input": turn_input,
+                            "stream": True,
+                        }
+                    )
+                )
+                assert [json.loads(websocket.receive_text())["type"] for _ in range(2)] == [
+                    "response.created",
+                    "response.completed",
+                ]
+
+    frames = [json.loads(text) for text in upstream.sent_text]
+    assert [frame.get("previous_response_id") for frame in frames] == [
+        None,
+        *(f"resp_ws_mode_{index}" for index in range(len(turns) - 1)),
+    ]
+    chain: list[dict[str, object]] = []
+    for frame, client_input in zip(frames, turns, strict=True):
+        chain.extend(frame["input"])
+        assert _ws_last_mode(chain) == _ws_last_mode(client_input)
