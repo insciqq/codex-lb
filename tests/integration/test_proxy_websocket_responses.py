@@ -4609,31 +4609,35 @@ def test_backend_responses_websocket_echoes_existing_turn_state_header(app_insta
 
 
 def test_v1_responses_websocket_reuses_upstream_for_sequential_requests(app_instance, monkeypatch):
+    # The queue starts empty and each send releases one batch, so the second
+    # turn's frames cannot reach the client before the second request has
+    # been dispatched upstream (the fixture releases a batch on every send).
     first_upstream = _SequencedUpstreamWebSocket(
-        [
-            _FakeUpstreamMessage(
-                "text",
-                text=json.dumps(
-                    {"type": "response.created", "response": {"id": "resp_ws_first", "status": "in_progress"}},
-                    separators=(",", ":"),
-                ),
-            ),
-            _FakeUpstreamMessage(
-                "text",
-                text=json.dumps(
-                    {
-                        "type": "response.completed",
-                        "response": {
-                            "id": "resp_ws_first",
-                            "status": "completed",
-                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
-                        },
-                    },
-                    separators=(",", ":"),
-                ),
-            ),
-        ],
+        [],
         deferred_message_batches=[
+            [
+                _FakeUpstreamMessage(
+                    "text",
+                    text=json.dumps(
+                        {"type": "response.created", "response": {"id": "resp_ws_first", "status": "in_progress"}},
+                        separators=(",", ":"),
+                    ),
+                ),
+                _FakeUpstreamMessage(
+                    "text",
+                    text=json.dumps(
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp_ws_first",
+                                "status": "completed",
+                                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                ),
+            ],
             [
                 _FakeUpstreamMessage(
                     "text",
@@ -4656,7 +4660,7 @@ def test_v1_responses_websocket_reuses_upstream_for_sequential_requests(app_inst
                         separators=(",", ":"),
                     ),
                 ),
-            ]
+            ],
         ],
     )
     connect_calls: list[dict[str, object]] = []
