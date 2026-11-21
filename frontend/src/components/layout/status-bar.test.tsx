@@ -193,7 +193,7 @@ describe("StatusBar", () => {
           updateAvailable: true,
           checkedAt: "2026-05-26T00:00:00Z",
           source: "github",
-          releaseUrl: "https://github.com/Soju06/codex-lb/releases/latest",
+          releaseUrl: "https://github.com/insciqq/codex-lb/releases/latest",
         }),
       ),
     );
@@ -204,7 +204,7 @@ describe("StatusBar", () => {
       name: "New version available: 1.20.0. Open release notes.",
     });
 
-    expect(link).toHaveAttribute("href", "https://github.com/Soju06/codex-lb/releases/latest");
+    expect(link).toHaveAttribute("href", "https://github.com/insciqq/codex-lb/releases/latest");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer");
   });

@@ -94,10 +94,11 @@ floating tags. Images are built by GitHub Actions, never locally.
 * It builds once and pushes by digest, signs build provenance for that
   digest, and only then points both tags at it. A re-run of failed jobs
   re-signs or re-tags the same digest without rebuilding.
-* The dashboard's update notice compares the running version with
-  upstream's latest GitHub release and ignores `+fork.N`. On the 1.25.0
-  line an upstream `v1.25.0` is therefore not announced, a later upstream
-  release is, and the notice links to upstream's release page.
+* The dashboard's update notice polls the fork's latest GitHub release.
+  It compares the tag `v<major>.<minor>.<patch>-fork.<n>` with the running
+  `<major>.<minor>.<patch>+fork.<n>` as numbers (a build without `+fork.N`
+  counts as fork 0), ignores tags of any other shape, and links to the
+  fork's release page. Upstream releases are never announced.
 * A fork release is a version tag plus its GHCR image, and each version tag
   also gets a GitHub Release with release notes: see the fork's
   [Releases](https://github.com/insciqq/codex-lb/releases) and

@@ -26,70 +26,62 @@ def _mock_session(response: MagicMock) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_runtime_version_reports_update_available_for_newer_github_release() -> None:
-    service = RuntimeVersionService(current_version="1.19.0", ttl_seconds=60)
-    session = _mock_session(_mock_response(json_data={"tag_name": "v1.20.0"}))
+async def test_runtime_version_reports_newer_fork_release() -> None:
+    service = RuntimeVersionService(current_version="1.25.0+fork.1", ttl_seconds=60)
+    session = _mock_session(_mock_response(json_data={"tag_name": "v1.25.0-fork.2"}))
 
     with patch("app.modules.runtime.service.aiohttp.ClientSession", return_value=session):
         status = await service.get_version_status()
 
-    assert status.current_version == "1.19.0"
-    assert status.latest_version == "1.20.0"
+    assert status.current_version == "1.25.0+fork.1"
+    assert status.latest_version == "1.25.0-fork.2"
     assert status.update_available is True
     assert status.source == "github"
-    assert status.release_url == "https://github.com/Soju06/codex-lb/releases/latest"
+    assert status.release_url == "https://github.com/insciqq/codex-lb/releases/latest"
+    assert session.get.call_args.args[0] == "https://api.github.com/repos/insciqq/codex-lb/releases/latest"
 
 
 @pytest.mark.asyncio
-async def test_runtime_version_does_not_report_update_for_same_release() -> None:
-    service = RuntimeVersionService(current_version="1.19.0", ttl_seconds=60)
-    session = _mock_session(_mock_response(json_data={"tag_name": "v1.19.0"}))
-
-    with patch("app.modules.runtime.service.aiohttp.ClientSession", return_value=session):
-        status = await service.get_version_status()
-
-    assert status.latest_version == "1.19.0"
-    assert status.update_available is False
-
-
-@pytest.mark.asyncio
-async def test_runtime_version_reports_stable_release_as_update_for_current_beta() -> None:
-    service = RuntimeVersionService(current_version="1.20.0-beta.1", ttl_seconds=60)
-    session = _mock_session(_mock_response(json_data={"tag_name": "v1.20.0"}))
-
-    with patch("app.modules.runtime.service.aiohttp.ClientSession", return_value=session):
-        status = await service.get_version_status()
-
-    assert status.latest_version == "1.20.0"
-    assert status.update_available is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("latest_tag", "update_available"), [("v1.25.1", True), ("v1.25.0", False)])
-async def test_runtime_version_ignores_build_metadata_on_current_version(
-    latest_tag: str, update_available: bool
+@pytest.mark.parametrize(
+    ("current_version", "latest_tag", "update_available"),
+    [
+        ("1.25.0+fork.2", "v1.25.0-fork.2", False),
+        ("1.25.0+fork.3", "v1.25.0-fork.2", False),
+        ("1.25.0+fork.9", "v1.25.1-fork.1", True),
+        ("1.25.0+fork.1", "v1.24.9-fork.9", False),
+        ("1.25.0+fork.2", "v1.25.0-fork.10", True),
+        # A build without the fork suffix compares as fork 0.
+        ("1.25.0", "v1.25.0-fork.1", True),
+        ("1.26.0", "v1.25.0-fork.4", False),
+        # A running version that is not a release spelling never shows a notice.
+        ("1.25.0-beta.9", "v1.25.0-fork.2", False),
+    ],
+)
+async def test_runtime_version_compares_fork_numbers(
+    current_version: str, latest_tag: str, update_available: bool
 ) -> None:
+    service = RuntimeVersionService(current_version=current_version, ttl_seconds=60)
+    session = _mock_session(_mock_response(json_data={"tag_name": latest_tag}))
+
+    with patch("app.modules.runtime.service.aiohttp.ClientSession", return_value=session):
+        status = await service.get_version_status()
+
+    assert status.latest_version == latest_tag.removeprefix("v")
+    assert status.update_available is update_available
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("latest_tag", ["v1.26.0", "v1.25.0-beta.1", "v1.25.0-fork.0", "latest"])
+async def test_runtime_version_ignores_tags_that_are_not_fork_releases(latest_tag: str) -> None:
     service = RuntimeVersionService(current_version="1.25.0+fork.1", ttl_seconds=60)
     session = _mock_session(_mock_response(json_data={"tag_name": latest_tag}))
 
     with patch("app.modules.runtime.service.aiohttp.ClientSession", return_value=session):
         status = await service.get_version_status()
 
-    assert status.current_version == "1.25.0+fork.1"
-    assert status.latest_version == latest_tag.removeprefix("v")
-    assert status.update_available is update_available
-
-
-@pytest.mark.asyncio
-async def test_runtime_version_compares_prerelease_identifiers() -> None:
-    service = RuntimeVersionService(current_version="1.20.0-beta.1", ttl_seconds=60)
-    session = _mock_session(_mock_response(json_data={"tag_name": "v1.20.0-beta.2"}))
-
-    with patch("app.modules.runtime.service.aiohttp.ClientSession", return_value=session):
-        status = await service.get_version_status()
-
-    assert status.latest_version == "1.20.0-beta.2"
-    assert status.update_available is True
+    assert status.latest_version is None
+    assert status.update_available is False
+    assert status.source is None
 
 
 @pytest.mark.asyncio
@@ -124,7 +116,7 @@ async def test_runtime_version_caches_failed_lookup() -> None:
 async def test_runtime_version_uses_github_token_when_available(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "github-secret")
     service = RuntimeVersionService(current_version="1.19.0", ttl_seconds=60)
-    session = _mock_session(_mock_response(json_data={"tag_name": "v1.20.0"}))
+    session = _mock_session(_mock_response(json_data={"tag_name": "v1.19.0-fork.1"}))
 
     with patch("app.modules.runtime.service.aiohttp.ClientSession", return_value=session):
         status = await service.get_version_status()
@@ -138,7 +130,7 @@ async def test_runtime_version_uses_github_token_when_available(monkeypatch) -> 
 async def test_runtime_version_omits_github_token_when_unavailable(monkeypatch) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     service = RuntimeVersionService(current_version="1.19.0", ttl_seconds=60)
-    session = _mock_session(_mock_response(json_data={"tag_name": "v1.20.0"}))
+    session = _mock_session(_mock_response(json_data={"tag_name": "v1.19.0-fork.1"}))
 
     with patch("app.modules.runtime.service.aiohttp.ClientSession", return_value=session):
         await service.get_version_status()
@@ -158,9 +150,9 @@ async def test_runtime_version_refetches_failed_lookup_after_failure_ttl() -> No
     assert failed.update_available is False
     service._cached_at = time.monotonic() - 2
 
-    successful_session = _mock_session(_mock_response(json_data={"tag_name": "v1.20.0"}))
+    successful_session = _mock_session(_mock_response(json_data={"tag_name": "v1.19.0-fork.1"}))
     with patch("app.modules.runtime.service.aiohttp.ClientSession", return_value=successful_session):
         recovered = await service.get_version_status()
 
-    assert recovered.latest_version == "1.20.0"
+    assert recovered.latest_version == "1.19.0-fork.1"
     assert recovered.update_available is True

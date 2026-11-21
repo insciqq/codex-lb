@@ -52,18 +52,26 @@ Explicit configuration MUST still override auto-detection.
 
 The service SHALL expose a dashboard-auth protected runtime version status API that reports the running codex-lb version, the latest known GitHub release version when available, whether an update is available, and the time of the latest lookup attempt. The lookup MUST be cached in-process to avoid per-request GitHub traffic, and lookup failures MUST NOT cause the API to fail.
 
-#### Scenario: Latest release is newer than current version
+In this fork the lookup MUST query the fork's latest release (`insciqq/codex-lb`) and the release link MUST point to the fork's release page. A release tag MUST have the form `v<major>.<minor>.<patch>-fork.<n>` and the running version the form `<major>.<minor>.<patch>+fork.<n>`, where a running version without `+fork.<n>` counts as fork `0`; both MUST be compared as the numeric tuple `(major, minor, patch, n)`. A tag of any other form MUST be treated as a failed lookup, and a running version of any other form MUST NOT report an update.
 
-- **WHEN** the running version is `1.19.0`
-- **AND** the GitHub latest release tag is `v1.20.0`
-- **THEN** the runtime version status reports `currentVersion: "1.19.0"`, `latestVersion: "1.20.0"`, and `updateAvailable: true`
+#### Scenario: Newer fork release is available
 
-#### Scenario: Build metadata on the running version is ignored for precedence
+- **WHEN** the running version is `1.25.0+fork.1`
+- **AND** the fork's latest release tag is `v1.25.0-fork.2`
+- **THEN** the runtime version status reports `currentVersion: "1.25.0+fork.1"`, `latestVersion: "1.25.0-fork.2"`, and `updateAvailable: true`
+- **AND** `releaseUrl` is `https://github.com/insciqq/codex-lb/releases/latest`
 
-- **WHEN** the running version carries SemVer build metadata, such as `1.25.0+fork.1`
-- **THEN** the runtime version status compares only the version before `+`
-- **AND** a GitHub latest release tag `v1.25.1` reports `updateAvailable: true`
-- **AND** a GitHub latest release tag `v1.25.0` reports `updateAvailable: false`
+#### Scenario: Fork numbers compare numerically
+
+- **WHEN** the running version is `1.25.0+fork.2`
+- **THEN** a latest release tag `v1.25.0-fork.10` reports `updateAvailable: true`
+- **AND** a latest release tag `v1.25.0-fork.2` reports `updateAvailable: false`
+- **AND** a running version `1.25.0` without a fork suffix and a tag `v1.25.0-fork.1` reports `updateAvailable: true`
+
+#### Scenario: A tag that is not a fork release is ignored
+
+- **WHEN** the latest release tag is not of the form `v<major>.<minor>.<patch>-fork.<n>`, such as `v1.26.0`
+- **THEN** the runtime version status reports no latest version and `updateAvailable: false`, as for a failed lookup
 
 #### Scenario: GitHub lookup fails
 

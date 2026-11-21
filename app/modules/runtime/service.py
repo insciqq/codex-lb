@@ -16,14 +16,14 @@ from app.modules.runtime.schemas import RuntimeVersionResponse
 
 logger = logging.getLogger(__name__)
 
-_GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/Soju06/codex-lb/releases/latest"
-_LATEST_RELEASE_PAGE_URL = "https://github.com/Soju06/codex-lb/releases/latest"
-_VERSION_RE = re.compile(
-    r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
-    r"(?:-(?P<prerelease>[0-9A-Za-z.-]+))?"
-    # SemVer build metadata (e.g. a fork's "+fork.1") is parsed and ignored for precedence.
-    r"(?:\+[0-9A-Za-z.-]+)?$"
-)
+_GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/insciqq/codex-lb/releases/latest"
+_LATEST_RELEASE_PAGE_URL = "https://github.com/insciqq/codex-lb/releases/latest"
+_CORE = r"(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
+# Fork release tags are v<major>.<minor>.<patch>-fork.<n>.
+_FORK_TAG_RE = re.compile(rf"^v?{_CORE}-fork\.(?P<fork>[1-9]\d*)$")
+# The running version is <major>.<minor>.<patch>+fork.<n>; a build without the
+# fork suffix (upstream's version) compares as fork 0.
+_RUNNING_VERSION_RE = re.compile(rf"^v?{_CORE}(?:\+fork\.(?P<fork>[1-9]\d*))?$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,10 +113,10 @@ class RuntimeVersionService:
         raw_version = data.get("tag_name") if isinstance(data, dict) else None
         if not isinstance(raw_version, str):
             raise RuntimeError(f"GitHub release tag_name is not a string: {raw_version!r}")
-        version = _normalize_version(raw_version)
-        if version is None:
-            raise RuntimeError(f"GitHub release tag_name is not a stable semver: {raw_version!r}")
-        return version
+        tag = raw_version.strip()
+        if _FORK_TAG_RE.match(tag) is None:
+            raise RuntimeError(f"GitHub release tag_name is not a fork release tag: {raw_version!r}")
+        return tag.removeprefix("v")
 
     def _cache_ttl_for(self, snapshot: _RuntimeVersionSnapshot) -> float:
         if snapshot.source is None:
@@ -135,82 +135,25 @@ def _to_response(snapshot: _RuntimeVersionSnapshot) -> RuntimeVersionResponse:
     )
 
 
-def _normalize_version(value: str) -> str | None:
-    match = _VERSION_RE.match(value.strip())
+def _version_key(pattern: re.Pattern[str], value: str) -> tuple[int, int, int, int] | None:
+    match = pattern.match(value.strip())
     if match is None:
         return None
-    core = ".".join(match.group(part) for part in ("major", "minor", "patch"))
-    prerelease = match.group("prerelease")
-    return f"{core}-{prerelease}" if prerelease else core
-
-
-@dataclass(frozen=True, slots=True)
-class _ParsedVersion:
-    major: int
-    minor: int
-    patch: int
-    prerelease: str | None
-
-
-def _parse_version(value: str) -> _ParsedVersion | None:
-    match = _VERSION_RE.match(value.strip())
-    if match is None:
-        return None
-    return _ParsedVersion(
-        major=int(match.group("major")),
-        minor=int(match.group("minor")),
-        patch=int(match.group("patch")),
-        prerelease=match.group("prerelease"),
+    fork = match.group("fork")
+    return (
+        int(match.group("major")),
+        int(match.group("minor")),
+        int(match.group("patch")),
+        int(fork) if fork else 0,
     )
 
 
 def _is_newer_version(candidate: str, current: str) -> bool:
-    candidate_version = _parse_version(candidate)
-    current_version = _parse_version(current)
-    if candidate_version is None or current_version is None:
+    candidate_key = _version_key(_FORK_TAG_RE, candidate)
+    current_key = _version_key(_RUNNING_VERSION_RE, current)
+    if candidate_key is None or current_key is None:
         return False
-    candidate_core = (candidate_version.major, candidate_version.minor, candidate_version.patch)
-    current_core = (current_version.major, current_version.minor, current_version.patch)
-    if candidate_core != current_core:
-        return candidate_core > current_core
-    if candidate_version.prerelease is None and current_version.prerelease is not None:
-        return True
-    if candidate_version.prerelease is not None and current_version.prerelease is None:
-        return False
-    if candidate_version.prerelease is None and current_version.prerelease is None:
-        return False
-    return _compare_prerelease(candidate_version.prerelease, current_version.prerelease) > 0
-
-
-def _compare_prerelease(candidate: str | None, current: str | None) -> int:
-    if candidate is None and current is None:
-        return 0
-    if candidate is None:
-        return 1
-    if current is None:
-        return -1
-
-    candidate_parts = candidate.split(".")
-    current_parts = current.split(".")
-    for candidate_part, current_part in zip(candidate_parts, current_parts, strict=False):
-        if candidate_part == current_part:
-            continue
-        candidate_numeric = candidate_part.isdigit()
-        current_numeric = current_part.isdigit()
-        if candidate_numeric and current_numeric:
-            candidate_number = int(candidate_part)
-            current_number = int(current_part)
-            if candidate_number != current_number:
-                return 1 if candidate_number > current_number else -1
-            continue
-        if candidate_numeric:
-            return -1
-        if current_numeric:
-            return 1
-        return 1 if candidate_part > current_part else -1
-    if len(candidate_parts) == len(current_parts):
-        return 0
-    return 1 if len(candidate_parts) > len(current_parts) else -1
+    return candidate_key > current_key
 
 
 _runtime_version_service = RuntimeVersionService()

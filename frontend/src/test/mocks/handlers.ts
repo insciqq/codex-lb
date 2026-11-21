@@ -914,7 +914,7 @@ export const handlers = [
       updateAvailable: false,
       checkedAt: "2026-05-26T00:00:00Z",
       source: "github",
-      releaseUrl: "https://github.com/Soju06/codex-lb/releases/latest",
+      releaseUrl: "https://github.com/insciqq/codex-lb/releases/latest",
     });
   }),
 
