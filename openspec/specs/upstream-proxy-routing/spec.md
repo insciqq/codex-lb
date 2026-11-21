@@ -293,6 +293,12 @@ An operation that already loaded an account and dispatches with that account's c
 - **AND** a request that cannot move MUST fail with the retryable `selected_account_removed` error, not the upstream-proxy-unavailable error
 - **AND** the route cache MUST NOT keep the `account_not_found` outcome, and its entries MUST belong to one row incarnation
 
+#### Scenario: Bridge connect account deleted during its forced refresh
+- **GIVEN** an HTTP bridge session start or reconnect selected an account whose upstream socket answered 401
+- **WHEN** the forced refresh or the re-open that follows fails, including when it reports the account missing
+- **THEN** the selected account's stream lease MUST be released exactly once and a reconnect MUST complete its failed handoff
+- **AND** a session start for a request that may move MUST select another account when the account was deleted, and a required owner MUST fail with the retryable `selected_account_removed` error
+
 #### Scenario: Deleted account answers like a missing account
 - **GIVEN** the account was deleted while Force Probe, a stale-token refresh before it, or a dashboard reset-credit read or consume was running
 - **WHEN** route resolution, or the refresh or redeem claim for the account, reports the account missing

@@ -12003,6 +12003,153 @@ async def test_create_http_bridge_session_confirmed_proxy_failure_keeps_hard_own
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("required_owner", [False, True], ids=["movable", "required_owner"])
+async def test_create_http_bridge_session_releases_lease_when_account_removed_during_forced_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    required_owner: bool,
+) -> None:
+    """An account deleted while its 401 forces a refresh gives its lease back.
+
+    No session exists yet to release the startup lease later, so the removal
+    must release it once and then move a movable request on, or answer the
+    typed removal error for a required owner.
+    """
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    account_a = cast(Any, SimpleNamespace(id="acc-removed-a", status=AccountStatus.ACTIVE, plan_type="plus"))
+    account_b = cast(Any, SimpleNamespace(id="acc-removed-b", status=AccountStatus.ACTIVE, plan_type="plus"))
+    lease_a = proxy_service.AccountLease("lease-removed-a", account_a.id, "stream", time.monotonic())
+    lease_b = proxy_service.AccountLease("lease-removed-b", account_b.id, "stream", time.monotonic())
+    selections: list[set[str]] = []
+    released_leases: list[proxy_service.AccountLease] = []
+    upstream = cast(Any, SimpleNamespace(response_header=lambda _name: None, close=AsyncMock()))
+
+    async def select_account(_deadline: float, **kwargs: object) -> proxy_service.AccountSelection:
+        excluded = set(cast(set[str], kwargs["exclude_account_ids"]))
+        selections.append(excluded)
+        if not excluded:
+            return proxy_service.AccountSelection(account=account_a, error_message=None, lease=lease_a)
+        return proxy_service.AccountSelection(account=account_b, error_message=None, lease=lease_b)
+
+    async def release_account_lease(lease: proxy_service.AccountLease | None) -> None:
+        if lease is not None:
+            released_leases.append(lease)
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=_bridge_selection_settings())),
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", select_account)
+    monkeypatch.setattr(
+        service,
+        "_ensure_fresh_with_budget",
+        AsyncMock(
+            side_effect=[
+                account_a,
+                proxy_service.UpstreamProxyRouteError("account_not_found", account_id=account_a.id),
+                account_b,
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=[ProxyResponseError(401, openai_error("invalid_api_key", "expired")), upstream]),
+    )
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", release_account_lease)
+    monkeypatch.setattr(service._load_balancer, "record_error_backoff", AsyncMock())
+    monkeypatch.setattr(service._load_balancer, "record_error", AsyncMock())
+    monkeypatch.setattr(service, "_relay_http_bridge_upstream_messages", AsyncMock())
+
+    owner_kwargs: dict[str, Any] = (
+        {
+            "preferred_account_id": account_a.id,
+            "require_preferred_account": True,
+            "fallback_on_preferred_account_unavailable": False,
+        }
+        if required_owner
+        else {}
+    )
+    try:
+        if required_owner:
+            with pytest.raises(ProxyResponseError) as exc_info:
+                await service._create_http_bridge_session(
+                    proxy_service._HTTPBridgeSessionKey("turn_state_header", "turn-removed", None, strength="hard"),
+                    headers={"x-codex-turn-state": "turn-removed"},
+                    affinity=proxy_service._AffinityPolicy(key="turn-removed"),
+                    api_key=None,
+                    request_model="gpt-5.4",
+                    idle_ttl_seconds=120.0,
+                    **owner_kwargs,
+                )
+            assert exc_info.value.status_code == 503
+            assert proxy_support_module.is_selected_account_removed_response(exc_info.value)
+            assert selections == [set()]
+        else:
+            session = await service._create_http_bridge_session(
+                proxy_service._HTTPBridgeSessionKey("session_header", "sid-removed", None),
+                headers={},
+                affinity=proxy_service._AffinityPolicy(key="sid-removed"),
+                api_key=None,
+                request_model="gpt-5.4",
+                idle_ttl_seconds=120.0,
+            )
+            assert session.account is account_b
+            assert session.account_lease is lease_b
+            assert selections == [set(), {account_a.id}]
+    finally:
+        assert released_leases.count(lease_a) == 1
+        assert lease_b not in released_leases
+
+
+@pytest.mark.asyncio
+async def test_create_http_bridge_session_releases_lease_when_forced_refresh_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any failure of the forced refresh after a 401 releases the startup lease once."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    account = cast(Any, SimpleNamespace(id="acc-refresh-timeout", status=AccountStatus.ACTIVE, plan_type="plus"))
+    lease = proxy_service.AccountLease("lease-refresh-timeout", account.id, "stream", time.monotonic())
+    released_leases: list[proxy_service.AccountLease] = []
+
+    async def release_account_lease(candidate: proxy_service.AccountLease | None) -> None:
+        if candidate is not None:
+            released_leases.append(candidate)
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=_bridge_selection_settings())),
+    )
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget_compatible",
+        AsyncMock(return_value=proxy_service.AccountSelection(account=account, error_message=None, lease=lease)),
+    )
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(side_effect=[account, TimeoutError()]))
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=ProxyResponseError(401, openai_error("invalid_api_key", "expired"))),
+    )
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", release_account_lease)
+
+    with pytest.raises(TimeoutError):
+        await service._create_http_bridge_session(
+            proxy_service._HTTPBridgeSessionKey("session_header", "sid-refresh-timeout", None),
+            headers={},
+            affinity=proxy_service._AffinityPolicy(key="sid-refresh-timeout"),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+        )
+
+    assert released_leases == [lease]
+
+
+@pytest.mark.asyncio
 async def test_create_http_bridge_session_preserves_proxy_failure_when_no_replacement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -13069,6 +13216,71 @@ async def test_reconnect_cancellation_during_wrong_owner_lease_release_completes
     with pytest.raises(asyncio.CancelledError):
         await reconnect_task
 
+    assert session.closed is True
+    assert session.handoff_in_progress is False
+    assert session.handoff_future is None
+    assert session.key not in service._http_bridge_inflight_sessions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refresh_failure",
+    [
+        proxy_service.UpstreamProxyRouteError("account_not_found", account_id="acc-reconnect-401"),
+        asyncio.CancelledError(),
+    ],
+    ids=["account_removed", "cancelled"],
+)
+async def test_reconnect_releases_replacement_lease_when_forced_refresh_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    refresh_failure: BaseException,
+) -> None:
+    """A failure of the forced refresh after a 401 gives the replacement lease back.
+
+    The replacement account is not installed on the session yet, so the
+    failed handoff must release its lease and complete before the error
+    propagates.
+    """
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session()
+    replacement = cast(Any, SimpleNamespace(id="acc-reconnect-401", status=AccountStatus.ACTIVE, plan_type="plus"))
+    replacement_lease = proxy_service.AccountLease("lease-reconnect-401", replacement.id, "stream", time.monotonic())
+    released_leases: list[proxy_service.AccountLease] = []
+
+    async def select_account(_deadline: float, **_: object) -> proxy_service.AccountSelection:
+        return proxy_service.AccountSelection(account=replacement, error_message=None, lease=replacement_lease)
+
+    async def release_lease(lease: proxy_service.AccountLease | None) -> None:
+        if lease is not None:
+            released_leases.append(lease)
+
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-reconnect-refresh-failure",
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+    )
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=_bridge_selection_settings())),
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_for_stream", select_account)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(side_effect=[replacement, refresh_failure]))
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=ProxyResponseError(401, openai_error("invalid_api_key", "expired"))),
+    )
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", release_lease)
+
+    with pytest.raises(type(refresh_failure)):
+        await service._reconnect_http_bridge_session(session, request_state=request_state)
+
+    assert released_leases.count(replacement_lease) == 1
     assert session.closed is True
     assert session.handoff_in_progress is False
     assert session.handoff_future is None

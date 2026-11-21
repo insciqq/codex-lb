@@ -3,9 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.clients.proxy import ProxyResponseError, is_confirmed_pre_dispatch_transport_error
+from app.core.upstream_proxy import UpstreamProxyRouteError
 from app.db.models import Account
 from app.modules.proxy._service.http_bridge.protocol import _HTTPBridgeServiceProtocol
-from app.modules.proxy._service.support import _DeferredAccountBackoffLifecycle, is_selected_account_removed_response
+from app.modules.proxy._service.support import (
+    _DeferredAccountBackoffLifecycle,
+    is_account_gone,
+    is_selected_account_removed_response,
+    route_failure_response,
+)
 from app.modules.proxy.load_balancer import AccountLease
 
 
@@ -61,6 +67,39 @@ class _HTTPBridgePreDispatchFailover:
             raise exc
         self._exclude(account, exc)
         return True
+
+    async def release_and_exclude(
+        self,
+        service: _HTTPBridgeServiceProtocol,
+        account: Account,
+        lease: AccountLease | None,
+    ) -> None:
+        """Release ``account``'s startup lease and reselect without it."""
+        self.excluded_account_ids.add(account.id)
+        self.preferred_account_id = None
+        await service._load_balancer.release_account_lease(lease)
+
+    async def settle_refresh_failure(
+        self,
+        service: _HTTPBridgeServiceProtocol,
+        account: Account,
+        lease: AccountLease | None,
+        exc: BaseException,
+        required_account: bool,
+    ) -> bool:
+        """Release the startup lease once after a failed forced refresh or re-open.
+
+        No session owns ``lease`` yet. An account deleted meanwhile takes the
+        selected-account-removed path (``True``: reselect without it; a required
+        owner raises the removal error). Any other failure releases the lease
+        and returns ``False`` for the caller to re-raise.
+        """
+        if isinstance(exc, UpstreamProxyRouteError) and is_account_gone(exc):
+            return await self.handle(
+                service, account, lease, route_failure_response(exc), required_account=required_account
+            )
+        await service._load_balancer.release_account_lease(lease)
+        return False
 
     def _exclude(self, account: Account, exc: ProxyResponseError) -> None:
         self.last_error = exc

@@ -1827,8 +1827,7 @@ class _HTTPBridgeMixin(
                         request_state=request_state,
                     )
                     _record_same_account_takeover(
-                        preferred_account_id=preferred_account_id,
-                        selected_account_id=account.id,
+                        preferred_account_id=preferred_account_id, selected_account_id=account.id
                     )
                     break
                 except ProxyResponseError as retry_exc:
@@ -1852,9 +1851,7 @@ class _HTTPBridgeMixin(
                         await self._load_balancer.release_account_lease(selected_account_lease)
                         selected_account_lease = None
                         raise
-                    excluded_account_ids.add(account.id)
-                    proxy_connect_failover.preferred_account_id = None
-                    await self._load_balancer.release_account_lease(selected_account_lease)
+                    await proxy_connect_failover.release_and_exclude(self, account, selected_account_lease)
                     selected_account_lease = None
                     continue
                 except RefreshError as refresh_exc:
@@ -1864,10 +1861,14 @@ class _HTTPBridgeMixin(
                         await self._load_balancer.release_account_lease(selected_account_lease)
                         selected_account_lease = None
                         raise
-                    excluded_account_ids.add(account.id)
-                    proxy_connect_failover.preferred_account_id = None
-                    await self._load_balancer.release_account_lease(selected_account_lease)
+                    await proxy_connect_failover.release_and_exclude(self, account, selected_account_lease)
                     selected_account_lease = None
+                    continue
+                except BaseException as err:
+                    required = require_preferred_account and selected_is_preferred
+                    lease, selected_account_lease = selected_account_lease, None
+                    if not await proxy_connect_failover.settle_refresh_failure(self, account, lease, err, required):
+                        raise
                     continue
             except RefreshError as exc:
                 if exc.is_permanent:
@@ -1889,9 +1890,7 @@ class _HTTPBridgeMixin(
                                 error_type="server_error",
                             ),
                         ) from exc
-                    excluded_account_ids.add(account.id)
-                    proxy_connect_failover.preferred_account_id = None
-                    await self._load_balancer.release_account_lease(selected_account_lease)
+                    await proxy_connect_failover.release_and_exclude(self, account, selected_account_lease)
                     selected_account_lease = None
                     continue
                 if exc.is_permanent:
@@ -1928,9 +1927,7 @@ class _HTTPBridgeMixin(
                                 error_type="server_error",
                             ),
                         ) from exc
-                    excluded_account_ids.add(account.id)
-                    proxy_connect_failover.preferred_account_id = None
-                    await self._load_balancer.release_account_lease(selected_account_lease)
+                    await proxy_connect_failover.release_and_exclude(self, account, selected_account_lease)
                     selected_account_lease = None
                     continue
                 if request_stage == "first_turn":
@@ -2312,6 +2309,10 @@ class _HTTPBridgeMixin(
                         await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
                     await abandon_selected_account_retry(account)
                     continue
+                except BaseException:
+                    await release_selected_account_lease()
+                    complete_failed_handoff()
+                    raise
             except RefreshError as exc:
                 if exc.is_permanent:
                     await self._load_balancer.mark_permanent_failure(account, exc.code)

@@ -76,6 +76,10 @@ Callers and outcomes:
   once more and fail over to another account without a health penalty;
   requests that cannot move, and the single-shot paths, answer a retryable
   503 `selected_account_removed` rather than the proxy-outage error.
+  The HTTP bridge forced refresh after a 401 owns the selected account's
+  lease until a session takes it: any failure there (deletion, timeout,
+  cancellation) releases it once, and a reconnect also completes its failed
+  handoff. A session start moves a movable request off a deleted account.
 - Force Probe and the dashboard reset-credit endpoints answer 404, as when
   the account was gone on arrival, also when the refresh before them or the
   SQLite redeem claim fails because the row is gone (the claim rows
