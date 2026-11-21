@@ -4084,3 +4084,102 @@ async def test_proxy_stream_usage_limit_returns_http_error(async_client, monkeyp
         acc = await session.get(Account, expected_account_id)
         assert acc is not None
         assert acc.status == AccountStatus.RATE_LIMITED
+
+
+async def _codex_route_response_with_probed_service_stream(monkeypatch, service_closed: list[str]) -> Any:
+    """Build the codex Responses route response whose startup probe already read ``response.created``."""
+
+    class _FakeService:
+        async def rate_limit_headers(self):
+            return {}
+
+        async def stream_responses(self, *args, **kwargs):
+            del args, kwargs
+            try:
+                yield _sse_event({"type": "response.created", "response": {"id": "resp_heartbeat_close"}})
+                await asyncio.Event().wait()
+                yield _sse_event({"type": "response.completed", "response": {"id": "resp_heartbeat_close"}})
+            finally:
+                service_closed.append("closed")
+
+    settings = SimpleNamespace(
+        http_responses_session_bridge_enabled=False,
+        sse_keepalive_interval_seconds=30.0,
+        proxy_account_stream_recovery_reserve=1,
+        proxy_api_key_fair_share_congestion_threshold_pct=0,
+    )
+    monkeypatch.setattr(proxy_api_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(proxy_api_module.proxy_service_module, "get_settings", lambda: settings)
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/backend-api/codex/responses",
+            "headers": [],
+        }
+    )
+    payload = proxy_api_module.ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    )
+
+    response = await proxy_api_module._stream_responses(
+        request,
+        payload,
+        ProxyContext(service=cast(proxy_module.ProxyService, _FakeService())),
+        api_key=None,
+        enforce_openai_sdk_contract=False,
+    )
+    assert isinstance(response, StreamingResponse)
+    return response, request
+
+
+@pytest.mark.asyncio
+async def test_codex_route_closing_at_the_initial_heartbeat_closes_the_probed_service_stream(monkeypatch):
+    """The service stream (and its account lease) is closed when the client leaves at the first heartbeat.
+
+    The startup probe already pulled ``response.created``, and the body wrappers
+    above the service stream never started, so only the outer teardown can
+    close it.
+    """
+    service_closed: list[str] = []
+    response, _request = await _codex_route_response_with_probed_service_stream(monkeypatch, service_closed)
+
+    body = response.body_iterator
+    first_chunk = await asyncio.wait_for(body.__anext__(), timeout=1.0)
+    assert first_chunk == CODEX_KEEPALIVE_FRAME
+    await body.aclose()
+
+    assert service_closed == ["closed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_message", ["http.response.body", "http.response.start"])
+async def test_codex_route_disconnect_during_a_send_closes_the_probed_service_stream(
+    monkeypatch, blocked_message: str
+) -> None:
+    """A disconnect while a send is blocked closes the service stream before the ASGI call returns.
+
+    Starlette cancels the blocked send and returns without closing the body:
+    during the heartbeat send the body is suspended at its first ``yield``, and
+    during the response start it never started at all.
+    """
+    service_closed: list[str] = []
+    response, request = await _codex_route_response_with_probed_service_stream(monkeypatch, service_closed)
+    sending = asyncio.Event()
+
+    async def send(message: dict[str, Any]) -> None:
+        if message["type"] == blocked_message:
+            if blocked_message == "http.response.body":
+                assert message["body"] == CODEX_KEEPALIVE_FRAME.encode()
+            sending.set()
+            await asyncio.Event().wait()
+
+    async def receive() -> dict[str, Any]:
+        await sending.wait()
+        return {"type": "http.disconnect"}
+
+    scope = dict(request.scope, asgi={"spec_version": "2.3"})
+    await asyncio.wait_for(response(scope, receive, send), timeout=2.0)
+
+    assert service_closed == ["closed"]

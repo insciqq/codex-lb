@@ -446,23 +446,31 @@ async def stream_chat_chunks(
     created = int(time.time())
     state = _ChatChunkState()
     terminal_chunk_sent = False
-    async for line in stream:
-        if terminal_chunk_sent:
-            continue
-        for chunk in iter_chat_chunks(
-            [line],
-            model=model,
-            created=created,
-            state=state,
-            include_usage=include_usage,
-        ):
-            yield chunk
-            if chunk.strip() == "data: [DONE]":
-                terminal_chunk_sent = True
-                break
-    if not terminal_chunk_sent:
-        yield _dump_sse(_upstream_stream_truncated_error_payload())
-        yield "data: [DONE]\n\n"
+    # Owns ``stream``: an early close must reach the lease-holding upstream,
+    # because async-generator ``aclose()`` does not cascade through a
+    # suspended ``async for``.
+    try:
+        async for line in stream:
+            if terminal_chunk_sent:
+                continue
+            for chunk in iter_chat_chunks(
+                [line],
+                model=model,
+                created=created,
+                state=state,
+                include_usage=include_usage,
+            ):
+                yield chunk
+                if chunk.strip() == "data: [DONE]":
+                    terminal_chunk_sent = True
+                    break
+        if not terminal_chunk_sent:
+            yield _dump_sse(_upstream_stream_truncated_error_payload())
+            yield "data: [DONE]\n\n"
+    finally:
+        aclose = getattr(stream, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 async def collect_chat_completion(stream: AsyncIterator[str], model: str) -> ChatCompletionResult:

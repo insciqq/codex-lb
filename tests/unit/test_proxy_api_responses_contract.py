@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
@@ -2371,3 +2372,129 @@ async def test_normalize_public_responses_stream_closes_inner_stream_on_early_re
     blocks = [block async for block in proxy_api_module._normalize_public_responses_stream(source)]
     assert blocks
     assert source.closed is True
+
+
+@pytest.mark.asyncio
+async def test_aclose_stream_skips_a_generator_another_task_is_running(caplog: pytest.LogCaptureFixture) -> None:
+    release = asyncio.Event()
+    closed: list[bool] = []
+
+    async def source():
+        try:
+            await release.wait()
+            yield "first"
+            yield "second"
+        finally:
+            closed.append(True)
+
+    stream = source()
+    puller = asyncio.create_task(anext(stream))
+    while not stream.ag_running:
+        await asyncio.sleep(0)
+    caplog.set_level(logging.DEBUG, logger=proxy_api_module.logger.name)
+
+    # The pull in the other task owns the generator; a close now would raise
+    # "asynchronous generator is already running".
+    await proxy_api_module._aclose_stream(stream)
+
+    assert closed == []
+    assert any("Skipping close of a running stream generator" in record.getMessage() for record in caplog.records)
+    release.set()
+    assert await puller == "first"
+    await proxy_api_module._aclose_stream(stream)
+    assert closed == [True]
+
+
+def _lease_holding_source(closed: list[str]) -> AsyncIterator[str]:
+    async def source() -> AsyncIterator[str]:
+        try:
+            yield 'data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"hi"}\n\n'
+            await asyncio.Event().wait()
+            yield "data: never\n\n"
+        finally:
+            closed.append("source")
+
+    return source()
+
+
+async def _relay_for(kind: str, source: AsyncIterator[str]) -> AsyncIterator[str]:
+    if kind == "proxy_errors":
+        return proxy_api_module._stream_proxy_errors_as_response_failed(source)
+    if kind == "cursor_usage":
+        payload = proxy_api_module.ChatCompletionsRequest.model_validate(
+            {"model": "gpt-5.1", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+        )
+        return proxy_api_module._stream_with_cursor_usage_fallback(source, payload)
+    if kind == "images_replay":
+        from starlette.requests import Request
+
+        request = Request({"type": "http", "method": "POST", "path": "/v1/images/generations", "headers": []})
+        primed, error_response = await proxy_api_module._prime_upstream_stream(request, source, {})
+        assert error_response is None and primed is not None
+        return primed
+    from app.core.openai.chat_responses import stream_chat_chunks
+
+    return stream_chat_chunks(source, "gpt-5.1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["proxy_errors", "cursor_usage", "images_replay", "chat_chunks"])
+async def test_lease_holding_relays_close_their_inner_stream_on_early_close(kind: str) -> None:
+    closed: list[str] = []
+    relay = await _relay_for(kind, _lease_holding_source(closed))
+
+    await anext(relay)
+    aclose = getattr(relay, "aclose")
+    await aclose()
+
+    assert closed == ["source"]
+
+
+@pytest.mark.asyncio
+async def test_startup_guard_closes_its_keepalive_wrapper_first(caplog: pytest.LogCaptureFixture) -> None:
+    """Closing at a keepalive closes every layer without close warnings.
+
+    The keepalive injector has a pull of the layers below pending when the
+    client leaves. The guard closes the injector first, which cancels that pull,
+    so closing the normalizer and the service stream afterwards finds them
+    already finished instead of raising "already running".
+    """
+    from app.core.utils.sse import inject_sse_keepalives
+
+    closed: list[str] = []
+
+    async def service() -> AsyncIterator[str]:
+        try:
+            yield 'data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}\n\n'
+            await asyncio.Event().wait()
+            yield "data: never\n\n"
+        finally:
+            closed.append("service")
+
+    source = service()
+    probed, startup_error = await proxy_api_module._probe_stream_startup_error(source, timeout_seconds=1.0)
+    assert startup_error is None
+    normalized = proxy_api_module._normalize_public_responses_stream(
+        proxy_api_module._stream_response_error_events(probed, owns_reservation=False, reservation=None)
+    )
+    body = inject_sse_keepalives(normalized, 0.02)
+    guard = proxy_api_module._guard_responses_startup_handoff(
+        body,
+        startup_task=None,
+        streams_to_close=(source, normalized),
+        reservation_cleanup=proxy_api_module._ResponsesReservationCleanup(
+            owns_reservation=False, reservation=None, scheduler=None, request_id="keepalive-close"
+        ),
+        responses_service_cleanup_ready_event=asyncio.Event(),
+        responses_owner_forward_dispatched_event=asyncio.Event(),
+        responses_owner_forward_rejected_event=asyncio.Event(),
+    )
+    caplog.set_level(logging.WARNING, logger=proxy_api_module.logger.name)
+
+    async for chunk in guard:
+        if "response.created" not in chunk:
+            break
+    await cast(Any, guard).aclose()
+
+    assert closed == ["service"]
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]

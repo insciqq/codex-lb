@@ -363,6 +363,115 @@ pub(crate) fn classify_error(
     )
 }
 
+/// Upper bound on the diagnostic text forwarded with a transport error.
+const ERROR_DETAIL_MAX_BYTES: usize = 512;
+
+/// Describe what actually failed below a reqwest error, for diagnostics.
+///
+/// `classify_error` keeps the static message and phase the Python side keys
+/// its handling on; this adds the causes it drops. Only typed fields of known
+/// error types are rendered: the reqwest layers embed the request URL, an h2
+/// GOAWAY carries the peer's opaque debug data, and an I/O or TLS error can
+/// wrap arbitrary text, so none of their free-form display text is copied.
+/// Causes of other types are omitted. Non-reqwest errors carry no detail.
+pub(crate) fn error_detail(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let request_error = error.downcast_ref::<reqwest::Error>()?;
+    source_chain_detail(std::error::Error::source(request_error))
+}
+
+fn source_chain_detail(first: Option<&(dyn std::error::Error + 'static)>) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = first;
+    while let Some(source) = current {
+        for text in describe_cause(source) {
+            if parts.last() != Some(&text) {
+                parts.push(text);
+            }
+        }
+        current = source.source();
+    }
+    bounded_join(&parts)
+}
+
+fn describe_cause(source: &(dyn std::error::Error + 'static)) -> Vec<String> {
+    if let Some(error) = source.downcast_ref::<h2::Error>() {
+        let mut texts = vec![describe_h2_error(error)];
+        if let Some(io_error) = error.get_io() {
+            texts.extend(describe_io_error(io_error));
+        }
+        return texts;
+    }
+    if let Some(error) = source.downcast_ref::<std::io::Error>() {
+        return describe_io_error(error);
+    }
+    if let Some(error) = source.downcast_ref::<rustls::Error>() {
+        return vec![describe_tls_error(error)];
+    }
+    if source.downcast_ref::<hyper::Error>().is_some() {
+        // hyper renders a fixed description of its error kind.
+        return vec![source.to_string()];
+    }
+    Vec::new()
+}
+
+fn describe_h2_error(error: &h2::Error) -> String {
+    let kind = if error.is_go_away() {
+        "goaway"
+    } else if error.is_reset() {
+        "reset"
+    } else if error.is_io() {
+        "io"
+    } else {
+        "error"
+    };
+    let origin = match error.is_remote() {
+        true => "remote",
+        false => "local",
+    };
+    match error.reason() {
+        Some(reason) => format!("h2 {origin} {kind} {reason:?}"),
+        None => format!("h2 {origin} {kind}"),
+    }
+}
+
+fn describe_io_error(error: &std::io::Error) -> Vec<String> {
+    let text = match error.raw_os_error() {
+        Some(code) => format!("io {} (os error {code})", error.kind()),
+        None => format!("io {}", error.kind()),
+    };
+    let mut texts = vec![text];
+    let tls_error = error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<rustls::Error>());
+    if let Some(tls_error) = tls_error {
+        texts.push(describe_tls_error(tls_error));
+    }
+    texts
+}
+
+fn describe_tls_error(error: &rustls::Error) -> String {
+    match error {
+        rustls::Error::AlertReceived(alert) => format!("tls alert received {alert:?}"),
+        rustls::Error::InvalidCertificate(_) => "tls invalid peer certificate".to_owned(),
+        _ => "tls error".to_owned(),
+    }
+}
+
+fn bounded_join(parts: &[String]) -> Option<String> {
+    if parts.is_empty() {
+        return None;
+    }
+    let mut detail = parts.join(": ");
+    if detail.len() > ERROR_DETAIL_MAX_BYTES {
+        let mut end = ERROR_DETAIL_MAX_BYTES;
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        detail.truncate(end);
+    }
+    Some(detail)
+}
+
 pub(crate) fn error_chain_has_invalid_certificate(
     error: &(dyn std::error::Error + 'static),
 ) -> bool {
@@ -383,7 +492,99 @@ pub(crate) fn error_chain_has_invalid_certificate(
 mod tests {
     use reqwest::header::{ACCEPT, ACCEPT_ENCODING};
 
-    use super::forwarded_headers;
+    use super::{
+        ERROR_DETAIL_MAX_BYTES, bounded_join, error_detail, forwarded_headers, source_chain_detail,
+    };
+
+    const SIGNED_URL_SENTINEL: &str = "https://storage.example/file?sig=opaque-sentinel";
+
+    #[derive(Debug)]
+    struct Layer {
+        text: String,
+        source: Option<Box<dyn std::error::Error + 'static>>,
+    }
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.text)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source.as_deref()
+        }
+    }
+
+    #[test]
+    fn source_chain_detail_renders_typed_causes_and_drops_free_text() {
+        let error = Layer {
+            text: SIGNED_URL_SENTINEL.to_owned(),
+            source: Some(Box::new(std::io::Error::from_raw_os_error(104))),
+        };
+        let top: &(dyn std::error::Error + 'static) = &error;
+        let detail = source_chain_detail(Some(top)).expect("detail");
+        assert!(detail.starts_with("io "), "{detail}");
+        assert!(detail.ends_with("(os error 104)"), "{detail}");
+        assert!(!detail.contains("sig="), "{detail}");
+        assert_eq!(source_chain_detail(None), None);
+    }
+
+    #[test]
+    fn bounded_join_is_bounded_on_a_char_boundary() {
+        let parts = ["\u{e9}".repeat(ERROR_DETAIL_MAX_BYTES)];
+        let detail = bounded_join(&parts).expect("detail");
+        assert_eq!(detail.len(), ERROR_DETAIL_MAX_BYTES);
+        assert!(detail.chars().all(|character| character == '\u{e9}'));
+        assert_eq!(bounded_join(&[]), None);
+    }
+
+    #[tokio::test]
+    async fn goaway_debug_data_is_not_copied_into_the_detail() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Another test in this binary may have installed it already.
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        let _ = provider.install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind origin");
+        let address = listener.local_addr().expect("origin address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept client");
+            let mut preface = [0_u8; 24];
+            socket
+                .read_exact(&mut preface)
+                .await
+                .expect("client preface");
+            let debug_data = SIGNED_URL_SENTINEL.as_bytes();
+            let mut frames = vec![0, 0, 0, 0x4, 0, 0, 0, 0, 0];
+            let length = u32::try_from(8 + debug_data.len()).expect("frame length");
+            frames.extend_from_slice(&length.to_be_bytes()[1..]);
+            frames.extend_from_slice(&[0x7, 0, 0, 0, 0, 0]);
+            frames.extend_from_slice(&0_u32.to_be_bytes());
+            frames.extend_from_slice(&1_u32.to_be_bytes());
+            frames.extend_from_slice(debug_data);
+            socket.write_all(&frames).await.expect("write frames");
+            let mut rest = Vec::new();
+            let _ = socket.read_to_end(&mut rest).await;
+        });
+
+        let client = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .build()
+            .expect("client");
+        let error = client
+            .get(format!("http://{address}/file"))
+            .send()
+            .await
+            .expect_err("GOAWAY fails the request");
+        let detail = error_detail(&error).expect("detail");
+        assert!(detail.contains("PROTOCOL_ERROR"), "{detail}");
+        assert!(!detail.contains("sig="), "{detail}");
+        assert!(!detail.contains("storage.example"), "{detail}");
+        server.abort();
+    }
 
     #[test]
     fn forwarded_headers_preserve_inbound_accept_encoding() {

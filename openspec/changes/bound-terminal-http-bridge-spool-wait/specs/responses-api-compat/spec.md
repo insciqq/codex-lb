@@ -13,7 +13,9 @@ which point the proxy MUST schedule an attempt-fenced finalization; only a
 successful finalization makes it replayable. Cleanup that removes the in-memory
 operation context MUST still require fallback settlement. When the event spooler
 closes, a terminal append or finalization task still pending after the bound
-MUST be cancelled and awaited to completion rather than abandoned.
+MUST be cancelled and awaited to completion rather than abandoned. A `chunks_v2` transcript writer
+MUST release the read transaction and connection of its preflight before it
+waits for the SQLite writer slot, so a queued append holds no connection.
 
 The fence that refuses a late or duplicate terminal write MUST be keyed on a
 durable marker recording where the operation's dispatch stands in its terminal
@@ -76,3 +78,9 @@ start unfenced.
 - **AND** a newer attempt for the same operation registered its own spooler state
 - **WHEN** the abandoned attempt's cleanup finally runs
 - **THEN** the newer attempt keeps its spooler state
+
+#### Scenario: A queued chunk append holds no connection
+
+- **GIVEN** a `chunks_v2` terminal append finished its preflight read
+- **WHEN** it waits for the SQLite writer slot
+- **THEN** it holds no open transaction or connection

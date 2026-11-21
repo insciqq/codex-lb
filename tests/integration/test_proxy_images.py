@@ -30,6 +30,7 @@ from app.core.exceptions import ProxyModelNotAllowed, ProxyRateLimitError
 from app.core.multipart import MultipartPolicy
 from app.db.models import ApiKeyUsageReservation, DashboardSettings
 from app.db.session import SessionLocal
+from app.dependencies import get_proxy_service_for_app
 from app.modules.api_keys.repository import ApiKeysRepository
 
 pytestmark = pytest.mark.integration
@@ -2325,3 +2326,176 @@ async def test_transparent_images_propagate_upstream_rejection(async_client, mon
     assert len(calls) == 1
     assert cast(dict[str, Any], calls[0].tools[0])["model"] == "gpt-image-2"
     assert cast(dict[str, Any], calls[0].tools[0])["background"] == "transparent"
+
+
+def _image_stream_events_then_wait(upstream_closed: asyncio.Event, *, complete: bool):
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
+        del payload, headers, access_token, account_id, base_url, raise_for_status, kwargs
+        try:
+            yield _sse({"type": "response.created", "response": {"id": "resp_image_close"}})
+            yield _sse(
+                {
+                    "type": "response.image_generation_call.partial_image",
+                    "partial_image_b64": "PART_0",
+                    "partial_image_index": 0,
+                    "output_index": 1,
+                }
+            )
+            if complete:
+                yield _sse(
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": 1,
+                        "item": {
+                            "type": "image_generation_call",
+                            "id": "ig_close",
+                            "status": "completed",
+                            "result": "B64",
+                        },
+                    }
+                )
+                yield _sse({"type": "response.completed", "response": {"id": "resp_image_close"}})
+            # The upstream connection stays open after the frames above.
+            await asyncio.Event().wait()
+        finally:
+            upstream_closed.set()
+
+    return fake_stream
+
+
+@pytest.mark.asyncio
+async def test_images_streaming_closes_the_upstream_after_the_completed_image(app_instance, async_client, monkeypatch):
+    await _import_account(async_client, "acc_images_close_done", "img-close-done@example.com")
+    upstream_closed = asyncio.Event()
+    load_balancer = get_proxy_service_for_app(app_instance)._load_balancer
+    real_release = load_balancer.release_account_lease
+    released: list[object] = []
+
+    async def record_release(lease: Any) -> Any:
+        released.append(lease)
+        return await real_release(lease)
+
+    monkeypatch.setattr(load_balancer, "release_account_lease", record_release)
+
+    async def fake_ensure_fresh(self, account, **kwargs):
+        del self, kwargs
+        return account
+
+    monkeypatch.setattr(
+        proxy_module, "core_stream_responses", _image_stream_events_then_wait(upstream_closed, complete=True)
+    )
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh)
+
+    async with async_client.stream(
+        "POST",
+        "/v1/images/generations",
+        json={"model": "gpt-image-2", "prompt": "tiny red circle", "stream": True, "partial_images": 1},
+    ) as resp:
+        assert resp.status_code == 200
+        body = "".join([line async for line in resp.aiter_lines()])
+
+    assert "image_generation.completed" in body
+    assert upstream_closed.is_set(), "the account's upstream stream stayed open after the completed image"
+    assert released, "the account stream lease was still held after the completed image"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "blocked_on"),
+    [
+        ("generations", "partial_image"),
+        ("generations", "response_start"),
+        ("edits", "response_start"),
+    ],
+)
+async def test_images_streaming_settles_when_the_client_leaves(
+    app_instance, async_client, monkeypatch, route: str, blocked_on: str
+):
+    """The upstream closes and the route's reservation settles when the client leaves.
+
+    The client leaves while a partial image is being sent, or while the
+    response headers are being sent, before the body started.
+    """
+    await _import_account(async_client, f"acc_images_left_{route}_{blocked_on}", f"img-left-{route}-{blocked_on}@x.com")
+    upstream_closed = asyncio.Event()
+    settlements: list[object] = []
+    real_finalize = proxy_api_module._finalize_image_reservation
+
+    async def record_finalize(*args: Any, **kwargs: Any) -> None:
+        settlements.append(args[2])
+        await real_finalize(*args, **kwargs)
+
+    async def fake_ensure_fresh(self, account, **kwargs):
+        del self, kwargs
+        return account
+
+    monkeypatch.setattr(proxy_api_module, "_finalize_image_reservation", record_finalize)
+    monkeypatch.setattr(
+        proxy_module, "core_stream_responses", _image_stream_events_then_wait(upstream_closed, complete=False)
+    )
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh)
+    if route == "generations":
+        request_body = json.dumps(
+            {"model": "gpt-image-2", "prompt": "tiny red circle", "stream": True, "partial_images": 1}
+        ).encode()
+        content_type = b"application/json"
+    else:
+        import httpx
+
+        multipart = httpx.Request(
+            "POST",
+            "http://testserver/v1/images/edits",
+            files=[
+                ("image", ("image.png", b"\x89PNG\r\n\x1a\nimage", "image/png")),
+                ("model", (None, "gpt-image-2")),
+                ("prompt", (None, "tiny red circle")),
+                ("stream", (None, "true")),
+            ],
+        )
+        request_body = multipart.read()
+        content_type = multipart.headers["content-type"].encode()
+    blocked = asyncio.Event()
+    request_sent = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": request_body, "more_body": False}
+        await blocked.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        if blocked_on == "response_start" and message["type"] == "http.response.start":
+            assert message["status"] == 200
+            blocked.set()
+            await asyncio.Event().wait()
+        if (
+            blocked_on == "partial_image"
+            and message["type"] == "http.response.body"
+            and b"partial_image" in message.get("body", b"")
+        ):
+            # The client stops reading while this chunk is being sent.
+            blocked.set()
+            await asyncio.Event().wait()
+
+    path = f"/v1/images/{route}"
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver"), (b"content-type", content_type)],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+    }
+    await asyncio.wait_for(app_instance(scope, receive, send), timeout=5.0)
+
+    assert blocked.is_set()
+    assert upstream_closed.is_set(), "the account's upstream stream stayed open after the client left"
+    assert len(settlements) == 1, "the route's image reservation was not settled exactly once"

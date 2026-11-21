@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::{AbortHandle, JoinSet};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::http::{ClientKey, ClientPool, classify_error, execute_request};
+use crate::http::{ClientKey, ClientPool, classify_error, error_detail, execute_request};
 use crate::websocket::{
     WebSocketCommand, emit_websocket_error, emit_websocket_setup_error, execute_websocket,
 };
@@ -82,6 +82,7 @@ pub async fn run_stdio() -> Result<(), RequestError> {
                                 "setup",
                                 false,
                                 false,
+                                None,
                             ).await?;
                             continue;
                         }
@@ -100,6 +101,7 @@ pub async fn run_stdio() -> Result<(), RequestError> {
                                 "setup",
                                 false,
                                 false,
+                                None,
                             ).await?;
                             continue;
                         }
@@ -122,6 +124,7 @@ pub async fn run_stdio() -> Result<(), RequestError> {
                                     phase,
                                     retryable,
                                     tls_verification,
+                                    error_detail(&error),
                                 ).await?;
                                 continue;
                             }
@@ -155,6 +158,7 @@ pub async fn run_stdio() -> Result<(), RequestError> {
                                                 phase,
                                                 retryable,
                                                 tls_verification,
+                                                error_detail(error.as_ref()),
                                             ).await;
                                         }
                                     }
@@ -365,6 +369,7 @@ async fn emit_error(
     failure_phase: &str,
     retryable_same_contract: bool,
     is_tls_verification_failure: bool,
+    detail: Option<String>,
 ) -> Result<(), std::io::Error> {
     emit(
         output,
@@ -374,6 +379,7 @@ async fn emit_error(
             failure_phase: failure_phase.to_owned(),
             retryable_same_contract,
             is_tls_verification_failure,
+            detail,
         },
     )
     .await
@@ -403,9 +409,9 @@ mod tests {
 
     fn install_provider() {
         INSTALL_PROVIDER.call_once(|| {
-            rustls::crypto::aws_lc_rs::default_provider()
-                .install_default()
-                .expect("install test crypto provider");
+            // Another test module in this binary may have installed it first.
+            let provider = rustls::crypto::aws_lc_rs::default_provider();
+            let _ = provider.install_default();
         });
     }
 

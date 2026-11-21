@@ -189,6 +189,9 @@ pub enum NativeEvent {
         failure_phase: String,
         retryable_same_contract: bool,
         is_tls_verification_failure: bool,
+        /// Text of the transport error's source chain, for diagnostics only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
 }
 

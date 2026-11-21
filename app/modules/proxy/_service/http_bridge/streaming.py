@@ -1093,8 +1093,8 @@ class _HTTPBridgeStreamingMixin:
                 runtime_config = dataclasses.replace(runtime_config, enabled=False)
             force_upstream_stream_transport = "http"
         if not runtime_config.enabled:
-            stream_with_retry = cast(Callable[..., AsyncIterator[str]], self._stream_with_retry)
-            async for line in stream_with_retry(
+            stream_with_retry = cast(Callable[..., AsyncGenerator[str, None]], self._stream_with_retry)
+            bypass_stream = stream_with_retry(
                 payload,
                 headers,
                 codex_session_affinity=codex_session_affinity,
@@ -1109,8 +1109,15 @@ class _HTTPBridgeStreamingMixin:
                 upstream_stream_transport_override=force_upstream_stream_transport,
                 client_ip=client_ip,
                 enforce_openai_sdk_contract=enforce_openai_sdk_contract,
-            ):
-                yield line
+            )
+            # Close it on every exit: it holds the account stream lease, and
+            # async-generator ``aclose()`` does not cascade through a
+            # suspended ``async for``.
+            try:
+                async for line in bypass_stream:
+                    yield line
+            finally:
+                await bypass_stream.aclose()
             return
 
         request_scope_id = ensure_request_scope_id()
@@ -1120,7 +1127,7 @@ class _HTTPBridgeStreamingMixin:
         bridge_attempt_started_at = clock_for(self).monotonic()
         try:
             try:
-                async for line in self._stream_via_http_bridge(
+                bridge_stream = self._stream_via_http_bridge(
                     payload,
                     headers,
                     codex_session_affinity=codex_session_affinity,
@@ -1148,9 +1155,17 @@ class _HTTPBridgeStreamingMixin:
                     capacity_startup_ready_event=capacity_startup_ready_event,
                     deferred_account_backoff_tracker=deferred_account_backoff_tracker,
                     bridge_payload=bridge_payload,
-                ):
-                    bridge_yielded_any = True
-                    yield line
+                )
+                # Close it on every exit: its finalizer detaches the consumer,
+                # revokes its queue and checks the idle lease, and
+                # async-generator ``aclose()`` does not cascade through a
+                # suspended ``async for``.
+                try:
+                    async for line in bridge_stream:
+                        bridge_yielded_any = True
+                        yield line
+                finally:
+                    await bridge_stream.aclose()
             except ProxyResponseError as exc:
                 # A transient failure to establish the bridge's upstream
                 # websocket session must not fail the turn while the plain
@@ -1277,8 +1292,8 @@ class _HTTPBridgeStreamingMixin:
             "stream_responses http bridge upstream unavailable; retrying over http upstream transport request_id=%s",
             request_id,
         )
-        stream_with_retry = cast(Callable[..., AsyncIterator[str]], self._stream_with_retry)
-        async for line in stream_with_retry(
+        stream_with_retry = cast(Callable[..., AsyncGenerator[str, None]], self._stream_with_retry)
+        fallback_stream = stream_with_retry(
             payload,
             headers,
             codex_session_affinity=codex_session_affinity,
@@ -1293,8 +1308,12 @@ class _HTTPBridgeStreamingMixin:
             upstream_stream_transport_override="http",
             client_ip=client_ip,
             enforce_openai_sdk_contract=enforce_openai_sdk_contract,
-        ):
-            yield line
+        )
+        try:
+            async for line in fallback_stream:
+                yield line
+        finally:
+            await fallback_stream.aclose()
 
     async def _stream_via_http_bridge_impl(
         self: Any,

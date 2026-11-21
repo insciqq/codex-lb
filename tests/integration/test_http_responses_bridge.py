@@ -17938,6 +17938,320 @@ async def test_native_codex_owner_forward_denied_anchor_refusal_returns_502_befo
     assert HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER not in response.headers
 
 
+# --- Reproduction for #2388: retry-circuit suppression must reach native Codex clients ---
+
+
+_RETRY_CIRCUIT_SUPPRESSION_MESSAGE = (
+    "HTTP responses session bridge is recovering from repeated upstream failures; retry after 30s."
+)
+
+
+async def _native_turns_with_retry_circuit_suppressed_second_turn(
+    async_client,
+    app_instance,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    email_slug: str,
+    gate_delay_seconds: float = 0.0,
+) -> tuple[Any, _FakeBridgeUpstreamWebSocket]:
+    """Run two native Codex turns on one bridge session; the circuit refuses the second.
+
+    The first turn completes and leaves its response as the anchor the bridge
+    injects into the second, so the suppressed second turn is a continuation
+    that the cooldown path may not replay over raw HTTP: the refusal is what
+    the client must receive. ``gate_delay_seconds`` holds the admission check
+    open so a refusal can land after a disabled startup probe has committed.
+    """
+    account_id = await _import_account(async_client, f"acc_{email_slug}", f"{email_slug}@example.com")
+    account = await _get_account(account_id)
+    upstream = _FakeBridgeUpstreamWebSocket()
+    _install_denied_anchor_bridge_fakes(monkeypatch, account=account, upstream=cast(Any, upstream))
+
+    headers = {"session_id": f"{email_slug}-session", "user-agent": "codex_exec/0.153.4"}
+    turn_one_input, turn_two_input = _denied_anchor_turn_inputs()
+
+    async with _client_reporting_committed_stream_failures(app_instance) as client:
+        first = await client.post(
+            "/backend-api/codex/responses",
+            json={"model": "gpt-5.1", "instructions": "Return exactly OK.", "input": turn_one_input},
+            headers=headers,
+        )
+        assert first.status_code == 200
+
+        async def circuit_open(self, session, **kwargs):
+            del self, session, kwargs
+            await asyncio.sleep(gate_delay_seconds)
+            return False
+
+        async def circuit_block(self, session):
+            del self, session
+            return 30.0, "hard_key_cooldown"
+
+        monkeypatch.setattr(proxy_module.ProxyService, "_http_bridge_precreated_retry_allowed", circuit_open)
+        monkeypatch.setattr(proxy_module.ProxyService, "_http_bridge_precreated_retry_block", circuit_block)
+
+        second = await client.post(
+            "/backend-api/codex/responses",
+            json={"model": "gpt-5.1", "instructions": "Return exactly OK.", "input": turn_two_input},
+            headers=headers,
+        )
+    return second, upstream
+
+
+@pytest.mark.asyncio
+async def test_native_codex_http_bridge_retry_circuit_suppression_returns_503_before_commit(
+    async_client,
+    app_instance,
+    monkeypatch,
+):
+    """A native Codex client must receive the cooldown refusal, not an empty 200.
+
+    Regression for issue #2388: the suppression shares ``upstream_request_timeout``
+    with real upstream transport failures, so the native lifecycle replayed the
+    probe-caught refusal into the committed body and the client saw ``200`` with
+    zero bytes.
+    """
+    _install_bridge_settings(monkeypatch, enabled=True)
+
+    second, upstream = await _native_turns_with_retry_circuit_suppressed_second_turn(
+        async_client,
+        app_instance,
+        monkeypatch,
+        email_slug="native-circuit-precommit",
+    )
+
+    assert second.status_code == 503, f"native client received {second.status_code} with body {second.text!r}"
+    assert second.json()["error"]["code"] == "upstream_request_timeout"
+    assert second.json()["error"]["message"] == _RETRY_CIRCUIT_SUPPRESSION_MESSAGE
+    assert second.headers.get("retry-after") == "30"
+    assert len(upstream.sent_text) == 1, "the suppressed turn was sent upstream"
+
+
+@pytest.mark.asyncio
+async def test_native_codex_http_bridge_retry_circuit_suppression_emits_terminal_after_commit(
+    async_client,
+    app_instance,
+    monkeypatch,
+    caplog,
+):
+    """Once the response has committed, the cooldown refusal must arrive as a terminal.
+
+    The startup probe is disabled so the refusal lands after the ``200`` is on
+    the wire. The stream must end with an unmarked ``response.failed`` carrying
+    the code, the message and the retry hint instead of stopping at zero bytes.
+    """
+    _install_bridge_settings(monkeypatch, enabled=True)
+    from app.modules.proxy import api as proxy_api_module
+
+    monkeypatch.setattr(proxy_api_module, "_HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS", 0.0)
+    # The probe keeps waiting this long for an admission signal before it hands
+    # the stream off; the refusal must land after the hand-off.
+    monkeypatch.setattr(proxy_api_module, "_CAPACITY_STARTUP_SIGNAL_DISCOVERY_SECONDS", 0.0)
+    caplog.set_level(logging.WARNING, logger="app.modules.proxy.downstream_delivery")
+
+    second, upstream = await _native_turns_with_retry_circuit_suppressed_second_turn(
+        async_client,
+        app_instance,
+        monkeypatch,
+        email_slug="native-circuit-postcommit",
+        gate_delay_seconds=0.05,
+    )
+
+    assert second.status_code == 200
+    assert second.text, "the committed response ended with an empty body"
+    events = [
+        json.loads(block.split("data: ", 1)[1])
+        for block in second.text.split("\n\n")
+        if "data: " in block and "data: [DONE]" not in block
+    ]
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1, f"expected one terminal failure, got {[event.get('type') for event in events]}"
+    assert failed[0]["response"]["error"]["code"] == "upstream_request_timeout"
+    assert failed[0]["response"]["error"]["message"] == _RETRY_CIRCUIT_SUPPRESSION_MESSAGE
+    assert "retry: 30000\n" in second.text
+    assert "_codex_lb_synthetic_transport_failure" not in second.text
+    assert second.text.rstrip().endswith("data: [DONE]")
+    assert not [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.modules.proxy.downstream_delivery"
+        and "outcome=exception_before_terminal" in record.getMessage()
+    ], "the refusal still escaped the committed body instead of ending it with a terminal"
+    assert len(upstream.sent_text) == 1, "the suppressed turn was sent upstream"
+
+
+async def _native_owner_forward_retry_circuit_refusal(
+    async_client,
+    app_instance,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    slug: str,
+    owner_delay_seconds: float = 0.0,
+) -> Any:
+    """Send a native continuation the owner replica refuses with its retry-circuit 503."""
+    from app.modules.proxy.http_bridge_forwarding import HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER
+
+    _install_bridge_settings_with_limits(
+        monkeypatch,
+        enabled=True,
+        instance_id="instance-b",
+        instance_ring=["instance-a", "instance-b"],
+    )
+    account_id = await _import_account(async_client, f"acc_{slug}", f"{slug}@example.com")
+    service = get_proxy_service_for_app(app_instance)
+    prompt_cache_key = f"{slug}-cache"
+    turn_state = f"http_turn_{slug}"
+    response_id = f"resp_{slug}"
+    durable_lookup = await service._durable_bridge.claim_live_session(
+        session_key_kind="prompt_cache",
+        session_key_value=prompt_cache_key,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_process_epoch="remote-process",
+        lease_ttl_seconds=60.0,
+        account_id=account_id,
+        model="gpt-5.1",
+        service_tier=None,
+        latest_turn_state=turn_state,
+        latest_response_id=response_id,
+        allow_takeover=True,
+    )
+    await service._durable_bridge.register_turn_state(
+        session_id=durable_lookup.session_id,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_epoch=durable_lookup.owner_epoch,
+        turn_state=turn_state,
+        lease_ttl_seconds=60.0,
+    )
+    await service._durable_bridge.register_previous_response_id(
+        session_id=durable_lookup.session_id,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_epoch=durable_lookup.owner_epoch,
+        response_id=response_id,
+        lease_ttl_seconds=60.0,
+    )
+
+    class Ring:
+        async def list_active(self, *, require_endpoint: bool = False) -> list[str]:
+            assert require_endpoint is True
+            return ["instance-a", "instance-b"]
+
+        async def resolve_endpoint(self, instance_id: str) -> str:
+            assert instance_id == "instance-a"
+            return "http://instance-a"
+
+    owner_refusal_body = json.dumps(
+        {
+            "error": {
+                "message": _RETRY_CIRCUIT_SUPPRESSION_MESSAGE,
+                "type": "server_error",
+                "code": "upstream_request_timeout",
+            }
+        }
+    )
+
+    class FakeOwnerResponse:
+        status = 503
+        headers = {HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1", "Retry-After": "30"}
+
+        async def __aenter__(self) -> "FakeOwnerResponse":
+            await asyncio.sleep(owner_delay_seconds)
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def text(self) -> str:
+            return owner_refusal_body
+
+    class FakeOwnerSession:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> "FakeOwnerSession":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, **_kwargs: object) -> FakeOwnerResponse:
+            assert url == "http://instance-a/internal/bridge/responses"
+            return FakeOwnerResponse()
+
+    monkeypatch.setattr(
+        "app.modules.proxy.http_bridge_forwarding.aiohttp.ClientSession",
+        FakeOwnerSession,
+    )
+
+    original_ring = service._ring_membership
+    service._ring_membership = cast(Any, Ring())
+    try:
+        async with _client_reporting_committed_stream_failures(app_instance) as client:
+            return await client.post(
+                "/backend-api/codex/responses",
+                json={
+                    "model": "gpt-5.1",
+                    "instructions": "Return exactly OK.",
+                    "input": "continue",
+                    "prompt_cache_key": prompt_cache_key,
+                    "previous_response_id": response_id,
+                    "stream": True,
+                },
+                headers={
+                    "x-codex-turn-state": turn_state,
+                    "user-agent": "codex_exec/0.153.4",
+                },
+            )
+    finally:
+        service._ring_membership = original_ring
+
+
+@pytest.mark.asyncio
+async def test_native_codex_owner_forward_retry_circuit_refusal_keeps_retry_after_before_commit(
+    async_client,
+    app_instance,
+    monkeypatch,
+):
+    """The owner's cooldown hint survives the internal forward to the origin's client."""
+    response = await _native_owner_forward_retry_circuit_refusal(
+        async_client,
+        app_instance,
+        monkeypatch,
+        slug="native-owner-forward-circuit-precommit",
+    )
+
+    assert response.status_code == 503, f"native client received {response.status_code} with body {response.text!r}"
+    assert response.json()["error"]["code"] == "upstream_request_timeout"
+    assert response.headers.get("retry-after") == "30"
+
+
+@pytest.mark.asyncio
+async def test_native_codex_owner_forward_retry_circuit_refusal_keeps_retry_hint_after_commit(
+    async_client,
+    app_instance,
+    monkeypatch,
+):
+    """After the origin committed, the owner's cooldown reaches the client as the SSE retry hint."""
+    from app.modules.proxy import api as proxy_api_module
+
+    monkeypatch.setattr(proxy_api_module, "_HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS", 0.0)
+    monkeypatch.setattr(proxy_api_module, "_CAPACITY_STARTUP_SIGNAL_DISCOVERY_SECONDS", 0.0)
+    response = await _native_owner_forward_retry_circuit_refusal(
+        async_client,
+        app_instance,
+        monkeypatch,
+        slug="native-owner-forward-circuit-postcommit",
+        owner_delay_seconds=0.05,
+    )
+
+    assert response.status_code == 200
+    assert "retry: 30000\n" in response.text
+    assert '"code":"upstream_request_timeout"' in response.text.replace(" ", "")
+    assert response.text.rstrip().endswith("data: [DONE]")
+
+
 # --- Reproduction for #1384 takeover (narrowed scope): accepted, output-free capacity failure ---
 
 

@@ -73,15 +73,16 @@ class _StalledTerminalDurableBridge(_FakeDurableBridge):
         super().__init__()
         self.append_started = asyncio.Event()
         self.append_cancelled = asyncio.Event()
+        self.release_append = asyncio.Event()
 
     async def _stall_terminal_append(self) -> bool:
         self.append_started.set()
         try:
-            await asyncio.Future()
+            await self.release_append.wait()
         except asyncio.CancelledError:
             self.append_cancelled.set()
             raise
-        raise AssertionError("stalled terminal append unexpectedly resumed")
+        return False
 
     async def append_terminal_operation_event(self, **kwargs) -> bool:
         del kwargs
@@ -142,15 +143,16 @@ class _StalledDrainDurableBridge(_FakeDurableBridge):
         super().__init__()
         self.append_started = asyncio.Event()
         self.append_cancelled = asyncio.Event()
+        self.release_append = asyncio.Event()
 
     async def _stall_pending_append(self) -> bool:
         self.append_started.set()
         try:
-            await asyncio.Future()
+            await self.release_append.wait()
         except asyncio.CancelledError:
             self.append_cancelled.set()
             raise
-        raise AssertionError("stalled pending append unexpectedly resumed")
+        return False
 
     async def append_operation_events(self, **kwargs) -> bool:
         del kwargs
@@ -172,6 +174,32 @@ class _DelayedFailingDrainDurableBridge(_FakeDurableBridge):
         self.append_started.set()
         await self.release_append.wait()
         return False
+
+
+class _ReleasableDrainDurableBridge(_FakeDurableBridge):
+    """The first drain write stalls until released, absorbing cancellation like a
+    shielded session teardown; later writes go straight through."""
+
+    def __init__(self, *, first_write_result: bool = True) -> None:
+        super().__init__()
+        self.append_started = asyncio.Event()
+        self.release_append = asyncio.Event()
+        self.first_write_result = first_write_result
+        self.first_write_done = False
+
+    async def append_operation_events(self, **kwargs) -> bool:
+        if self.first_write_done:
+            return await super().append_operation_events(**kwargs)
+        self.first_write_done = True
+        self.append_started.set()
+        while not self.release_append.is_set():
+            try:
+                await self.release_append.wait()
+            except asyncio.CancelledError:
+                continue
+        if not self.first_write_result:
+            return False
+        return await super().append_operation_events(**kwargs)
 
 
 class _ShieldedStall:
@@ -498,6 +526,8 @@ async def test_stalled_terminal_append_is_bounded_and_requires_settlement(spool_
     assert result.settlement_required is True
     assert batcher._contexts == {}
     assert batcher._closing_operations == set()
+    durable.release_append.set()
+    await batcher.close()
 
 
 @pytest.mark.asyncio
@@ -681,6 +711,126 @@ async def test_stalled_pending_drain_is_bounded_and_requires_settlement(spool_fo
         assert batcher._pending_count == 0
         assert batcher._pending_bytes == 0
     finally:
+        durable.release_append.set()
+        await batcher.close()
+
+
+@pytest.mark.asyncio
+async def test_append_left_running_past_bound_does_not_adopt_newer_attempt_context() -> None:
+    durable = _ReleasableDrainDurableBridge()
+    batcher = HttpBridgeOperationEventBatcher(
+        durable,
+        max_bytes=1024,
+        flush_interval_seconds=60.0,
+        terminal_append_timeout_seconds=0.01,
+    )
+    batcher._task = asyncio.create_task(asyncio.sleep(60.0))
+    try:
+        await _enqueue(batcher, "pending")
+        first = await asyncio.wait_for(
+            batcher.append_terminal_event(
+                operation_id="op-1",
+                session_id="session-1",
+                instance_id="instance-1",
+                owner_epoch=7,
+                event_text="terminal-1",
+                max_bytes=1024,
+                state="completed",
+                response_id="resp-1",
+            ),
+            timeout=1.0,
+        )
+        assert first.settlement_required is True
+        assert durable.append_started.is_set()
+        (late_task,) = tuple(batcher._terminal_append_tasks)
+
+        # A newer attempt registers its own context while the first append is
+        # still draining.
+        batcher._terminal_append_timeout_seconds = 5.0
+        second_task = asyncio.create_task(
+            batcher.append_terminal_event(
+                operation_id="op-1",
+                session_id="session-1",
+                instance_id="instance-2",
+                owner_epoch=8,
+                event_text="terminal-2",
+                max_bytes=1024,
+                state="completed",
+                response_id="resp-2",
+            )
+        )
+        while batcher._contexts.get("op-1") is None:
+            await asyncio.sleep(0)
+        durable.release_append.set()
+
+        late_result = await asyncio.wait_for(late_task, timeout=1.0)
+        second = await asyncio.wait_for(second_task, timeout=5.0)
+
+        assert late_result.persisted is False
+        assert second.persisted is True
+        assert [(kwargs["event_text"], kwargs["owner_epoch"]) for kwargs in durable.terminal_append_kwargs] == [
+            ("terminal-2", 8)
+        ]
+    finally:
+        durable.release_append.set()
+        await batcher.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_drain_of_an_expired_attempt_keeps_the_newer_attempt_transcript() -> None:
+    durable = _ReleasableDrainDurableBridge(first_write_result=False)
+    batcher = HttpBridgeOperationEventBatcher(
+        durable,
+        max_bytes=1024,
+        flush_interval_seconds=60.0,
+        terminal_append_timeout_seconds=0.01,
+    )
+    batcher._task = asyncio.create_task(asyncio.sleep(60.0))
+    try:
+        await _enqueue(batcher, "pending-a")
+        first = await batcher.append_terminal_event(
+            operation_id="op-1",
+            session_id="session-1",
+            instance_id="instance-1",
+            owner_epoch=7,
+            event_text="terminal-1",
+            max_bytes=1024,
+            state="failed",
+            response_id="resp-1",
+        )
+        assert first.settlement_required is True
+        assert durable.append_started.is_set()
+        (late_task,) = tuple(batcher._terminal_append_tasks)
+
+        # The newer attempt queues its own event and starts its terminal while
+        # the old drain write is still running.
+        await _enqueue(batcher, "pending-b")
+        batcher._terminal_append_timeout_seconds = 5.0
+        second_task = asyncio.create_task(
+            batcher.append_terminal_event(
+                operation_id="op-1",
+                session_id="session-1",
+                instance_id="instance-1",
+                owner_epoch=7,
+                event_text="terminal-2",
+                max_bytes=1024,
+                state="completed",
+                response_id="resp-2",
+            )
+        )
+        while batcher._operation_attempts.get("op-1") is None:
+            await asyncio.sleep(0)
+        # The old write fails (for example, its owner fence is stale).
+        durable.release_append.set()
+
+        await asyncio.wait_for(late_task, timeout=1.0)
+        second = await asyncio.wait_for(second_task, timeout=5.0)
+
+        assert second.persisted is True
+        assert durable.batches == [["pending-b"]]
+        assert [kwargs["event_text"] for kwargs in durable.terminal_append_kwargs] == ["terminal-2"]
+    finally:
+        durable.release_append.set()
         await batcher.close()
 
 
@@ -817,7 +967,7 @@ async def test_close_owns_terminal_append_pending_past_bound(caplog: pytest.LogC
         )
         assert result.persisted is False
         assert result.settlement_required is True
-        await asyncio.wait_for(durable.append_stall.cancelled.wait(), timeout=1.0)
+        assert not durable.append_stall.cancelled.is_set()
         late_tasks = tuple(batcher._terminal_append_tasks)
         assert len(late_tasks) == 1
         late_task = late_tasks[0]
@@ -892,6 +1042,37 @@ async def test_close_owns_terminal_finalize_pending_past_bound(caplog: pytest.Lo
         assert batcher._terminal_finalize_tasks == set()
     finally:
         durable.finalize_stall.release.set()
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_pending_terminal_writes() -> None:
+    durable = _StalledTerminalDurableBridge()
+    batcher = HttpBridgeOperationEventBatcher(
+        durable,
+        max_bytes=1024,
+        flush_interval_seconds=60.0,
+        terminal_append_timeout_seconds=60.0,
+    )
+    append_caller = asyncio.create_task(
+        batcher.append_terminal_event(
+            operation_id="op-1",
+            session_id="session-1",
+            instance_id="instance-1",
+            owner_epoch=7,
+            event_text="terminal",
+            max_bytes=1024,
+            state="completed",
+            response_id="resp-1",
+        )
+    )
+    try:
+        await asyncio.wait_for(durable.append_started.wait(), timeout=1.0)
+
+        await asyncio.wait_for(batcher.close(), timeout=2.0)
+        assert durable.append_cancelled.is_set()
+        assert (await asyncio.wait_for(append_caller, timeout=1.0)).settlement_required is True
+    finally:
+        durable.release_append.set()
 
 
 @pytest.mark.asyncio

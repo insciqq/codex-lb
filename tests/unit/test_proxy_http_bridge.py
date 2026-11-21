@@ -7654,15 +7654,16 @@ async def test_stalled_terminal_spool_does_not_block_downstream_delivery() -> No
     session.durable_session_id = "durable-stalled-terminal-spool"
     session.durable_owner_epoch = 4
     append_cancelled = asyncio.Event()
+    release_append = asyncio.Event()
 
     async def append_terminal_operation_event(**kwargs: Any) -> bool:
         del kwargs
         try:
-            await asyncio.Future()
+            await release_append.wait()
         except asyncio.CancelledError:
             append_cancelled.set()
             raise
-        raise AssertionError("stalled terminal append unexpectedly resumed")
+        return False
 
     settlement_started = asyncio.Event()
     release_settlement = asyncio.Event()
@@ -7706,6 +7707,8 @@ async def test_stalled_terminal_spool_does_not_block_downstream_delivery() -> No
     assert persist_task.done() is False
     release_settlement.set()
     assert await asyncio.wait_for(persist_task, timeout=1.0) is True
+    release_append.set()
+    await service._http_bridge_operation_event_batcher.close()
 
 
 @pytest.mark.asyncio

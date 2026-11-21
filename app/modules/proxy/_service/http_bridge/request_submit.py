@@ -278,6 +278,26 @@ class _HTTPBridgeStaleGateSnapshot:
     retry_circuit_attempt_selection: _HTTPBridgeRetryCircuitAttemptSelection
 
 
+def _http_bridge_retry_circuit_suppression_error(block_reason: str, retry_after_seconds: int) -> ProxyResponseError:
+    """Build the 503 a retry-circuit suppression answers with.
+
+    The suppression is the bridge refusing the turn before any upstream frame
+    for it was sent, so it is a local pre-dispatch refusal even though it
+    shares ``upstream_request_timeout`` with real upstream transport failures.
+    Without the flag the native Codex lifecycle treats it as a dead upstream
+    and ends the committed body with no terminal event (issue #2388).
+    """
+    return ProxyResponseError(
+        503,
+        openai_error(
+            "upstream_request_timeout",
+            _http_bridge_retry_circuit_suppression_message(block_reason, retry_after_seconds),
+        ),
+        retry_after_seconds=retry_after_seconds,
+        local_pre_dispatch_refusal=True,
+    )
+
+
 def _http_bridge_cooldown_suppression_is_replay_safe(request_state: _WebSocketRequestState) -> bool:
     """Return whether a cooldown-suppressed submission is provably undispatched.
 
@@ -1138,14 +1158,7 @@ class _HTTPBridgeRequestSubmitMixin:
                 cache_key_family=session.key.affinity_kind,
                 model_class=_extract_model_class(session.request_model) if session.request_model else None,
             )
-            cooldown_error = ProxyResponseError(
-                503,
-                openai_error(
-                    "upstream_request_timeout",
-                    _http_bridge_retry_circuit_suppression_message(block_reason, retry_after_seconds),
-                ),
-                retry_after_seconds=retry_after_seconds,
-            )
+            cooldown_error = _http_bridge_retry_circuit_suppression_error(block_reason, retry_after_seconds)
             if _http_bridge_cooldown_suppression_is_replay_safe(request_state):
                 setattr(cooldown_error, _HTTP_BRIDGE_PRE_SUBMIT_FAILURE_ATTR, True)
                 setattr(cooldown_error, _HTTP_BRIDGE_COOLDOWN_SUPPRESSION_ATTR, True)
@@ -2188,15 +2201,8 @@ class _HTTPBridgeRequestSubmitMixin:
                                     _extract_model_class(session.request_model) if session.request_model else None
                                 ),
                             )
-                            raise ProxyResponseError(
-                                503,
-                                openai_error(
-                                    "upstream_request_timeout",
-                                    _http_bridge_retry_circuit_suppression_message(
-                                        suppressed_block_reason, suppressed_retry_after_seconds
-                                    ),
-                                ),
-                                retry_after_seconds=suppressed_retry_after_seconds,
+                            raise _http_bridge_retry_circuit_suppression_error(
+                                suppressed_block_reason, suppressed_retry_after_seconds
                             )
                     async with session.pending_lock:
                         session.pending_requests.append(request_state)

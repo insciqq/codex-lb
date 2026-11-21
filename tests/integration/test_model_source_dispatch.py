@@ -116,6 +116,23 @@ class _StubState:
     finished: int = 0
 
 
+class _SteppedMonotonicClock:
+    """The dispatch owner's clock with its monotonic reading moved forward on demand."""
+
+    def __init__(self) -> None:
+        self.base: Any = None
+        self.offset = 0.0
+
+    def monotonic(self) -> float:
+        return self.base.monotonic() + self.offset
+
+    def time(self) -> float:
+        return self.base.time()
+
+    def now(self) -> Any:
+        return self.base.now()
+
+
 def _sse_handler(
     state: _StubState,
     *,
@@ -833,9 +850,25 @@ async def test_disconnect_before_the_body_starts_finalizes_the_transport(async_c
 async def test_client_leaving_after_the_stall_window_is_a_stall_abandonment(
     async_client, source_upstream, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """(c) headers delayed past the evidence window, then the client leaves -> ``source_stall_abandoned``."""
+    """(c) headers delayed past the evidence window, then the client leaves -> ``source_stall_abandoned``.
 
-    monkeypatch.setattr(dispatch_module, "STALL_EVIDENCE_SECONDS", 0.3)
+    The window is measured on the dispatch owner's clock from the moment the
+    open starts. The test steps that clock past the window once the source has
+    received the open, instead of sleeping on the wall clock: a sleep started
+    with the request also covers admission and the reservation write, so a slow
+    runner could leave less than the window between the open and the
+    disconnect.
+    """
+
+    clock = _SteppedMonotonicClock()
+    open_with_disconnect_watch = proxy_api.open_with_disconnect_watch
+
+    async def watch_with_stepped_clock(request: Any, owner: Any, coro: Any) -> Any:
+        clock.base = owner.clock
+        owner.clock = clock
+        return await open_with_disconnect_watch(request, owner, coro)
+
+    monkeypatch.setattr(proxy_api, "open_with_disconnect_watch", watch_with_stepped_clock)
     await _enable_api_key_auth(async_client)
     state = _StubState()
     delay_headers = asyncio.Event()
@@ -857,7 +890,12 @@ async def test_client_leaving_after_the_stall_window_is_a_stall_abandonment(
         body=json.dumps(_request_body(model)).encode(),
     )
     runner = asyncio.create_task(stream.run())
-    await asyncio.sleep(0.6)
+    deadline = time.monotonic() + 5
+    while not state.requests and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert state.requests, "the stub never received the open"
+    assert clock.base is not None, "the open did not run under the disconnect watch"
+    clock.offset = dispatch_module.STALL_EVIDENCE_SECONDS + 1.0
     stream.disconnect()
     await asyncio.wait_for(runner, timeout=10)
     await _drain(async_client)

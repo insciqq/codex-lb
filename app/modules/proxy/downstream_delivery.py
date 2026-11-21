@@ -53,8 +53,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 
+import anyio
 from fastapi.responses import StreamingResponse
 from starlette.types import Message, Receive, Scope, Send
 
@@ -133,7 +134,50 @@ def _find_block_end(window: bytes) -> int:
     return -1
 
 
-class DeliveryTracedStreamingResponse(StreamingResponse):
+class ClosingStreamingResponse(StreamingResponse):
+    """``StreamingResponse`` that always closes its body when the response ends.
+
+    A client that leaves while a chunk is being sent makes Starlette cancel
+    that ``send`` and return without closing ``body_iterator``; the body is left
+    suspended at its ``yield`` and its finalizers, which release the account
+    stream lease, would wait for async-generator garbage collection. This
+    response closes the body itself, shielded from cancellation, and then runs
+    ``on_close``, which also covers a body that never started.
+    """
+
+    def __init__(
+        self,
+        content: AsyncIterator[str] | AsyncIterator[bytes],
+        *,
+        media_type: str | None = None,
+        headers: Mapping[str, str] | None = None,
+        on_close: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        super().__init__(content, media_type=media_type, headers=headers)
+        self._on_close = on_close
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._close_body()
+
+    async def _close_body(self) -> None:
+        with anyio.CancelScope(shield=True):
+            try:
+                aclose = getattr(self.body_iterator, "aclose", None)
+                if callable(aclose):
+                    await aclose()
+            except Exception:
+                logger.warning("Failed to close the streamed response body", exc_info=True)
+            if self._on_close is not None:
+                try:
+                    await self._on_close()
+                except Exception:
+                    logger.warning("Failed to run the streamed response close hook", exc_info=True)
+
+
+class DeliveryTracedStreamingResponse(ClosingStreamingResponse):
     """``StreamingResponse`` that reports whether the SSE terminal frame reached the writer.
 
     ``outcome`` is ``None`` until the response finishes and one of :data:`OUTCOMES`
@@ -148,8 +192,9 @@ class DeliveryTracedStreamingResponse(StreamingResponse):
         surface: str,
         media_type: str = "text/event-stream",
         headers: Mapping[str, str] | None = None,
+        on_close: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
-        super().__init__(content, media_type=media_type, headers=headers)
+        super().__init__(content, media_type=media_type, headers=headers, on_close=on_close)
         self.surface = surface
         self.outcome: str | None = None
         self._chunks = 0
@@ -273,5 +318,6 @@ __all__ = [
     "OUTCOME_EXCEPTION_BEFORE_TERMINAL",
     "OUTCOME_TERMINAL_AFTER_DISCONNECT",
     "OUTCOME_TERMINAL_WRITTEN",
+    "ClosingStreamingResponse",
     "DeliveryTracedStreamingResponse",
 ]

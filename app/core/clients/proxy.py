@@ -2744,6 +2744,65 @@ async def _open_upstream_websocket(
             await circuit_breaker.release_half_open_probe()
 
 
+# Close reasons are free text chosen by the peer and can quote a signed URL or
+# request content, so only these generic phrases are logged verbatim.
+_LOGGABLE_UPSTREAM_WEBSOCKET_CLOSE_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        "bad gateway",
+        "going away",
+        "idle timeout",
+        "internal error",
+        "internal server error",
+        "message too big",
+        "message too large",
+        "normal closure",
+        "policy violation",
+        "protocol error",
+        "server error",
+        "service restart",
+        "timeout",
+        "try again later",
+    }
+)
+
+
+def _loggable_upstream_websocket_close_reason(reason: object) -> str | None:
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    normalized = reason.strip().lower()
+    if normalized in _LOGGABLE_UPSTREAM_WEBSOCKET_CLOSE_REASONS:
+        return normalized
+    return "<unrecognized>"
+
+
+def _log_upstream_websocket_closed_before_terminal(websocket: Any, message: Any) -> None:
+    """Record why the upstream websocket ended a stream before its terminal event.
+
+    The stream readers stop at the close without a terminal event, and the
+    failure surfaces later as a generic incomplete stream; the close code
+    (1006 for a dropped connection, 1009 for an oversized frame, 1011 for a
+    server error) is the only evidence of the cause. A ``CLOSE`` frame comes
+    from the peer, and ``CLOSED`` with a non-normal code from a lost
+    connection; ``CLOSING`` and a normal ``CLOSED`` follow our own
+    ``close()``, so those are logged at debug level only.
+    """
+    message_type = getattr(message, "type", None)
+    data = getattr(message, "data", None)
+    raw_close_code = data if isinstance(data, int) else getattr(websocket, "close_code", None)
+    close_code = raw_close_code if isinstance(raw_close_code, int) else None
+    remote = message_type == aiohttp.WSMsgType.CLOSE or (
+        message_type == aiohttp.WSMsgType.CLOSED and close_code is not None and close_code != aiohttp.WSCloseCode.OK
+    )
+    logger.log(
+        logging.WARNING if remote else logging.DEBUG,
+        "upstream_websocket_closed_before_terminal request_id=%s message_type=%s close_code=%s close_reason=%s",
+        get_request_id(),
+        getattr(message_type, "name", None),
+        close_code,
+        _loggable_upstream_websocket_close_reason(getattr(message, "extra", None)),
+    )
+
+
 async def _stream_websocket_events(
     websocket: aiohttp.ClientWebSocketResponse,
     *,
@@ -2775,6 +2834,7 @@ async def _stream_websocket_events(
             raise StreamIdleTimeoutError() from exc
 
         if message.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED}:
+            _log_upstream_websocket_closed_before_terminal(websocket, message)
             break
         if message.type == aiohttp.WSMsgType.ERROR:
             exc = websocket.exception()
@@ -2836,6 +2896,7 @@ async def _stream_codex_websocket_events(
             raise StreamIdleTimeoutError() from exc
 
         if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
+            _log_upstream_websocket_closed_before_terminal(websocket, msg)
             break
         if msg.type == aiohttp.WSMsgType.ERROR:
             exc = websocket.exception()

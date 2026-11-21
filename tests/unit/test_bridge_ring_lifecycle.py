@@ -5036,3 +5036,57 @@ async def test_claim_does_not_retry_takeover_against_a_live_foreign_owner(
     # Exactly one claim: the live foreign owner ends the retry instead of
     # issuing a second, permission-restoring claim.
     assert claims == [True]
+
+
+@pytest.mark.asyncio
+async def test_chunk_terminal_append_holds_no_transaction_while_waiting_for_the_writer(
+    async_session_factory: Callable[[], AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = async_session_factory()
+    try:
+        repository = DurableBridgeRepository(session)
+        claim = await _claim(
+            repository,
+            instance_id="inst-preflight-release",
+            session_key_value="sid-preflight-release",
+        )
+        fingerprint = durable_bridge_hash("preflight-release")
+        operation_id = durable_bridge_operation_id(claim.id, fingerprint)
+        assert await repository.record_operation(
+            operation_id=operation_id,
+            session_id=claim.id,
+            instance_id="inst-preflight-release",
+            owner_epoch=claim.owner_epoch,
+            request_fingerprint=fingerprint,
+            account_id="account-operation",
+            model="gpt-5.6",
+            parent_response_id=None,
+            request_text='{"input":"turn"}',
+        )
+        in_transaction_at_writer_wait: list[bool] = []
+        real_section = durable_repo_module.sqlite_writer_section
+
+        @asynccontextmanager
+        async def recording_section() -> AsyncGenerator[None]:
+            in_transaction_at_writer_wait.append(session.in_transaction())
+            async with real_section():
+                yield
+
+        monkeypatch.setattr(durable_repo_module, "sqlite_writer_section", recording_section)
+        assert await repository.append_terminal_operation_chunk(
+            operation_id=operation_id,
+            session_id=claim.id,
+            instance_id="inst-preflight-release",
+            owner_epoch=claim.owner_epoch,
+            event_text='data: {"type":"response.completed"}\n\n',
+            max_bytes=1024,
+            state="completed",
+            response_id="resp-preflight-release",
+        )
+
+        # The preflight's read transaction (and its pooled connection) is
+        # released before the append waits for the writer slot.
+        assert in_transaction_at_writer_wait == [False]
+    finally:
+        await session.close()

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import os
 import stat
 from pathlib import Path
@@ -400,6 +401,47 @@ for line in sys.stdin:
     assert exc_info.value.failure_phase == "connect"
     assert exc_info.value.retryable_same_contract is True
     assert exc_info.value.is_tls_verification_failure is True
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_subprocess_native_egress_logs_the_helper_failure_detail(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    helper = tmp_path / "native-helper"
+    _write_helper(
+        helper,
+        """#!/usr/bin/env python3
+import json
+import sys
+for line in sys.stdin:
+    command = json.loads(line)
+    print(json.dumps({
+        "type": "error",
+        "request_id": command["request_id"],
+        "message": "native upstream response body failed",
+        "failure_phase": "body_read",
+        "retryable_same_contract": False,
+        "is_tls_verification_failure": False,
+        "detail": "error reading a body from connection: stream error received: unexpected internal error",
+    }), flush=True)
+""",
+    )
+    client = SubprocessNativeEgressClient(helper)
+    caplog.set_level(logging.WARNING, logger="app.core.clients.native_egress")
+
+    with pytest.raises(NativeEgressTransportError) as exc_info:
+        await client.request(NativeEgressRequest(method="GET", url="https://example.test", headers={}))
+
+    # The cause stays out of the message callers surface to clients.
+    assert str(exc_info.value) == "native upstream response body failed"
+    assert exc_info.value.detail == (
+        "error reading a body from connection: stream error received: unexpected internal error"
+    )
+    lines = [record.getMessage() for record in caplog.records if "native_egress_request_failed" in record.getMessage()]
+    assert len(lines) == 1
+    assert "failure_phase=body_read" in lines[0]
+    assert "detail=error reading a body from connection: stream error received: unexpected internal error" in lines[0]
     await client.aclose()
 
 

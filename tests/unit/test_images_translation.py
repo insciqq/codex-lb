@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from collections.abc import AsyncIterator, Mapping
@@ -949,3 +950,72 @@ class TestUsageDetailPreservation:
         assert response.usage is not None
         assert response.usage.input_tokens_details == {"text_tokens": 11, "image_tokens": 0}
         assert response.usage.output_tokens_details == {"image_tokens": 22}
+
+
+def _source_then_wait(events: list[dict[str, object]], closed: list[str]):
+    async def source() -> AsyncIterator[str]:
+        try:
+            for event in events:
+                yield f"data: {json.dumps(event)}\n\n"
+            await asyncio.Event().wait()
+        finally:
+            closed.append("upstream")
+
+    return source()
+
+
+@pytest.mark.asyncio
+async def test_streaming_translator_closes_the_upstream_after_the_terminal_event() -> None:
+    closed: list[str] = []
+    upstream = _source_then_wait(
+        [
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {"type": "image_generation_call", "id": "ig_1", "status": "completed", "result": "B64"},
+            },
+            {"type": "response.completed", "response": {"id": "resp_1"}},
+        ],
+        closed,
+    )
+
+    chunks = [chunk async for chunk in images_service.translate_responses_stream_to_images_stream(upstream)]
+
+    assert chunks[-1] == "data: [DONE]\n\n"
+    assert closed == ["upstream"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_translator_closes_the_upstream_when_the_client_leaves() -> None:
+    closed: list[str] = []
+    upstream = _source_then_wait(
+        [
+            {
+                "type": "response.image_generation_call.partial_image",
+                "partial_image_b64": "PART_0",
+                "partial_image_index": 0,
+                "output_index": 0,
+            }
+        ],
+        closed,
+    )
+    translated = images_service.translate_responses_stream_to_images_stream(upstream)
+
+    assert "partial_image" in await anext(translated)
+    await cast(Any, translated).aclose()
+
+    assert closed == ["upstream"]
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_collector_closes_the_upstream_on_an_early_error() -> None:
+    closed: list[str] = []
+    upstream = _source_then_wait(
+        [{"type": "response.failed", "response": {"error": {"code": "server_error", "message": "boom"}}}],
+        closed,
+    )
+
+    response, error = await images_service.collect_responses_stream_for_images(upstream)
+
+    assert response is None and error is not None
+    assert closed == ["upstream"]

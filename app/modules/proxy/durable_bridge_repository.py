@@ -472,6 +472,16 @@ class DurableBridgeRepository:
             )
         ) is not None
 
+    async def _release_preflight_transaction(self) -> None:
+        """End the preflight's read transaction and hand back its connection.
+
+        The preflight runs before the writer slot so encoding stays outside it;
+        holding its connection through encoding and the writer wait would pin
+        one connection (and one aiosqlite worker) per queued append.
+        """
+        if self._session.in_transaction():
+            await self._session.rollback()
+
     async def _chunk_append_preflight_allows_encoding(
         self,
         *,
@@ -2921,7 +2931,7 @@ class DurableBridgeRepository:
         event_bytes = sum(len(event_text.encode("utf-8")) for event_text in event_texts)
         if event_bytes > max_bytes:
             return False
-        if not await self._chunk_append_preflight_allows_encoding(
+        preflight_allows_encoding = await self._chunk_append_preflight_allows_encoding(
             operation_id=first.operation_id,
             session_id=first.session_id,
             instance_id=first.instance_id,
@@ -2929,7 +2939,9 @@ class DurableBridgeRepository:
             event_bytes=event_bytes,
             event_count=len(event_texts),
             max_bytes=max_bytes,
-        ):
+        )
+        await self._release_preflight_transaction()
+        if not preflight_allows_encoding:
             return False
         try:
             encoded = await asyncio.to_thread(encode_durable_bridge_transcript_chunk, event_texts)
@@ -2998,6 +3010,7 @@ class DurableBridgeRepository:
             event_count=1,
             max_bytes=max_bytes,
         )
+        await self._release_preflight_transaction()
         try:
             encoded = (
                 await asyncio.to_thread(encode_durable_bridge_transcript_chunk, (event_text,))

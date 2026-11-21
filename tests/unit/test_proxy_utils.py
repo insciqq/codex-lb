@@ -5309,6 +5309,63 @@ async def test_stream_http_bridge_or_retry_forces_http_for_websocket_hostile_inp
 
 
 @pytest.mark.asyncio
+async def test_stream_http_bridge_or_retry_closes_the_bridge_stream_on_early_close(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    settings = _make_proxy_settings()
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        proxy_service,
+        "_http_bridge_runtime_config",
+        lambda _dashboard_settings, _app_settings: proxy_service._HTTPBridgeRuntimeConfig(
+            enabled=True,
+            idle_ttl_seconds=30.0,
+            codex_idle_ttl_seconds=30.0,
+            max_sessions=8,
+            queue_limit=16,
+            prompt_cache_idle_ttl_seconds=30.0,
+            gateway_safe_mode=False,
+        ),
+    )
+    monkeypatch.setattr(service, "_resolve_file_account_for_responses", AsyncMock(return_value=None))
+    detached: list[str] = []
+
+    async def fake_stream_via_http_bridge(payload, headers, **kwargs):
+        del payload, headers, kwargs
+        try:
+            yield 'data: {"type":"response.created","response":{"id":"resp_bridge_close"}}\n\n'
+            await asyncio.Event().wait()
+            yield "data: never\n\n"
+        finally:
+            # Stands for the session-event finalizer that detaches the consumer.
+            detached.append("detached")
+
+    async def unexpected_stream_with_retry(payload, headers, **kwargs):
+        raise AssertionError("an enabled bridge must not fall back here")
+        yield "data: retry\n\n"
+
+    monkeypatch.setattr(service, "_stream_via_http_bridge", fake_stream_via_http_bridge)
+    monkeypatch.setattr(service, "_stream_with_retry", unexpected_stream_with_retry)
+
+    stream = service._stream_http_bridge_or_retry(
+        payload=_make_transport_policy_payload(),
+        headers={},
+        codex_session_affinity=False,
+        propagate_http_errors=False,
+        openai_cache_affinity=False,
+        api_key=None,
+        api_key_reservation=None,
+        suppress_text_done_events=False,
+    )
+    first = await anext(stream)
+    assert "response.created" in first
+    await cast(Any, stream).aclose()
+
+    assert detached == ["detached"]
+
+
+@pytest.mark.asyncio
 async def test_stream_http_bridge_or_retry_bypasses_bridge_for_large_payload(monkeypatch):
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
@@ -8050,9 +8107,10 @@ class _WsResponse:
 
 
 class _WsMessage:
-    def __init__(self, msg_type, data=None) -> None:
+    def __init__(self, msg_type, data=None, extra=None) -> None:
         self.type = msg_type
         self.data = data
+        self.extra = extra
 
 
 class _WsSession:
@@ -10054,7 +10112,22 @@ async def test_native_codex_stream_reraises_transport_failure_without_terminal_e
 
 
 @pytest.mark.asyncio
-async def test_native_transport_failure_after_event_closes_the_upstream_stream(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "route",
+    [
+        "direct",
+        # The route's startup probe consumed ``response.created`` and wraps the
+        # service stream in ``_prepend_first``.
+        "probe_first_item",
+        # The probe window elapsed first and handed its pending task to
+        # ``_prepend_first_task``.
+        "probe_handoff",
+        # The bridge is disabled, so the service relays ``_stream_with_retry``
+        # from ``_stream_http_bridge_or_retry`` behind the probe.
+        "bridge_bypass",
+    ],
+)
+async def test_native_transport_failure_after_event_closes_the_upstream_stream(monkeypatch, route: str) -> None:
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     account = _make_account("acc_native_giveup_lease")
@@ -10096,37 +10169,80 @@ async def test_native_transport_failure_after_event_closes_the_upstream_stream(m
             closed.append(generator_id)
 
     monkeypatch.setattr(proxy_service, "core_stream_responses", stream_then_transport_failure)
+    headers = {"user-agent": "codex_exec/0.150.1 (Ubuntu; x86_64)", "originator": "codex_exec"}
+
+    if route == "bridge_bypass":
+        monkeypatch.setattr(
+            proxy_service,
+            "_http_bridge_runtime_config",
+            lambda _dashboard_settings, _app_settings: proxy_service._HTTPBridgeRuntimeConfig(
+                enabled=False,
+                idle_ttl_seconds=30.0,
+                codex_idle_ttl_seconds=30.0,
+                max_sessions=8,
+                queue_limit=16,
+                prompt_cache_idle_ttl_seconds=30.0,
+                gateway_safe_mode=False,
+            ),
+        )
+        monkeypatch.setattr(service, "_resolve_file_account_for_responses", AsyncMock(return_value=None))
+        service_stream = service._stream_http_bridge_or_retry(
+            payload=_make_transport_policy_payload(),
+            headers=headers,
+            codex_session_affinity=False,
+            propagate_http_errors=False,
+            openai_cache_affinity=False,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+        )
+    else:
+        service_stream = service._stream_with_retry(
+            _make_transport_policy_payload(),
+            headers,
+            codex_session_affinity=False,
+            propagate_http_errors=False,
+            openai_cache_affinity=False,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+            request_transport="http",
+            upstream_stream_transport_override=None,
+        )
+    if route != "direct":
+        service_stream, startup_error = await proxy_api._probe_stream_startup_error(
+            service_stream,
+            timeout_seconds=0.0 if route == "probe_handoff" else 5.0,
+        )
+        assert startup_error is None
 
     chain = proxy_api._normalize_public_responses_stream(
         proxy_api._stream_response_error_events(
-            service._stream_with_retry(
-                _make_transport_policy_payload(),
-                {"user-agent": "codex_exec/0.150.1 (Ubuntu; x86_64)", "originator": "codex_exec"},
-                codex_session_affinity=False,
-                propagate_http_errors=False,
-                openai_cache_affinity=False,
-                api_key=None,
-                api_key_reservation=None,
-                suppress_text_done_events=False,
-                request_transport="http",
-                upstream_stream_transport_override=None,
-            ),
+            service_stream,
             owns_reservation=False,
             reservation=None,
             preserve_native_failure_lifecycle=True,
         ),
         preserve_native_failure_lifecycle=True,
     )
-    with pytest.raises(proxy_module.ProxyResponseError):
+    released_when_raised: bool | None = None
+    closed_when_raised: list[int] = []
+    try:
         async for _event in chain:
             pass
+    except proxy_module.ProxyResponseError:
+        # Checked before any further loop iteration: release must not depend on
+        # an asyncio finalizer closing an abandoned generator later.
+        released_when_raised = any(call.args == (lease,) for call in release_lease.await_args_list)
+        closed_when_raised = list(closed)
 
     # The native give-up raises from the middle of the chain while the
-    # upstream generator is suspended at its yield. Its finally must run,
-    # and the account lease must be released.
+    # upstream generator is suspended at its yield. Every wrapper between the
+    # consumer and that generator must close it before the error reaches the
+    # consumer, so the account lease is released by then.
+    assert released_when_raised is True
     assert opened
-    release_lease.assert_any_await(lease)
-    assert closed == opened
+    assert closed_when_raised == opened
 
 
 @pytest.mark.asyncio
@@ -10743,6 +10859,81 @@ async def test_stream_responses_websocket_omits_http_only_transport_fields(monke
     assert request_payload["custom_flag"] == "x"
     assert "stream" not in request_payload
     assert "background" not in request_payload
+
+
+_WS_READERS = ["_stream_websocket_events", "_stream_codex_websocket_events"]
+
+
+async def _read_until_close(reader_name: str, close: _WsMessage) -> list[str]:
+    websocket = _WsResponse(
+        [_WsMessage(proxy_module.aiohttp.WSMsgType.TEXT, '{"type":"response.created","response":{"id":"r"}}'), close]
+    )
+    reader = getattr(proxy_module, reader_name)
+    events = [
+        event
+        async for event in reader(
+            websocket,
+            idle_timeout_seconds=45.0,
+            total_timeout_seconds=60.0,
+            max_event_bytes=1024,
+        )
+    ]
+    assert len(events) == 1
+    return events
+
+
+def _close_log_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [record for record in caplog.records if "upstream_websocket_closed_before_terminal" in record.getMessage()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reader_name", _WS_READERS)
+async def test_websocket_reader_logs_the_close_code_of_a_close_before_terminal(
+    reader_name: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=proxy_module.logger.name)
+
+    await _read_until_close(reader_name, _WsMessage(proxy_module.aiohttp.WSMsgType.CLOSE, 1011, "Internal Error"))
+
+    records = _close_log_records(caplog)
+    assert [record.levelno for record in records] == [logging.WARNING]
+    assert "message_type=CLOSE close_code=1011 close_reason=internal error" in records[0].getMessage()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reader_name", _WS_READERS)
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "see https://storage.example/file?sig=opaque-sentinel",
+        "rejected input: my secret request-content-sentinel",
+    ],
+)
+async def test_websocket_reader_does_not_log_a_free_text_close_reason(
+    reader_name: str, reason: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=proxy_module.logger.name)
+
+    await _read_until_close(reader_name, _WsMessage(proxy_module.aiohttp.WSMsgType.CLOSE, 1008, reason))
+
+    rendered = caplog.text
+    assert "close_code=1008 close_reason=<unrecognized>" in rendered
+    assert "opaque-sentinel" not in rendered
+    assert "storage.example" not in rendered
+    assert "request-content-sentinel" not in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reader_name", _WS_READERS)
+async def test_websocket_reader_does_not_warn_about_a_local_close(
+    reader_name: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger=proxy_module.logger.name)
+
+    await _read_until_close(reader_name, _WsMessage(proxy_module.aiohttp.WSMsgType.CLOSING))
+
+    records = _close_log_records(caplog)
+    assert [record.levelno for record in records] == [logging.DEBUG]
 
 
 @pytest.mark.asyncio
@@ -46473,6 +46664,70 @@ async def test_startup_cleanup_guard_runs_after_initial_heartbeat_disconnect(
 
 
 @pytest.mark.asyncio
+async def test_startup_teardown_finishes_the_release_when_its_caller_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A direct cancel of the caller (server shutdown timeout) still lets the release finish once."""
+    released: list[str] = []
+    probe_unwinding = asyncio.Event()
+    finish_unwinding = asyncio.Event()
+
+    async def probe_with_slow_unwind() -> str:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # The probe unwinds a database session before it finishes.
+            probe_unwinding.set()
+            await finish_unwinding.wait()
+            raise
+        return "data: never\n\n"
+
+    async def record_release(
+        reservation: object,
+        *,
+        action: str,
+        scheduler: object,
+        request_id: str,
+    ) -> None:
+        del reservation, scheduler, request_id
+        released.append(action)
+
+    async def outer() -> AsyncIterator[str]:
+        yield ": keepalive\n\n"
+
+    monkeypatch.setattr(proxy_api, "_release_reservation_best_effort", record_release)
+    probe = asyncio.create_task(probe_with_slow_unwind())
+    await asyncio.sleep(0)
+    teardown = proxy_api._ResponsesStartupTeardown(
+        outer_stream=outer(),
+        startup_task=probe,
+        streams_to_close=(),
+        reservation_cleanup=proxy_api._ResponsesReservationCleanup(
+            owns_reservation=True,
+            reservation=cast(Any, object()),
+            scheduler=None,
+            request_id="startup-teardown-cancel",
+        ),
+        responses_service_cleanup_ready_event=asyncio.Event(),
+        responses_owner_forward_dispatched_event=asyncio.Event(),
+        responses_owner_forward_rejected_event=asyncio.Event(),
+    )
+
+    caller = asyncio.create_task(teardown.run())
+    await asyncio.wait_for(probe_unwinding.wait(), timeout=1.0)
+    caller.cancel()
+    await asyncio.sleep(0)
+    finish_unwinding.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(caller, timeout=1.0)
+
+    assert released == ["responses startup handoff"]
+    # A later close waits for the same teardown instead of skipping it.
+    await asyncio.wait_for(teardown.run(), timeout=1.0)
+    assert released == ["responses startup handoff"]
+
+
+@pytest.mark.asyncio
 async def test_startup_cleanup_guard_closes_stream_when_probe_already_completed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -46488,7 +46743,11 @@ async def test_startup_cleanup_guard_closes_stream_when_probe_already_completed(
             raise StopAsyncIteration
 
         async def aclose(self) -> None:
-            closed.append("service")
+            # Idempotent like an async generator's ``aclose()``: the guard
+            # closes the heartbeat wrapper, which closes this stream, before
+            # closing it again directly.
+            if not closed:
+                closed.append("service")
 
     async def record_release(
         reservation: object,

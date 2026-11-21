@@ -651,6 +651,12 @@ def _error_event_to_error_event(payload: Mapping[str, JsonValue]) -> dict[str, J
     return _build_error_event("upstream_error", "Upstream image generation failed")
 
 
+async def _close_upstream(upstream: AsyncIterator[str]) -> None:
+    aclose = getattr(upstream, "aclose", None)
+    if callable(aclose):
+        await aclose()
+
+
 async def translate_responses_stream_to_images_stream(
     upstream: AsyncIterator[str],
     *,
@@ -690,131 +696,138 @@ async def translate_responses_stream_to_images_stream(
     # have buffered (without ``usage``).
     pending_completed_events: list[dict[str, JsonValue]] = []
 
-    async for line in upstream:
-        if not line:
-            continue
-        stripped = line.strip()
-        if stripped == "data: [DONE]":
-            # We emit our own [DONE] after a terminal event below.
-            continue
-        payload = parse_sse_data_json(line)
-        if payload is None:
-            continue
-        event_type = payload.get("type")
-        if not isinstance(event_type, str):
-            continue
-
-        # Capture the upstream Responses id once so the route handler can
-        # rewrite the request log with the public effective model after the
-        # stream completes.
-        if captured is not None and "response_id" not in captured:
-            response_value = payload.get("response")
-            if is_json_mapping(response_value):
-                response_id = response_value.get("id")
-                if isinstance(response_id, str) and response_id:
-                    captured["response_id"] = response_id
-
-        if event_type == _UPSTREAM_PARTIAL_IMAGE_EVENT:
-            event = _build_partial_image_event(payload, event_type=partial_event_type)
-            if event is not None:
-                yield format_sse_event(event)
-            continue
-
-        if event_type == _UPSTREAM_OUTPUT_ITEM_DONE_EVENT:
-            item = payload.get("item")
-            if not is_json_mapping(item):
+    # Close the upstream on every exit: after the terminal event, when the
+    # client leaves, and on an error. It holds the account stream lease, and
+    # async-generator ``aclose()`` does not cascade through a suspended
+    # ``async for``.
+    try:
+        async for line in upstream:
+            if not line:
                 continue
-            if item.get("type") != "image_generation_call":
+            stripped = line.strip()
+            if stripped == "data: [DONE]":
+                # We emit our own [DONE] after a terminal event below.
                 continue
-            status = item.get("status")
-            if isinstance(status, str) and status == "failed":
+            payload = parse_sse_data_json(line)
+            if payload is None:
+                continue
+            event_type = payload.get("type")
+            if not isinstance(event_type, str):
+                continue
+
+            # Capture the upstream Responses id once so the route handler can
+            # rewrite the request log with the public effective model after the
+            # stream completes.
+            if captured is not None and "response_id" not in captured:
+                response_value = payload.get("response")
+                if is_json_mapping(response_value):
+                    response_id = response_value.get("id")
+                    if isinstance(response_id, str) and response_id:
+                        captured["response_id"] = response_id
+
+            if event_type == _UPSTREAM_PARTIAL_IMAGE_EVENT:
+                event = _build_partial_image_event(payload, event_type=partial_event_type)
+                if event is not None:
+                    yield format_sse_event(event)
+                continue
+
+            if event_type == _UPSTREAM_OUTPUT_ITEM_DONE_EVENT:
+                item = payload.get("item")
+                if not is_json_mapping(item):
+                    continue
+                if item.get("type") != "image_generation_call":
+                    continue
+                status = item.get("status")
+                if isinstance(status, str) and status == "failed":
+                    if captured is not None:
+                        captured["image_stream_outcome"] = "image_error"
+                    yield format_sse_event(_failed_image_item_error_event(item))
+                    terminal_emitted = True
+                    completion_pending = False
+                    break
+                event = _build_completed_event(item, event_type=completed_event_type)
+                if event is not None:
+                    # Buffer every completion (NOT a single overwrite-on-update
+                    # variable) so multi-image responses do not silently drop
+                    # earlier images. Flushing is deferred until the trailing
+                    # ``response.completed`` arrives so we can attach
+                    # ``tool_usage.image_gen`` as ``usage`` to the final event,
+                    # matching the canonical OpenAI Images streaming shape.
+                    pending_completed_events.append(event)
+                continue
+
+            if event_type == _UPSTREAM_RESPONSE_COMPLETED_EVENT:
+                response_obj = payload.get("response")
+                usage = _extract_image_usage(response_obj) if is_json_mapping(response_obj) else None
+                # Stash the usage tokens on ``captured`` so the route handler
+                # can post-hoc record them against the API key (the
+                # standard stream settlement only sees ``response.usage``,
+                # which is typically empty for the image_generation tool
+                # path).
+                if captured is not None and usage is not None:
+                    _stash_image_usage_tokens(captured, usage)
+                if pending_completed_events:
+                    # Emit every buffered completion in arrival order so
+                    # multi-image responses do not silently drop earlier
+                    # images. Only the last completion carries ``usage``.
+                    last_index = len(pending_completed_events) - 1
+                    for idx, event in enumerate(pending_completed_events):
+                        if idx == last_index and usage is not None:
+                            event["usage"] = usage.model_dump(mode="json", exclude_none=True)
+                        yield format_sse_event(event)
+                    pending_completed_events.clear()
+                    terminal_emitted = True
+                    if captured is not None:
+                        captured["image_stream_outcome"] = "success"
+                elif not terminal_emitted:
+                    if captured is not None:
+                        captured["image_stream_outcome"] = "image_error"
+                    yield format_sse_event(
+                        _build_error_event(
+                            "image_generation_failed",
+                            "Upstream stream completed without an image_generation_call result",
+                        )
+                    )
+                    terminal_emitted = True
+                completion_pending = False
+                break
+
+            if event_type == _UPSTREAM_RESPONSE_INCOMPLETE_EVENT:
+                if not terminal_emitted:
+                    if captured is not None:
+                        captured["image_stream_outcome"] = "image_error"
+                    yield format_sse_event(
+                        _build_error_event(
+                            "image_generation_failed",
+                            "Upstream stream ended before the image was generated",
+                        )
+                    )
+                    terminal_emitted = True
+                completion_pending = False
+                break
+
+            if event_type == _UPSTREAM_RESPONSE_FAILED_EVENT:
                 if captured is not None:
                     captured["image_stream_outcome"] = "image_error"
-                yield format_sse_event(_failed_image_item_error_event(item))
+                yield format_sse_event(_response_failed_to_error_event(payload))
                 terminal_emitted = True
                 completion_pending = False
                 break
-            event = _build_completed_event(item, event_type=completed_event_type)
-            if event is not None:
-                # Buffer every completion (NOT a single overwrite-on-update
-                # variable) so multi-image responses do not silently drop
-                # earlier images. Flushing is deferred until the trailing
-                # ``response.completed`` arrives so we can attach
-                # ``tool_usage.image_gen`` as ``usage`` to the final event,
-                # matching the canonical OpenAI Images streaming shape.
-                pending_completed_events.append(event)
+
+            if event_type == _UPSTREAM_ERROR_EVENT:
+                if captured is not None:
+                    captured["image_stream_outcome"] = "image_error"
+                yield format_sse_event(_error_event_to_error_event(payload))
+                terminal_emitted = True
+                completion_pending = False
+                break
+
+            # All other event types (response.created, reasoning, content_part,
+            # output_text, image_generation_call.in_progress / .generating,
+            # codex.rate_limits, etc.) are intentionally dropped.
             continue
-
-        if event_type == _UPSTREAM_RESPONSE_COMPLETED_EVENT:
-            response_obj = payload.get("response")
-            usage = _extract_image_usage(response_obj) if is_json_mapping(response_obj) else None
-            # Stash the usage tokens on ``captured`` so the route handler
-            # can post-hoc record them against the API key (the
-            # standard stream settlement only sees ``response.usage``,
-            # which is typically empty for the image_generation tool
-            # path).
-            if captured is not None and usage is not None:
-                _stash_image_usage_tokens(captured, usage)
-            if pending_completed_events:
-                # Emit every buffered completion in arrival order so
-                # multi-image responses do not silently drop earlier
-                # images. Only the last completion carries ``usage``.
-                last_index = len(pending_completed_events) - 1
-                for idx, event in enumerate(pending_completed_events):
-                    if idx == last_index and usage is not None:
-                        event["usage"] = usage.model_dump(mode="json", exclude_none=True)
-                    yield format_sse_event(event)
-                pending_completed_events.clear()
-                terminal_emitted = True
-                if captured is not None:
-                    captured["image_stream_outcome"] = "success"
-            elif not terminal_emitted:
-                if captured is not None:
-                    captured["image_stream_outcome"] = "image_error"
-                yield format_sse_event(
-                    _build_error_event(
-                        "image_generation_failed",
-                        "Upstream stream completed without an image_generation_call result",
-                    )
-                )
-                terminal_emitted = True
-            completion_pending = False
-            break
-
-        if event_type == _UPSTREAM_RESPONSE_INCOMPLETE_EVENT:
-            if not terminal_emitted:
-                if captured is not None:
-                    captured["image_stream_outcome"] = "image_error"
-                yield format_sse_event(
-                    _build_error_event(
-                        "image_generation_failed",
-                        "Upstream stream ended before the image was generated",
-                    )
-                )
-                terminal_emitted = True
-            completion_pending = False
-            break
-
-        if event_type == _UPSTREAM_RESPONSE_FAILED_EVENT:
-            if captured is not None:
-                captured["image_stream_outcome"] = "image_error"
-            yield format_sse_event(_response_failed_to_error_event(payload))
-            terminal_emitted = True
-            completion_pending = False
-            break
-
-        if event_type == _UPSTREAM_ERROR_EVENT:
-            if captured is not None:
-                captured["image_stream_outcome"] = "image_error"
-            yield format_sse_event(_error_event_to_error_event(payload))
-            terminal_emitted = True
-            completion_pending = False
-            break
-
-        # All other event types (response.created, reasoning, content_part,
-        # output_text, image_generation_call.in_progress / .generating,
-        # codex.rate_limits, etc.) are intentionally dropped.
-        continue
+    finally:
+        await _close_upstream(upstream)
 
     # If the upstream stream ended without a ``response.completed`` (e.g.
     # truncation), still flush whatever we have buffered so the client sees
@@ -861,134 +874,138 @@ async def collect_responses_stream_for_images(
     final_response: dict[str, JsonValue] | None = None
     terminal_error: OpenAIErrorEnvelope | None = None
 
-    async for line in upstream:
-        if not line:
-            continue
-        if line.strip() == "data: [DONE]":
-            continue
-        payload = parse_sse_data_json(line)
-        if payload is None:
-            continue
-        event_type = payload.get("type")
-        if not isinstance(event_type, str):
-            continue
-
-        # Capture the upstream Responses id once so the route handler can
-        # rewrite the request log with the public effective model after the
-        # stream completes.
-        if captured is not None and "response_id" not in captured:
-            response_value = payload.get("response")
-            if is_json_mapping(response_value):
-                response_id = response_value.get("id")
-                if isinstance(response_id, str) and response_id:
-                    captured["response_id"] = response_id
-
-        if event_type == _UPSTREAM_OUTPUT_ITEM_DONE_EVENT:
-            output_index = payload.get("output_index")
-            item = payload.get("item")
-            if not is_json_mapping(item):
+    # Close the upstream on the early error exits as well; see the translator.
+    try:
+        async for line in upstream:
+            if not line:
                 continue
-            if isinstance(output_index, int):
-                output_items[output_index] = dict(item)
-            else:
-                # Some upstream paths omit ``output_index``; preserve the
-                # arrival order so we can still surface the item.
-                fallback_items.append(dict(item))
-            continue
-
-        if event_type == _UPSTREAM_RESPONSE_COMPLETED_EVENT and final_response is None:
-            response_value = payload.get("response")
-            base: dict[str, JsonValue]
-            if is_json_mapping(response_value):
-                base = dict(response_value)
-            else:
-                base = {}
-            existing_output = base.get("output")
-            if not (isinstance(existing_output, list) and existing_output):
-                merged_output: list[JsonValue] = [item for _, item in sorted(output_items.items())]
-                merged_output.extend(fallback_items)
-                base["output"] = merged_output
-            final_response = base
-            # Stash the image usage tokens so the route handler can
-            # post-hoc charge the API key. The standard stream
-            # settlement only reads ``response.usage`` which is
-            # typically empty for the image_generation tool path.
-            if captured is not None:
-                tool_usage_payload = base
-                usage = _extract_image_usage(tool_usage_payload)
-                if usage is not None:
-                    _stash_image_usage_tokens(captured, usage)
-            # Don't break — keep draining so the upstream stream_responses
-            # generator finalizes (which writes the request log) before we
-            # return control to the caller. Once we have ``final_response``
-            # we still skip processing of any subsequent events.
-            continue
-
-        if event_type == _UPSTREAM_RESPONSE_INCOMPLETE_EVENT and terminal_error is None:
-            # Match the streaming translator: an incomplete upstream
-            # response is surfaced as an error envelope rather than a
-            # 200 response carrying a half-finished image.
-            terminal_error = openai_error(
-                "image_generation_failed",
-                "Upstream response was incomplete before the image was generated",
-                error_type="server_error",
-            )
-            break
-
-        if event_type == _UPSTREAM_RESPONSE_FAILED_EVENT:
-            # Once a successful ``response.completed`` is captured, ignore
-            # any trailing transport-level failure events: they cannot
-            # invalidate an already-received image result. Without this
-            # guard a late ``response.failed`` could turn a successful
-            # 200 envelope into a spurious 502.
-            if final_response is not None:
+            if line.strip() == "data: [DONE]":
                 continue
-            response_value = payload.get("response")
-            error_value: JsonValue | None = None
-            if is_json_mapping(response_value):
-                error_value = response_value.get("error")
-            if is_json_mapping(error_value):
-                code = error_value.get("code")
-                message = error_value.get("message")
-                error_type = error_value.get("type")
-                envelope = openai_error(
-                    code if isinstance(code, str) and code else "upstream_error",
-                    message if isinstance(message, str) and message else "Upstream image generation failed",
-                    error_type=error_type if isinstance(error_type, str) and error_type else "server_error",
-                )
-            else:
-                envelope = openai_error(
-                    "upstream_error",
-                    "Upstream image generation failed",
+            payload = parse_sse_data_json(line)
+            if payload is None:
+                continue
+            event_type = payload.get("type")
+            if not isinstance(event_type, str):
+                continue
+
+            # Capture the upstream Responses id once so the route handler can
+            # rewrite the request log with the public effective model after the
+            # stream completes.
+            if captured is not None and "response_id" not in captured:
+                response_value = payload.get("response")
+                if is_json_mapping(response_value):
+                    response_id = response_value.get("id")
+                    if isinstance(response_id, str) and response_id:
+                        captured["response_id"] = response_id
+
+            if event_type == _UPSTREAM_OUTPUT_ITEM_DONE_EVENT:
+                output_index = payload.get("output_index")
+                item = payload.get("item")
+                if not is_json_mapping(item):
+                    continue
+                if isinstance(output_index, int):
+                    output_items[output_index] = dict(item)
+                else:
+                    # Some upstream paths omit ``output_index``; preserve the
+                    # arrival order so we can still surface the item.
+                    fallback_items.append(dict(item))
+                continue
+
+            if event_type == _UPSTREAM_RESPONSE_COMPLETED_EVENT and final_response is None:
+                response_value = payload.get("response")
+                base: dict[str, JsonValue]
+                if is_json_mapping(response_value):
+                    base = dict(response_value)
+                else:
+                    base = {}
+                existing_output = base.get("output")
+                if not (isinstance(existing_output, list) and existing_output):
+                    merged_output: list[JsonValue] = [item for _, item in sorted(output_items.items())]
+                    merged_output.extend(fallback_items)
+                    base["output"] = merged_output
+                final_response = base
+                # Stash the image usage tokens so the route handler can
+                # post-hoc charge the API key. The standard stream
+                # settlement only reads ``response.usage`` which is
+                # typically empty for the image_generation tool path.
+                if captured is not None:
+                    tool_usage_payload = base
+                    usage = _extract_image_usage(tool_usage_payload)
+                    if usage is not None:
+                        _stash_image_usage_tokens(captured, usage)
+                # Don't break — keep draining so the upstream stream_responses
+                # generator finalizes (which writes the request log) before we
+                # return control to the caller. Once we have ``final_response``
+                # we still skip processing of any subsequent events.
+                continue
+
+            if event_type == _UPSTREAM_RESPONSE_INCOMPLETE_EVENT and terminal_error is None:
+                # Match the streaming translator: an incomplete upstream
+                # response is surfaced as an error envelope rather than a
+                # 200 response carrying a half-finished image.
+                terminal_error = openai_error(
+                    "image_generation_failed",
+                    "Upstream response was incomplete before the image was generated",
                     error_type="server_error",
                 )
-            terminal_error = envelope
-            break
+                break
 
-        if event_type == _UPSTREAM_ERROR_EVENT:
-            # Same rationale as the ``response.failed`` branch above:
-            # ignore late error events once a complete response has
-            # already been captured.
-            if final_response is not None:
-                continue
-            error_value = payload.get("error")
-            if is_json_mapping(error_value):
-                code = error_value.get("code")
-                message = error_value.get("message")
-                error_type = error_value.get("type")
-                envelope = openai_error(
-                    code if isinstance(code, str) and code else "upstream_error",
-                    message if isinstance(message, str) and message else "Upstream image generation failed",
-                    error_type=error_type if isinstance(error_type, str) and error_type else "server_error",
-                )
-            else:
-                envelope = openai_error(
-                    "upstream_error",
-                    "Upstream image generation failed",
-                    error_type="server_error",
-                )
-            terminal_error = envelope
-            break
+            if event_type == _UPSTREAM_RESPONSE_FAILED_EVENT:
+                # Once a successful ``response.completed`` is captured, ignore
+                # any trailing transport-level failure events: they cannot
+                # invalidate an already-received image result. Without this
+                # guard a late ``response.failed`` could turn a successful
+                # 200 envelope into a spurious 502.
+                if final_response is not None:
+                    continue
+                response_value = payload.get("response")
+                error_value: JsonValue | None = None
+                if is_json_mapping(response_value):
+                    error_value = response_value.get("error")
+                if is_json_mapping(error_value):
+                    code = error_value.get("code")
+                    message = error_value.get("message")
+                    error_type = error_value.get("type")
+                    envelope = openai_error(
+                        code if isinstance(code, str) and code else "upstream_error",
+                        message if isinstance(message, str) and message else "Upstream image generation failed",
+                        error_type=error_type if isinstance(error_type, str) and error_type else "server_error",
+                    )
+                else:
+                    envelope = openai_error(
+                        "upstream_error",
+                        "Upstream image generation failed",
+                        error_type="server_error",
+                    )
+                terminal_error = envelope
+                break
+
+            if event_type == _UPSTREAM_ERROR_EVENT:
+                # Same rationale as the ``response.failed`` branch above:
+                # ignore late error events once a complete response has
+                # already been captured.
+                if final_response is not None:
+                    continue
+                error_value = payload.get("error")
+                if is_json_mapping(error_value):
+                    code = error_value.get("code")
+                    message = error_value.get("message")
+                    error_type = error_value.get("type")
+                    envelope = openai_error(
+                        code if isinstance(code, str) and code else "upstream_error",
+                        message if isinstance(message, str) and message else "Upstream image generation failed",
+                        error_type=error_type if isinstance(error_type, str) and error_type else "server_error",
+                    )
+                else:
+                    envelope = openai_error(
+                        "upstream_error",
+                        "Upstream image generation failed",
+                        error_type="server_error",
+                    )
+                terminal_error = envelope
+                break
+    finally:
+        await _close_upstream(upstream)
 
     if terminal_error is not None:
         return None, terminal_error

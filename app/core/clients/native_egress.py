@@ -18,9 +18,14 @@ from multidict import CIMultiDict
 
 from app.core.clients.stream_errors import StreamEventTooLargeError, StreamIdleTimeoutError
 from app.core.types import JsonValue
+from app.core.utils.request_id import get_request_id
 from app.core.utils.shared_future import _await_cleanup_deferring_cancellation
 
 logger = logging.getLogger(__name__)
+
+# The helper bounds the text it sends; this bounds what one log line carries
+# even from a helper that does not.
+_NATIVE_ERROR_DETAIL_LOG_CHARS = 512
 
 _NATIVE_EGRESS_EXECUTABLE = "codex-lb-native-egress"
 _NATIVE_PROTOCOL_VERSION = 1
@@ -173,8 +178,12 @@ class NativeEgressTransportError(NativeEgressError):
         status_code: int | None = None,
         headers: tuple[tuple[str, str], ...] = (),
         body: bytes | None = None,
+        detail: str | None = None,
     ) -> None:
         super().__init__(message)
+        # Diagnostic cause text from the helper (the transport error chain
+        # below the static ``message``); logged, never sent to clients.
+        self.detail = detail
         self.failure_phase = failure_phase
         self.retryable_same_contract = retryable_same_contract
         self.is_tls_verification_failure = is_tls_verification_failure
@@ -1348,14 +1357,28 @@ def _transport_error_from_event(event: Mapping[str, object]) -> NativeEgressTran
     failure_phase = event.get("failure_phase")
     retryable_same_contract = event.get("retryable_same_contract")
     is_tls_verification_failure = event.get("is_tls_verification_failure")
-    return NativeEgressTransportError(
+    detail = event.get("detail")
+    error = NativeEgressTransportError(
         message if isinstance(message, str) else "native request failed",
         failure_phase=failure_phase if isinstance(failure_phase, str) else "request",
         retryable_same_contract=retryable_same_contract if isinstance(retryable_same_contract, bool) else False,
         is_tls_verification_failure=(
             is_tls_verification_failure if isinstance(is_tls_verification_failure, bool) else False
         ),
+        detail=detail[:_NATIVE_ERROR_DETAIL_LOG_CHARS] if isinstance(detail, str) and detail else None,
     )
+    # The static message is all a caller reports; the helper's cause chain
+    # (an h2 reset reason, a TLS alert, ``Connection reset by peer``) is the
+    # only evidence of why an upstream request died, so keep it in the log.
+    logger.warning(
+        "native_egress_request_failed request_id=%s failure_phase=%s retryable_same_contract=%s message=%s detail=%s",
+        get_request_id(),
+        error.failure_phase,
+        error.retryable_same_contract,
+        error,
+        error.detail,
+    )
+    return error
 
 
 def _websocket_error_from_event(event: Mapping[str, object]) -> NativeEgressTransportError:

@@ -127,3 +127,6 @@ Upstream PRs reviewed and rejected, one line each with the reason.
   work still runs, and fresh post-cancel waits can exhaust the cleanup reserve.
 * 2634: paused/deactivated accounts' open WebSockets reject every turn, incl.
   full-history retries; no failover or recycle; no production evidence.
+* 2555: leave the terminal transcript append running at its bound; superseded by 2600,
+  which finalizes the cancelled SQLite cursor that held the writer lock; cancelling at
+  the bound is then safe.

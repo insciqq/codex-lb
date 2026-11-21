@@ -182,7 +182,10 @@ class HttpBridgeOperationEventBatcher:
         async with self._lock:
             return [operation_id for operation_id in self._pending if operation_id not in self._closing_operations]
 
-    async def _take_batch(self, operation_id: str) -> list[_PendingOperationEvent]:
+    async def _take_batch(
+        self, operation_id: str
+    ) -> tuple[list[_PendingOperationEvent], _PendingOperationEvent | None]:
+        """Take the next batch together with the context that owns it."""
         async with self._lock:
             pending = self._pending.get(operation_id, [])
             batch = pending[: self._batch_size]
@@ -192,11 +195,27 @@ class HttpBridgeOperationEventBatcher:
                 self._pending_bytes -= sum(len(item.event_text.encode("utf-8")) for item in batch)
             if not pending:
                 self._pending.pop(operation_id, None)
-            return batch
+            return batch, self._contexts.get(operation_id)
+
+    def _drop_operation_if_owned_locked(self, operation_id: str, owner: _PendingOperationEvent | None) -> None:
+        """Drop the operation's transcript after a failed batch, if the batch's owner still holds it.
+
+        A batch can outlive its attempt: the attempt's terminal bound expires,
+        its context is cleared, and a newer attempt for the same operation
+        registers its own context and queues its own events. The old batch's
+        failure must not drop that newer transcript.
+        """
+        if self._contexts.get(operation_id) is not owner:
+            return
+        if owner is not None:
+            self._dropped_operations.add(operation_id)
+        dropped = self._pending.pop(operation_id, [])
+        self._pending_count -= len(dropped)
+        self._pending_bytes -= sum(len(item.event_text.encode("utf-8")) for item in dropped)
 
     async def _flush_one(self, operation_id: str) -> None:
         async with self._flush_lock:
-            batch = await self._take_batch(operation_id)
+            batch, owner = await self._take_batch(operation_id)
             if not batch:
                 return
             async with self._lock:
@@ -225,18 +244,10 @@ class HttpBridgeOperationEventBatcher:
                     )
                 if not persisted:
                     async with self._lock:
-                        if operation_id in self._contexts:
-                            self._dropped_operations.add(operation_id)
-                        dropped = self._pending.pop(operation_id, [])
-                        self._pending_count -= len(dropped)
-                        self._pending_bytes -= sum(len(item.event_text.encode("utf-8")) for item in dropped)
+                        self._drop_operation_if_owned_locked(operation_id, owner)
             except Exception:
                 async with self._lock:
-                    if operation_id in self._contexts:
-                        self._dropped_operations.add(operation_id)
-                    dropped = self._pending.pop(operation_id, [])
-                    self._pending_count -= len(dropped)
-                    self._pending_bytes -= sum(len(item.event_text.encode("utf-8")) for item in dropped)
+                    self._drop_operation_if_owned_locked(operation_id, owner)
                 logger.debug(
                     "Dropping failed HTTP bridge transcript event batch operation_id=%s",
                     operation_id,
@@ -371,7 +382,15 @@ class HttpBridgeOperationEventBatcher:
         try:
             await self.flush_pending_operation(operation_id=operation_id)
             async with self._lock:
-                context = self._contexts.get(operation_id)
+                # The bound cancels the append and clears its context, but a
+                # write that absorbs the cancellation (a shielded session
+                # teardown) keeps running, and a newer attempt for the same
+                # operation may since have registered its own context.
+                # Adopting that context would write this attempt's terminal
+                # outcome under the newer attempt's owner identity, so only
+                # the attempt that still owns the operation reads it.
+                current = self._operation_attempts.get(operation_id) == attempt
+                context = self._contexts.get(operation_id) if current else None
                 dropped = operation_id in self._dropped_operations
             if context is None:
                 return TerminalOperationEventAppendResult(persisted=False, settlement_required=True)

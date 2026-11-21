@@ -11,6 +11,7 @@
 - [x] 2.5 Fence late and duplicate terminal writes on a durable terminal-append phase
       marker instead of an incomplete spool under a terminal state.
 - [x] 2.6 Fence the abandoned attempt's spooler cleanup on its attempt token.
+- [x] 2.7 Release the `chunks_v2` preflight read transaction and connection before the writer wait.
 
 ## 3. Verification
 
@@ -22,3 +23,6 @@
 - [x] 3.6 Drive the relay handler through the real repository and assert an ordinary
       completion ends replayable with its events persisted.
 - [x] 3.7 Cover the terminal-append-phase migration upgrade and downgrade.
+- [x] 3.8 `tests/unit/test_bridge_ring_lifecycle.py::test_chunk_terminal_append_holds_no_transaction_while_waiting_for_the_writer`.
+- [x] 3.9 `tests/integration/test_sqlite_terminal_timeout.py::test_cancelling_an_append_inside_a_select_frees_the_writer_slot`:
+      the bound and a caller cancellation both free the writer slot with the production engine settings.

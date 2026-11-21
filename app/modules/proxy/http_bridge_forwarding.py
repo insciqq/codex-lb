@@ -14,6 +14,8 @@ from app.core.clients.proxy import (
     _SSE_SEPARATOR_OVERLAP,
     ProxyResponseError,
     _find_sse_separator,
+    _retry_after_seconds_from_header,
+    _safe_retry_after_header,
     filter_inbound_headers,
 )
 from app.core.clock import REAL_CLOCK, REAL_SCHEDULER, Clock, Scheduler
@@ -224,6 +226,9 @@ class HTTPBridgeOwnerClient:
                             # non-200 response, so the origin may safely release.
                             on_response_rejected()
                         payload_text = await response.text()
+                        # The owner's cooldown hint (a retry-circuit 503) is
+                        # the actionable half of its refusal; keep it.
+                        retry_after_header = _safe_retry_after_header(response.headers)
                         raise ProxyResponseError(
                             response.status,
                             _owner_forward_error_payload(status_code=response.status, payload_text=payload_text),
@@ -239,6 +244,8 @@ class HTTPBridgeOwnerClient:
                             local_pre_dispatch_refusal=_bool_header(
                                 response.headers.get(HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER)
                             ),
+                            retry_after_header=retry_after_header,
+                            retry_after_seconds=_retry_after_seconds_from_header(retry_after_header),
                         )
                     if on_response_ready is not None:
                         on_response_ready()

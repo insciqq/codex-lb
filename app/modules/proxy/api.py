@@ -287,7 +287,7 @@ from app.modules.proxy._service.support import (
 from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.capability_routing import required_capability_metadata_values
-from app.modules.proxy.downstream_delivery import DeliveryTracedStreamingResponse
+from app.modules.proxy.downstream_delivery import ClosingStreamingResponse, DeliveryTracedStreamingResponse
 from app.modules.proxy.helpers import _openai_error_param, _parse_openai_error, _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import (
     HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER,
@@ -297,6 +297,7 @@ from app.modules.proxy.images_observability import (
     IMAGE_ROUTE_MODEL_STATE,
     IMAGE_ROUTE_STARTED_AT_STATE,
     IMAGE_ROUTE_STREAM_STATE,
+    ImageRoute,
     record_images_route_observability,
 )
 from app.modules.proxy.request_policy import (
@@ -3271,12 +3272,134 @@ async def _prime_upstream_stream(
         )
 
     async def _replay() -> AsyncIterator[str]:
-        if first_chunk is not None:
-            yield first_chunk
-        async for chunk in iterator:
-            yield chunk
+        # Owns ``iterator``: an early close must reach the lease-holding
+        # upstream, because async-generator ``aclose()`` does not cascade
+        # through a suspended ``async for``.
+        try:
+            if first_chunk is not None:
+                yield first_chunk
+            async for chunk in iterator:
+                yield chunk
+        finally:
+            await _close_responses_stream_best_effort(iterator, action="images replay")
 
     return _replay(), None
+
+
+class _OnceOwnedCleanup:
+    """Run a cleanup once, as an owned task every caller waits for.
+
+    Callers that are cancelled while waiting still let the cleanup finish: the
+    task is awaited through the cancellation-deferring helper, and the
+    caller's cancellation is re-raised afterwards. A later caller waits for the
+    same task instead of skipping a cleanup that was cut short.
+    """
+
+    def __init__(
+        self,
+        cleanup: Callable[[], Coroutine[Any, Any, None]],
+        *,
+        name: str,
+        scheduler: Scheduler = REAL_SCHEDULER,
+    ) -> None:
+        self._cleanup = cleanup
+        self._name = name
+        self._scheduler = scheduler
+        self._task: asyncio.Task[None] | None = None
+
+    async def run(self) -> None:
+        if self._task is None:
+            self._task = self._scheduler.create_task(self._cleanup(), name=self._name)
+        _, cancellation = await _shared_await_task_deferring_cancellation(self._task)
+        if cancellation is not None:
+            raise cancellation
+
+
+def _images_streaming_response(
+    *,
+    translated: AsyncIterator[str],
+    primed_upstream: AsyncIterator[str],
+    source_upstream: AsyncIterator[str],
+    context: ProxyContext,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    public_model: str,
+    route: ImageRoute,
+    captured: dict[str, object],
+    started_at: float,
+    rate_limit_headers: Mapping[str, str],
+) -> ClosingStreamingResponse:
+    """Stream translated Images events; settle the route's reservation on every exit.
+
+    The route owns the image reservation (the retry layer gets
+    ``api_key_reservation=None``) and has already primed the upstream. The
+    settlement runs from the body's ``finally`` and from the response's close,
+    which also covers a client that leaves before the body started.
+    """
+
+    async def settle() -> None:
+        # The translator, the primed replay and the service stream they wrap
+        # hold the account stream lease. A body that never started never ran
+        # the translator's or the replay's own close, and the primer already
+        # pulled the service stream's first event, so close all three before
+        # settling.
+        await _close_responses_stream_best_effort(translated, action="images translator")
+        await _close_responses_stream_best_effort(primed_upstream, action="images replay")
+        await _close_responses_stream_best_effort(source_upstream, action="images upstream")
+        # Run the request-log model rewrite even when the stream is cancelled
+        # mid-flight (e.g. client disconnect). Without this, an interrupted SSE
+        # response would leave the request_logs row pinned to the internal
+        # host model.
+        response_id = captured.get("response_id")
+        if response_id and isinstance(response_id, str):
+            await context.service.rewrite_request_log_model(response_id, public_model)
+        # Finalize the reservation from the captured ``tool_usage.image_gen``
+        # tokens (or release if upstream never produced a usable image). This
+        # is the single point where the image API charges API-key limits;
+        # standard stream settlement is bypassed via
+        # ``api_key_reservation=None``.
+        _input = captured.get("image_input_tokens")
+        _output = captured.get("image_output_tokens")
+        _cached = captured.get("image_cached_input_tokens")
+        await _finalize_image_reservation(
+            context.service,
+            api_key,
+            reservation,
+            model=public_model,
+            input_tokens=_input if isinstance(_input, int) else None,
+            output_tokens=_output if isinstance(_output, int) else None,
+            cached_input_tokens=_cached if isinstance(_cached, int) else None,
+        )
+        stream_outcome = captured.get("image_stream_outcome")
+        if not isinstance(stream_outcome, str):
+            stream_outcome = "stream_closed"
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=True,
+            status=200,
+            outcome=stream_outcome,
+            started_at=started_at,
+        )
+
+    cleanup = _OnceOwnedCleanup(settle, name=f"images-{route}-stream-settlement")
+
+    async def body() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in translated:
+                yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+        except ProxyResponseError:
+            captured["image_stream_outcome"] = "upstream_error"
+            raise
+        finally:
+            await cleanup.run()
+
+    return ClosingStreamingResponse(
+        body(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", **rate_limit_headers},
+        on_close=cleanup.run,
+    )
 
 
 async def _proxy_images_generation_request(
@@ -3450,56 +3573,18 @@ async def _proxy_images_generation_request(
         translated = images_service_module.translate_responses_stream_to_images_stream(
             primed_upstream, captured=captured
         )
-
-        async def _stream_with_log_rewrite() -> AsyncIterator[bytes]:
-            try:
-                async for chunk in translated:
-                    yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
-            except ProxyResponseError:
-                captured["image_stream_outcome"] = "upstream_error"
-                raise
-            finally:
-                # Run the request-log model rewrite even when the stream
-                # is cancelled mid-flight (e.g. client disconnect). Without
-                # this, an interrupted SSE response would leave the
-                # request_logs row pinned to the internal host model.
-                response_id = captured.get("response_id")
-                if response_id and isinstance(response_id, str):
-                    await context.service.rewrite_request_log_model(response_id, public_model)
-                # Finalize the reservation from the captured
-                # ``tool_usage.image_gen`` tokens (or release if
-                # upstream never produced a usable image). This is the
-                # single point where the image API charges API-key
-                # limits; standard stream settlement is bypassed via
-                # ``api_key_reservation=None`` above.
-                _input = captured.get("image_input_tokens")
-                _output = captured.get("image_output_tokens")
-                _cached = captured.get("image_cached_input_tokens")
-                await _finalize_image_reservation(
-                    context.service,
-                    api_key,
-                    reservation,
-                    model=public_model,
-                    input_tokens=_input if isinstance(_input, int) else None,
-                    output_tokens=_output if isinstance(_output, int) else None,
-                    cached_input_tokens=_cached if isinstance(_cached, int) else None,
-                )
-                stream_outcome = captured.get("image_stream_outcome")
-                if not isinstance(stream_outcome, str):
-                    stream_outcome = "stream_closed"
-                record_images_route_observability(
-                    route=route,
-                    model=public_model,
-                    stream=True,
-                    status=200,
-                    outcome=stream_outcome,
-                    started_at=started_at,
-                )
-
-        return StreamingResponse(
-            _stream_with_log_rewrite(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", **rate_limit_headers},
+        return _images_streaming_response(
+            translated=translated,
+            primed_upstream=primed_upstream,
+            source_upstream=upstream,
+            context=context,
+            api_key=api_key,
+            reservation=reservation,
+            public_model=public_model,
+            route=route,
+            captured=captured,
+            started_at=started_at,
+            rate_limit_headers=rate_limit_headers,
         )
 
     try:
@@ -3748,56 +3833,18 @@ async def _proxy_images_edit_request(
         translated = images_service_module.translate_responses_stream_to_images_stream(
             primed_upstream, captured=captured, is_edit=True
         )
-
-        async def _stream_with_log_rewrite() -> AsyncIterator[bytes]:
-            try:
-                async for chunk in translated:
-                    yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
-            except ProxyResponseError:
-                captured["image_stream_outcome"] = "upstream_error"
-                raise
-            finally:
-                # Run the request-log model rewrite even when the stream
-                # is cancelled mid-flight (e.g. client disconnect). Without
-                # this, an interrupted SSE response would leave the
-                # request_logs row pinned to the internal host model.
-                response_id = captured.get("response_id")
-                if response_id and isinstance(response_id, str):
-                    await context.service.rewrite_request_log_model(response_id, public_model)
-                # Finalize the reservation from the captured
-                # ``tool_usage.image_gen`` tokens (or release if
-                # upstream never produced a usable image). This is the
-                # single point where the image API charges API-key
-                # limits; standard stream settlement is bypassed via
-                # ``api_key_reservation=None`` above.
-                _input = captured.get("image_input_tokens")
-                _output = captured.get("image_output_tokens")
-                _cached = captured.get("image_cached_input_tokens")
-                await _finalize_image_reservation(
-                    context.service,
-                    api_key,
-                    reservation,
-                    model=public_model,
-                    input_tokens=_input if isinstance(_input, int) else None,
-                    output_tokens=_output if isinstance(_output, int) else None,
-                    cached_input_tokens=_cached if isinstance(_cached, int) else None,
-                )
-                stream_outcome = captured.get("image_stream_outcome")
-                if not isinstance(stream_outcome, str):
-                    stream_outcome = "stream_closed"
-                record_images_route_observability(
-                    route=route,
-                    model=public_model,
-                    stream=True,
-                    status=200,
-                    outcome=stream_outcome,
-                    started_at=started_at,
-                )
-
-        return StreamingResponse(
-            _stream_with_log_rewrite(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", **rate_limit_headers},
+        return _images_streaming_response(
+            translated=translated,
+            primed_upstream=primed_upstream,
+            source_upstream=upstream,
+            context=context,
+            api_key=api_key,
+            reservation=reservation,
+            public_model=public_model,
+            route=route,
+            captured=captured,
+            started_at=started_at,
+            rate_limit_headers=rate_limit_headers,
         )
 
     try:
@@ -6095,10 +6142,10 @@ async def _iter_source_sse_event_blocks(
     finally:
         try:
             if iterator is not None:
-                await _aclose_stream_when_suspended(iterator)
+                await _aclose_stream(iterator)
         finally:
             if iterator is not stream:
-                await _aclose_stream_when_suspended(stream)
+                await _aclose_stream(stream)
 
 
 async def _wrap_source_responses_public_stream(
@@ -6171,7 +6218,7 @@ async def _wrap_source_responses_public_stream(
                             # teardown happens before iteration starts (e.g. a
                             # native client disconnecting right after the
                             # initial heartbeat).
-                            await _aclose_stream_when_suspended(stream)
+                            await _aclose_stream(stream)
             else:
                 try:
                     await _aclose_stream(normalized)
@@ -6179,7 +6226,7 @@ async def _wrap_source_responses_public_stream(
                     try:
                         await _aclose_stream(event_blocks)
                     finally:
-                        await _aclose_stream_when_suspended(stream)
+                        await _aclose_stream(stream)
 
 
 async def _source_chat_stream_with_settlement(
@@ -6617,6 +6664,10 @@ async def _stream_responses(
         )
 
     stream = build_response_stream()
+    # The service stream holds the account lease. The startup probe may already
+    # have pulled its first event, and the wrappers built below start only when
+    # the body is iterated, so the outer teardown closes it directly too.
+    source_stream = stream
     startup_handoff_tasks: list[asyncio.Task[str]] = []
     capacity_wait_token = _bind_propagated_capacity_startup_wait(capacity_wait_event)
     capacity_ready_token = _bind_propagated_capacity_startup_ready(capacity_ready_event)
@@ -6736,17 +6787,30 @@ async def _stream_responses(
         )
     # Outermost so a client close after the initial heartbeat still closes
     # the service stream, including when the startup probe already completed.
-    stream = _guard_responses_startup_handoff(
-        stream,
+    # The response runs the same teardown when it closes, which also covers a
+    # disconnect during a send and a body that never started.
+    startup_teardown = _ResponsesStartupTeardown(
+        outer_stream=stream,
         startup_task=startup_handoff_tasks[0] if startup_handoff_tasks else None,
-        streams_to_close=(service_stream,),
+        streams_to_close=(source_stream, service_stream),
         reservation_cleanup=reservation_cleanup,
         responses_service_cleanup_ready_event=responses_service_cleanup_ready_event,
         responses_owner_forward_dispatched_event=responses_owner_forward_dispatched_event,
         responses_owner_forward_rejected_event=responses_owner_forward_rejected_event,
     )
+    stream = _guard_responses_startup_handoff(
+        stream,
+        startup_task=None,
+        streams_to_close=(),
+        reservation_cleanup=reservation_cleanup,
+        responses_service_cleanup_ready_event=responses_service_cleanup_ready_event,
+        responses_owner_forward_dispatched_event=responses_owner_forward_dispatched_event,
+        responses_owner_forward_rejected_event=responses_owner_forward_rejected_event,
+        teardown=startup_teardown,
+    )
     return DeliveryTracedStreamingResponse(
         stream,
+        on_close=startup_teardown.run,
         surface="responses",
         media_type="text/event-stream",
         headers={
@@ -7486,10 +7550,16 @@ def _request_state_str(request: Request, name: str) -> str | None:
 
 
 async def _prepend_first(first: str | None, stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    if first is not None:
-        yield first
-    async for line in stream:
-        yield line
+    # This wrapper owns ``stream``: an early close or a raise from its consumer
+    # must reach the lease-holding generator below, because async-generator
+    # ``aclose()`` does not cascade through a suspended ``async for``.
+    try:
+        if first is not None:
+            yield first
+        async for line in stream:
+            yield line
+    finally:
+        await _close_responses_stream_best_effort(stream, action="startup probe prefix")
 
 
 async def _read_first_stream_item(stream: AsyncIterator[str]) -> str:
@@ -7930,28 +8000,32 @@ async def _stream_with_cursor_usage_fallback(
 ) -> AsyncIterator[str]:
     prompt_tokens = _estimate_cursor_prompt_tokens(payload)
     completion_chars = 0
-    async for line in stream:
-        parsed = _parse_chat_completion_sse(line)
-        if parsed is None:
+    # Owns ``stream``; see ``_prepend_first``.
+    try:
+        async for line in stream:
+            parsed = _parse_chat_completion_sse(line)
+            if parsed is None:
+                yield line
+                continue
+            completion_chars += _chat_completion_delta_chars(parsed)
+            if _is_chat_completion_usage_chunk(parsed) and _needs_cursor_usage_fallback(parsed.get("usage")):
+                completion_tokens = max(1, _estimate_tokens_from_chars(completion_chars))
+                parsed["usage"] = {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
+                }
+                logger.info(
+                    "cursor_usage_fallback source=stream model=%s prompt_tokens=%s completion_tokens=%s",
+                    payload.model,
+                    prompt_tokens,
+                    completion_tokens,
+                )
+                yield f"data: {json.dumps(parsed, separators=(',', ':'))}\n\n"
+                continue
             yield line
-            continue
-        completion_chars += _chat_completion_delta_chars(parsed)
-        if _is_chat_completion_usage_chunk(parsed) and _needs_cursor_usage_fallback(parsed.get("usage")):
-            completion_tokens = max(1, _estimate_tokens_from_chars(completion_chars))
-            parsed["usage"] = {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            }
-            logger.info(
-                "cursor_usage_fallback source=stream model=%s prompt_tokens=%s completion_tokens=%s",
-                payload.model,
-                prompt_tokens,
-                completion_tokens,
-            )
-            yield f"data: {json.dumps(parsed, separators=(',', ':'))}\n\n"
-            continue
-        yield line
+    finally:
+        await _close_responses_stream_best_effort(stream, action="cursor usage fallback")
 
 
 def _is_chat_completion_usage_chunk(payload: dict[str, JsonValue]) -> bool:
@@ -8115,43 +8189,53 @@ async def _probe_chat_stream_startup_error(
 
 
 async def _prepend_items(items: list[str], stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    for item in items:
-        yield item
-    async for line in stream:
-        yield line
+    # Owns ``stream`` like ``_prepend_first``.
+    try:
+        for item in items:
+            yield item
+        async for line in stream:
+            yield line
+    finally:
+        await _close_responses_stream_best_effort(stream, action="startup probe buffer")
 
 
 async def _prepend_first_task(first_task: asyncio.Task[str], stream: AsyncIterator[str]) -> AsyncIterator[str]:
     try:
-        # Not ``await first_task``: a level-cancelled Starlette scope re-cancels
-        # the consuming task on every loop iteration, and ``Task.cancel()``
-        # cascades down the ``_fut_waiter`` chain into the awaited task. The
-        # probe task defers cancellation while its bridge cleanup finishes, so
-        # a direct await turned every client disconnect into a busy spin that
-        # lasted as long as that cleanup (2026-09-07 production: ~1.4e9
-        # re-cancels across 15 wedged requests). The per-waiter proxy future
-        # absorbs the level cancellation here; the probe sees only the single
-        # explicit teardown ``cancel()`` below.
-        first = await wait_on_shared_future(first_task)
-    except StopAsyncIteration:
-        return
+        try:
+            # Not ``await first_task``: a level-cancelled Starlette scope re-cancels
+            # the consuming task on every loop iteration, and ``Task.cancel()``
+            # cascades down the ``_fut_waiter`` chain into the awaited task. The
+            # probe task defers cancellation while its bridge cleanup finishes, so
+            # a direct await turned every client disconnect into a busy spin that
+            # lasted as long as that cleanup (2026-09-07 production: ~1.4e9
+            # re-cancels across 15 wedged requests). The per-waiter proxy future
+            # absorbs the level cancellation here; the probe sees only the single
+            # explicit teardown ``cancel()`` below.
+            first = await wait_on_shared_future(first_task)
+        except StopAsyncIteration:
+            return
+        finally:
+            # If the wrapping stream is closed before the first item is consumed
+            # (client disconnect, request teardown), cancel the still-running probe
+            # task so it does not hold the upstream connection open, then wait for
+            # its deferred bridge cleanup to settle so the stream it drives is not
+            # closed underneath it. The canonical helper waits without cascading
+            # repeated level cancels into the probe; its exception, if any, is
+            # retrieved here (the probe's done-callback also settles it).
+            if not first_task.done():
+                first_task.cancel()
+                try:
+                    await _shared_await_task_deferring_cancellation(first_task)
+                except BaseException:
+                    pass
+        yield first
+        async for line in stream:
+            yield line
     finally:
-        # If the wrapping stream is closed before the first item is consumed
-        # (client disconnect, request teardown), cancel the still-running probe
-        # task so it does not hold the upstream connection open, then wait for
-        # its deferred bridge cleanup to settle so the stream it drives is not
-        # closed underneath it. The canonical helper waits without cascading
-        # repeated level cancels into the probe; its exception, if any, is
-        # retrieved here (the probe's done-callback also settles it).
-        if not first_task.done():
-            first_task.cancel()
-            try:
-                await _shared_await_task_deferring_cancellation(first_task)
-            except BaseException:
-                pass
-    yield first
-    async for line in stream:
-        yield line
+        # Owns ``stream`` like ``_prepend_first``. The probe task has settled
+        # above before this runs, so nothing is pulling from ``stream`` when it
+        # is closed.
+        await _close_responses_stream_best_effort(stream, action="startup probe handoff")
 
 
 async def _prepend_initial_sse_heartbeat(
@@ -8179,21 +8263,46 @@ def _record_stream_keepalive(surface: str) -> None:
         stream_keepalive_sent_total.labels(surface=surface).inc()
 
 
-async def _guard_responses_startup_handoff(
-    stream: AsyncIterator[str],
-    *,
-    startup_task: asyncio.Task[str] | None,
-    streams_to_close: tuple[AsyncIterator[str], ...],
-    reservation_cleanup: _ResponsesReservationCleanup,
-    responses_service_cleanup_ready_event: asyncio.Event,
-    responses_owner_forward_dispatched_event: asyncio.Event,
-    responses_owner_forward_rejected_event: asyncio.Event,
-) -> AsyncIterator[str]:
-    try:
-        async for line in stream:
-            yield line
-    finally:
+class _ResponsesStartupTeardown:
+    """Close a Responses stream's layers and settle its startup handoff, once.
+
+    Run from the outermost body wrapper's ``finally`` and again from the
+    response's own close, which also covers a body that never started.
+    """
+
+    def __init__(
+        self,
+        *,
+        outer_stream: AsyncIterator[str],
+        startup_task: asyncio.Task[str] | None,
+        streams_to_close: tuple[AsyncIterator[str], ...],
+        reservation_cleanup: _ResponsesReservationCleanup,
+        responses_service_cleanup_ready_event: asyncio.Event,
+        responses_owner_forward_dispatched_event: asyncio.Event,
+        responses_owner_forward_rejected_event: asyncio.Event,
+    ) -> None:
+        self._outer_stream = outer_stream
+        self._startup_task = startup_task
+        self._streams_to_close = streams_to_close
+        self._reservation_cleanup = reservation_cleanup
+        self._service_cleanup_ready_event = responses_service_cleanup_ready_event
+        self._owner_forward_dispatched_event = responses_owner_forward_dispatched_event
+        self._owner_forward_rejected_event = responses_owner_forward_rejected_event
+        # One owned task: a caller cancelled directly (for example by the
+        # server's graceful-shutdown timeout) while the startup probe unwinds
+        # still lets the ownership check and the reservation release finish.
+        self._once = _OnceOwnedCleanup(self._run, name="responses-startup-teardown")
+
+    async def run(self) -> None:
+        await self._once.run()
+
+    async def _run(self) -> None:
         with anyio.CancelScope(shield=True):
+            # The outer wrapper first: the keepalive injector cancels its
+            # pending pull of the layers below, so their closes find them
+            # suspended (or already closed) instead of running.
+            await _close_responses_stream_best_effort(self._outer_stream, action="startup wrapper outer")
+            startup_task = self._startup_task
             release_candidate = startup_task is None
             if startup_task is not None:
                 if startup_task.done():
@@ -8203,7 +8312,7 @@ async def _guard_responses_startup_handoff(
                     startup_task.cancel()
                     await asyncio.gather(startup_task, return_exceptions=True)
             closed_stream_ids: set[int] = set()
-            for stream_index, stream_to_close in enumerate(reversed(streams_to_close)):
+            for stream_index, stream_to_close in enumerate(reversed(self._streams_to_close)):
                 stream_id = id(stream_to_close)
                 if stream_id in closed_stream_ids:
                     continue
@@ -8213,11 +8322,39 @@ async def _guard_responses_startup_handoff(
                     action=f"startup wrapper {stream_index}",
                 )
             if release_candidate and _responses_origin_may_release_reservation(
-                service_cleanup_ready_event=responses_service_cleanup_ready_event,
-                owner_forward_dispatched_event=responses_owner_forward_dispatched_event,
-                owner_forward_rejected_event=responses_owner_forward_rejected_event,
+                service_cleanup_ready_event=self._service_cleanup_ready_event,
+                owner_forward_dispatched_event=self._owner_forward_dispatched_event,
+                owner_forward_rejected_event=self._owner_forward_rejected_event,
             ):
-                await reservation_cleanup.release(action="responses startup handoff")
+                await self._reservation_cleanup.release(action="responses startup handoff")
+
+
+async def _guard_responses_startup_handoff(
+    stream: AsyncIterator[str],
+    *,
+    startup_task: asyncio.Task[str] | None,
+    streams_to_close: tuple[AsyncIterator[str], ...],
+    reservation_cleanup: _ResponsesReservationCleanup,
+    responses_service_cleanup_ready_event: asyncio.Event,
+    responses_owner_forward_dispatched_event: asyncio.Event,
+    responses_owner_forward_rejected_event: asyncio.Event,
+    teardown: _ResponsesStartupTeardown | None = None,
+) -> AsyncIterator[str]:
+    if teardown is None:
+        teardown = _ResponsesStartupTeardown(
+            outer_stream=stream,
+            startup_task=startup_task,
+            streams_to_close=streams_to_close,
+            reservation_cleanup=reservation_cleanup,
+            responses_service_cleanup_ready_event=responses_service_cleanup_ready_event,
+            responses_owner_forward_dispatched_event=responses_owner_forward_dispatched_event,
+            responses_owner_forward_rejected_event=responses_owner_forward_rejected_event,
+        )
+    try:
+        async for line in stream:
+            yield line
+    finally:
+        await teardown.run()
 
 
 async def _close_responses_stream_best_effort(
@@ -8239,12 +8376,17 @@ async def _close_responses_stream_best_effort(
 async def _stream_proxy_errors_as_response_failed(
     stream: AsyncIterator[str],
 ) -> AsyncIterator[str]:
-    async for line in _stream_response_error_events(
+    events = _stream_response_error_events(
         stream,
         owns_reservation=False,
         reservation=None,
-    ):
-        yield line
+    )
+    # Owns ``events`` (which closes ``stream``); see ``_prepend_first``.
+    try:
+        async for line in events:
+            yield line
+    finally:
+        await _close_responses_stream_best_effort(events, action="proxy errors as response.failed")
 
 
 async def _stream_response_error_events(
@@ -8871,35 +9013,23 @@ async def _log_source_chat_completion(
 
 
 async def _aclose_stream(stream: object) -> None:
+    """Close ``stream`` unless something is still executing inside it.
+
+    The eagerly opened source body is closed both by its own layer's teardown
+    and by the outer consumer's cascade, and an earlier ``aclose()`` or a pull
+    from another task can still be running inside the generator (its
+    ``finally`` awaits the transport close, which runs as its own deferred
+    task) when the next close arrives. A second ``aclose()`` would raise
+    ``aclose(): asynchronous generator is already running``; the operation in
+    flight owns the teardown and its ``finally`` releases the transport and the
+    lease, so the close is skipped.
+    """
     if getattr(stream, "ag_running", False):
-        # A pull or an earlier ``aclose()`` is still executing inside this
-        # generator (its ``finally`` awaits the transport close, which runs as
-        # its own deferred task). A second ``aclose()`` would raise
-        # ``aclose(): asynchronous generator is already running``; the
-        # operation in flight owns the teardown and its ``finally`` releases
-        # the transport and lease, so close only once the generator is
-        # suspended again.
+        logger.debug("Skipping close of a running stream generator stream=%s", type(stream).__name__)
         return
     aclose = getattr(stream, "aclose", None)
     if aclose is not None:
         await aclose()
-
-
-async def _aclose_stream_when_suspended(stream: object) -> None:
-    """Close ``stream`` only while nothing is executing inside it.
-
-    The eagerly opened source body is closed both by its own layer's teardown
-    and by the outer consumer's cascade, and an earlier ``aclose()`` can still
-    be unwinding (its ``finally`` awaits the transport close, which runs as its
-    own deferred task) when the next close arrives; a second ``aclose()`` then
-    raises ``aclose(): asynchronous generator is already running``. The
-    operation already in flight owns the teardown and its ``finally`` releases
-    the transport and lease, so a close here is only issued once the generator
-    is suspended again.
-    """
-    if getattr(stream, "ag_running", False):
-        return
-    await _aclose_stream(stream)
 
 
 def _reservation_requires_usage(reservation: ApiKeyUsageReservationData | None) -> bool:
