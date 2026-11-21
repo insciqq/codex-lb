@@ -11551,7 +11551,25 @@ The derived key therefore moves exactly when it moved before developer
 messages and JSON-mode instructions stayed in `input`: threads that differ only
 in such a message stay apart past the trailing item window, a client that
 repeats a fixed instruction while dropping its oldest items keeps its key, and
-a changed or added instruction message mints a new key.
+a changed or added instruction message mints a new key. Two exceptions follow
+from building the view from the validated request the resolver receives:
+
+- Developer text that validation discards (a `developer` message whose
+  content is blank or only reasoning parts) is not in the request and cannot
+  contribute to the view, so such a message MUST NOT change the keyless key,
+  although upstream hoisted it before sanitising.
+- On the direct WebSocket path the handler injects `previous_response_id` and
+  trims the stored prefix before the resolver runs, so for a keyless non-Lite
+  WebSocket client the view holds only the trimmed request. Two threads of one
+  API key that differ only in their leading `developer` messages and share the
+  trimmed window can derive the same key there, where upstream kept them
+  apart. This is over-sharing within one API key, not per-turn churn.
+
+#### Scenario: Developer text discarded at validation does not change the key
+
+- **GIVEN** a request of one API key without `prompt_cache_key`
+- **WHEN** the same request is sent again with an added `developer` message whose content is blank or only a reasoning part
+- **THEN** both requests get the same derived `prompt_cache_key`
 
 #### Scenario: Threads that differ only in their JSON-mode instruction get different keys
 

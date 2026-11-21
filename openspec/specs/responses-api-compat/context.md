@@ -613,6 +613,22 @@ order, so two keyless threads that interleave `system` and `developer`
 messages and differ only in their order share a scope here where upstream
 split them; they still need identical recent items to share a key.
 
+Known limitation (keyless clients only): developer text that validation
+discards, a `developer` message whose content is blank or only reasoning
+parts, is gone before the view is built, so it does not change the derived
+key. Upstream hoisted that text before sanitising and moved the key. The
+fork's behaviour is intended and pinned by a compatibility test: the message
+never reaches upstream, so it cannot change the prompt prefix either.
+
+Known limitation (keyless non-Lite WebSocket clients only): on the direct
+WebSocket path the handler injects `previous_response_id` and trims the stored
+prefix before the affinity resolver runs, so the view sees only the trimmed
+request. Two threads of one API key that differ only in their leading
+developer messages and share the trimmed window can derive the same key,
+where upstream kept them apart. This over-shares within one API key and does
+not churn keys per turn; keys never cross API keys, and clients that send
+their own `prompt_cache_key` (Codex) are unaffected.
+
 Known limitation (keyless clients only; Codex sends its own
 `prompt_cache_key`): a changed or added instruction message changes the
 scope and mints a new key and bridge locality. For a refreshed leading

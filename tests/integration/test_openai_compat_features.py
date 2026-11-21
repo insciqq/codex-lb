@@ -901,6 +901,46 @@ async def test_derived_cache_key_separates_threads_by_instruction_messages_kept_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "discarded_content",
+    [
+        pytest.param("   ", id="whitespace"),
+        pytest.param([{"type": "reasoning", "text": "Thinking about the rules."}], id="reasoning-part"),
+    ],
+)
+async def test_derived_cache_key_ignores_developer_text_discarded_at_validation(
+    async_client, monkeypatch, discarded_content
+):
+    """Intended fork behaviour: a developer message validation drops does not change the keyless key.
+
+    Upstream main hoisted such text into ``instructions`` before sanitising
+    it, so its key moved. The keyless thread identity is built from the
+    validated request, where the message no longer exists, so the thread
+    keeps the key of the same body without it.
+    """
+    await _import_account(async_client, "acc_discarded_developer", "discarded-developer@example.com")
+
+    seen_keys: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **_kw):
+        seen_keys.append(getattr(payload, "prompt_cache_key", None))
+        yield _completed_event("resp_discarded_developer")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    history = _long_shared_history()
+    without = {"model": "gpt-5.2", "instructions": "Base.", "input": history}
+    with_discarded = {**without, "input": [{"role": "developer", "content": discarded_content}, *history]}
+    for body in (without, with_discarded):
+        resp = await async_client.post("/v1/responses", json=body)
+        assert resp.status_code == 200
+
+    without_key, with_discarded_key = seen_keys
+    assert isinstance(without_key, str) and without_key
+    assert with_discarded_key == without_key
+
+
+@pytest.mark.asyncio
 async def test_v1_chat_completions_rejects_strict_schema_violation(async_client):
     """Strict-mode schema violations are rejected locally with 400.
 
