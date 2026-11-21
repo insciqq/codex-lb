@@ -12,8 +12,8 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 |---|---|---|
 | taken | 54 | ported from the upstream PR into the fork |
 | taken with changes | 14 | ported, with the fork's changes noted |
-| own-fix | 9 | not taken; the problem is fixed by the fork's own commits |
-| rejected | 30 | reviewed and not taken, for the reason given |
+| own-fix | 8 | not taken; the problem is fixed by the fork's own commits |
+| rejected | 31 | reviewed and not taken, for the reason given |
 | superseded | 54 | replaced by another PR |
 | out-of-scope | 50 | a feature or other change outside the fork's scope |
 | not-applicable | 4 | does not concern the fork (upstream release, CI, docs or translation work) |
@@ -24,8 +24,8 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 
 | Status | Issues | Meaning |
 |---|---|---|
-| fixed | 37 | fixed in the fork by a taken PR or the fork's own commits |
-| partial | 13 | partly addressed in the fork; the reason says what is left |
+| fixed | 36 | fixed in the fork by a taken PR or the fork's own commits |
+| partial | 14 | partly addressed in the fork; the reason says what is left |
 | fixed-upstream | 5 | fixed in upstream main |
 | not-fixed | 15 | reviewed and not fixed in the fork, for the reason given |
 | out-of-scope | 37 | a feature request |
@@ -204,7 +204,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2660](https://github.com/Soju06/codex-lb/pull/2660) | chore(deps): bump certifi from 2026.7.22 to 2026.10.19 | closed | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
 | [2661](https://github.com/Soju06/codex-lb/pull/2661) | chore(deps): bump opentelemetry-api from 1.44.0 to 1.45.1 | closed | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
 | [2662](https://github.com/Soju06/codex-lb/pull/2662) | chore(deps): bump virtualenv from 21.7.13 to 21.14.9 | closed | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
-| [2665](https://github.com/Soju06/codex-lb/pull/2665) | fix(proxy): use configuration\_update reasoning effort | open | own-fix | Issue 2664 is fixed by the fork's own commits. The PR itself is not taken: an enforced-model alias masks disallowed efforts, compact trimming drops the authorizing update, and model-source egress changes the cache-sensitive starting effort. Issues [2664](https://github.com/Soju06/codex-lb/issues/2664) |
+| [2665](https://github.com/Soju06/codex-lb/pull/2665) | fix(proxy): use configuration\_update reasoning effort | open | rejected | An enforced-model alias masks disallowed efforts, compact trimming drops the authorizing update, and model-source egress changes the cache-sensitive starting effort. The fork fixes the API-key effort policy for configuration_update items with its own commits; the PR's request-log part addresses a gap the fork has not fixed yet. Issues [2664](https://github.com/Soju06/codex-lb/issues/2664) |
 | [2666](https://github.com/Soju06/codex-lb/pull/2666) | fix(proxy): recover complete native HTTP tool resends | open | own-fix | The complete native HTTP resend after a bridge reconnect is fixed by the fork's own change, which never adds a proxy anchor to native Codex HTTP history; the PR's owner-bound replay proof can accept incomplete history and relocate owner content. |
 | [2667](https://github.com/Soju06/codex-lb/pull/2667) | fix(proxy): classify controlled interruptions as cancelled | open | taken with changes | changes: Only newly recorded interruptions are classified as cancelled; legacy rows are not remapped at read time, and the bundled lockfile updates are left out. |
 | [2668](https://github.com/Soju06/codex-lb/pull/2668) | chore(async): own OAuth and refresh completion tasks | open | taken | - |
@@ -394,7 +394,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2655](https://github.com/Soju06/codex-lb/issues/2655) | bug: cross-replica owner forwarding always fails with bridge\_forward\_invalid because thread affinity keys start with LF | open | fixed | own fix |
 | [2658](https://github.com/Soju06/codex-lb/issues/2658) | HTTP bridge reuses prompt-cache upstream websocket past the 60-minute limit → 400 websocket\_connection\_limit\_reached | open | deferred | Replacing an aged upstream socket safely needs the replacement opened before the old one is retired and a hand-off once its reader is idle; scheduled after the release. |
 | [2663](https://github.com/Soju06/codex-lb/issues/2663) | feat: Add configurable daily active hours to the Weekly credits pace forecast | open | out-of-scope | Feature request: a configurable daily active window for the weekly credits pace forecast. |
-| [2664](https://github.com/Soju06/codex-lb/issues/2664) | bug(proxy): configuration\_update effort is ignored | open | fixed | own fix; PRs [2665](https://github.com/Soju06/codex-lb/pull/2665) |
+| [2664](https://github.com/Soju06/codex-lb/issues/2664) | bug(proxy): configuration\_update effort is ignored | open | partial | own fix; PRs [2665](https://github.com/Soju06/codex-lb/pull/2665); The fork applies the API-key effort policy to configuration_update items. Request logs still record the initial reasoning effort after a configuration_update selects another one. |
 | [2669](https://github.com/Soju06/codex-lb/issues/2669) | docs: verified workaround for missing desktop Dot while keeping codex-lb routing | open | not-applicable | PRs [2713](https://github.com/Soju06/codex-lb/pull/2713); A client-side Codex Desktop configuration workaround, not a codex-lb defect. |
 | [2684](https://github.com/Soju06/codex-lb/issues/2684) | bug: Codex desktop app requests rejected with "Invalid request payload" (param=include) — \`output.encrypted\_content\` not in include allowlist | open | fixed | fixed by PR [2682](https://github.com/Soju06/codex-lb/pull/2682) |
 | [2688](https://github.com/Soju06/codex-lb/issues/2688) | bug: one client's large response.create requests can OOM-kill the whole proxy | open | partial | own fix; Large response.create bodies are measured, prepared and decoded with fewer full copies, about 2x instead of 6x of the body on direct HTTP dispatch; a memory budget for request bytes in flight is not added. |

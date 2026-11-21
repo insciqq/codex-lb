@@ -749,12 +749,16 @@ order, so two keyless threads that interleave `system` and `developer`
 messages and differ only in their order share a scope here where upstream
 split them; they still need identical recent items to share a key.
 
-The same ordering applies across an upgrade (keyless clients only): a
-thread that sends both `system` and `developer` messages, with a developer
-message ahead of a system message on the wire, gets a scope with the system
-text first, where upstream used wire order. Such a thread derives a new key
-and bridge locality once after switching from upstream, so its first turn on
-the fork can miss the warm prefix; later turns keep the new key.
+The same ordering applies across an upgrade (keyless clients only). It
+changes the identity only where validation hoists a `system` message that
+follows a `developer` message on the wire: the view then puts that system
+text ahead of the developer text, where upstream used wire order. Responses
+Lite inputs are not hoisted, and in JSON-object mode a system message that
+mentions JSON stays in `input` in its wire position, so in those cases the
+scope and bridge key equal upstream's. A thread in the changed case derives
+a new key and history-derived bridge locality once after switching from
+upstream, so its first turn on the fork can miss the warm prefix; later
+turns keep the new key.
 
 Known limitation (keyless clients only): developer text that validation
 discards, a `developer` message whose content is blank or only reasoning

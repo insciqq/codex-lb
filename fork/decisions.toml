@@ -1002,9 +1002,9 @@ reason = "PR 2690 carries the same or newer versions."
 [pr.2665]
 title = "fix(proxy): use configuration_update reasoning effort"
 state = "open"
-status = "own-fix"
+status = "rejected"
 issues = [2664]
-reason = "Issue 2664 is fixed by the fork's own commits. The PR itself is not taken: an enforced-model alias masks disallowed efforts, compact trimming drops the authorizing update, and model-source egress changes the cache-sensitive starting effort."
+reason = "An enforced-model alias masks disallowed efforts, compact trimming drops the authorizing update, and model-source egress changes the cache-sensitive starting effort. The fork fixes the API-key effort policy for configuration_update items with its own commits; the PR's request-log part addresses a gap the fork has not fixed yet."
 
 [pr.2666]
 title = "fix(proxy): recover complete native HTTP tool resends"
@@ -2136,7 +2136,8 @@ reason = "Feature request: a configurable daily active window for the weekly cre
 [issue.2664]
 title = "bug(proxy): configuration_update effort is ignored"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "The fork applies the API-key effort policy to configuration_update items. Request logs still record the initial reasoning effort after a configuration_update selects another one."
 
 [issue.2669]
 title = "docs: verified workaround for missing desktop Dot while keeping codex-lb routing"
