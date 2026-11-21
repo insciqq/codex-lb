@@ -8,7 +8,7 @@ rationale and operational notes for the docs site and entry-point documents.
 Restore the founding "1-click setup" promise of the entry-point documents. The
 README had grown to 653 lines and `.env.example` to 115 lines / ~45 active
 values; both buried the quickstart. Detailed material now has a real home (the
-published mkdocs-material site at https://soju06.github.io/codex-lb/) so the
+published mkdocs-material site at https://insciqq.github.io/codex-lb/) so the
 README and sample env stay slim without losing content.
 
 ## Decisions
@@ -17,7 +17,7 @@ README and sample env stay slim without losing content.
   existing `docs/screenshots/` images ship into the site unchanged and README
   image paths keep working on GitHub. Pages live directly under `docs/` (not
   `docs/content/`) so the site homepage is
-  `https://soju06.github.io/codex-lb/` itself.
+  `https://insciqq.github.io/codex-lb/` itself.
 - **Strict build as the docs gate.** The `validation:` block in `mkdocs.yml`
   plus `--strict` turns broken internal links, missing anchors, and
   nav-orphaned pages into CI failures. Corollary: any stray `.md` dropped into
@@ -80,6 +80,6 @@ README and sample env stay slim without losing content.
 
 A user asks "how do I upgrade the compose Postgres volume?" — the README
 Configuration section links the docs Database page;
-`https://soju06.github.io/codex-lb/database/` carries the verbatim 16→18
+`https://insciqq.github.io/codex-lb/database/` carries the verbatim 16→18
 runbook and links the `database-backends` / `database-migrations` specs for the
 normative behavior.

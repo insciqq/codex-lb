@@ -178,6 +178,6 @@ async def test_scheduler_sends_startup_and_interval_snapshots_with_one_undecided
         record.getMessage() for record in caplog.records if "Anonymous telemetry is active" in record.getMessage()
     ]
     assert len(notices) == 1
-    assert "https://soju06.github.io/codex-lb/telemetry/" in notices[0]
+    assert "https://insciqq.github.io/codex-lb/telemetry/" in notices[0]
     assert "CODEX_LB_TELEMETRY_ENABLED=false" in notices[0]
     assert scheduler._task is None
