@@ -136,6 +136,7 @@ from app.modules.proxy._service.http_bridge.owner_forwarding import _HTTPBridgeO
 from app.modules.proxy._service.http_bridge.protocol import _HTTPBridgeServiceProtocol
 from app.modules.proxy._service.http_bridge.proxy_failover import (
     _HTTPBridgePreDispatchFailover,
+    discard_bridge_reconnect_lease,
     release_bridge_reconnect_lease,
 )
 from app.modules.proxy._service.http_bridge.quarantine import (
@@ -2070,6 +2071,7 @@ class _HTTPBridgeMixin(
         else:
             preferred_candidate_id = None
         selected_account_lease: AccountLease | None = None
+        borrowed_lease: AccountLease | None = None
         selected_account_model_replacement = False
         file_owner = request_state.file_required_preferred_account
 
@@ -2084,8 +2086,14 @@ class _HTTPBridgeMixin(
         async def release_selected_account_lease() -> None:
             nonlocal selected_account_lease
             lease, selected_account_lease = selected_account_lease, None
-            if lease is not None:
-                await release_bridge_reconnect_lease(self, session, lease, on_failure=complete_failed_handoff)
+            await release_bridge_reconnect_lease(self, session, lease, borrowed_lease, complete_failed_handoff)
+
+        def discard_selected_account_lease() -> None:
+            # Failure paths never await the release, so a stuck one cannot hold them.
+            nonlocal selected_account_lease
+            lease, selected_account_lease = selected_account_lease, None
+            complete_failed_handoff()
+            discard_bridge_reconnect_lease(self, session, lease, borrowed_lease)
 
         async def release_before_health_write(write: Callable[..., Awaitable[object]], *args: object) -> None:
             # A failed or cancelled health write must not strand the lease.
@@ -2099,8 +2107,7 @@ class _HTTPBridgeMixin(
         async def abandon_selected_account_retry(selected_account: Any) -> None:
             nonlocal preferred_candidate_id
             if hard_close_account_bound or selected_account_model_replacement:
-                await release_selected_account_lease()
-                complete_failed_handoff()
+                discard_selected_account_lease()
                 raise
             excluded_account_ids.add(selected_account.id)
             preferred_candidate_id = None
@@ -2236,17 +2243,14 @@ class _HTTPBridgeMixin(
                 complete_failed_handoff()
                 raise _http_bridge_reconnect_selection_failure(selection, required_preferred_account_id)
             if required_preferred_account_id is not None and account.id != required_preferred_account_id:
-                if selection.lease is not None:
-                    selected_account_lease = selection.lease
-                    await release_selected_account_lease()
+                selected_account_lease = selection.lease
                 record_selected_account_takeover(account.id, required_preferred_account_id)
-                complete_failed_handoff()
+                discard_selected_account_lease()
                 raise _http_bridge_previous_response_owner_unavailable_error()
-            selected_account_lease = (
-                session.account_lease
-                if reuse_current_account_lease and account.id == session.account.id
-                else selection.lease
-            )
+            if reuse_current_account_lease and account.id == session.account.id:
+                selected_account_lease = borrowed_lease = session.account_lease
+            else:
+                selected_account_lease = selection.lease
             selected_account_model_replacement = (
                 request_state.precreated_replay_reason == _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE
                 and account.id != request_state.precreated_replay_account_id
@@ -2276,8 +2280,7 @@ class _HTTPBridgeMixin(
                 break
             except ProxyResponseError as exc:
                 if exc.status_code != 401 or self._remaining_budget_seconds(deadline) <= 0:
-                    await release_selected_account_lease()
-                    complete_failed_handoff()
+                    discard_selected_account_lease()
                     raise _http_bridge_reconnect_connect_failure(exc, required_preferred_account_id) from exc
                 try:
                     account = await self._ensure_fresh_with_budget(
@@ -2294,8 +2297,7 @@ class _HTTPBridgeMixin(
                     break
                 except ProxyResponseError as retry_exc:
                     if retry_exc.status_code != 401:
-                        await release_selected_account_lease()
-                        complete_failed_handoff()
+                        discard_selected_account_lease()
                         raise _http_bridge_reconnect_connect_failure(retry_exc, required_preferred_account_id)
                     await release_before_health_write(self._handle_proxy_error, account, retry_exc)
                     await abandon_selected_account_retry(account)
@@ -2308,8 +2310,7 @@ class _HTTPBridgeMixin(
                     await abandon_selected_account_retry(account)
                     continue
                 except BaseException:
-                    await release_selected_account_lease()
-                    complete_failed_handoff()
+                    discard_selected_account_lease()
                     raise
             except RefreshError as exc:
                 if exc.is_permanent:
@@ -2321,8 +2322,7 @@ class _HTTPBridgeMixin(
                         continue
                     await abandon_selected_account_retry(account)
                     continue
-                await release_selected_account_lease()
-                complete_failed_handoff()
+                discard_selected_account_lease()
                 raise _http_bridge_reconnect_connect_failure(exc, required_preferred_account_id)
             except (aiohttp.ClientError, asyncio.TimeoutError) as transport_exc:
                 if selected_is_preferred and self._remaining_budget_seconds(deadline) > 0:
@@ -2332,17 +2332,14 @@ class _HTTPBridgeMixin(
                         continue
                     await abandon_selected_account_retry(account)
                     continue
-                await release_selected_account_lease()
-                complete_failed_handoff()
+                discard_selected_account_lease()
                 raise _http_bridge_reconnect_connect_failure(transport_exc, required_preferred_account_id)
             except asyncio.CancelledError:
                 session.closed = True
-                await release_selected_account_lease()
-                complete_failed_handoff()
+                discard_selected_account_lease()
                 raise
             except BaseException:
-                await release_selected_account_lease()
-                complete_failed_handoff()
+                discard_selected_account_lease()
                 raise
 
         async def abort_selected_handoff() -> None:

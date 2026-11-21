@@ -296,7 +296,7 @@ An operation that already loaded an account and dispatches with that account's c
 #### Scenario: Bridge connect account deleted during its forced refresh
 - **GIVEN** an HTTP bridge session start or reconnect selected an account whose upstream socket answered 401
 - **WHEN** the forced refresh or the re-open that follows fails, including when it reports the account missing
-- **THEN** the selected account's stream lease MUST be released exactly once, before any account health write, and a reconnect MUST complete its failed handoff even when it is cancelled
+- **THEN** the selected account's stream lease MUST be released exactly once, before the account health write the bridge performs for that failure, and a reconnect MUST complete its failed handoff without waiting on the release, even when it is cancelled
 - **AND** a session start for a request that may move MUST select another account when the account was deleted, and a required owner MUST fail with the retryable `selected_account_removed` error
 
 #### Scenario: Deleted account answers like a missing account

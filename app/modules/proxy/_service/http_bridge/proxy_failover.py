@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from app.core.clients.proxy import ProxyResponseError, is_confirmed_pre_dispatch_transport_error
-from app.core.clock import scheduler_for
 from app.core.upstream_proxy import UpstreamProxyRouteError
 from app.db.models import Account
+from app.modules.proxy._service.http_bridge.helpers import _schedule_http_bridge_background_cleanup
 from app.modules.proxy._service.http_bridge.protocol import _HTTPBridgeServiceProtocol
 from app.modules.proxy._service.support import (
     _DeferredAccountBackoffLifecycle,
@@ -112,32 +111,64 @@ class _HTTPBridgePreDispatchFailover:
         self.reallocate_sticky = True
 
 
+def _take_bridge_reconnect_lease(
+    session: Any,
+    lease: AccountLease | None,
+    borrowed: AccountLease | None,
+) -> AccountLease | None:
+    """Detach a reconnect's selected lease from the session before any await.
+
+    Returns the lease the caller must release, or ``None``. A lease borrowed
+    from the session belongs to whoever takes it out of the session slot
+    first, so a close racing the reconnect cannot release it twice; a
+    replacement lease is never in the slot and always comes back.
+    """
+    if lease is None:
+        return None
+    current = session.account_lease
+    if current is not None and current.lease_id == lease.lease_id:
+        session.account_lease = None
+        return lease
+    return None if borrowed is not None and borrowed.lease_id == lease.lease_id else lease
+
+
 async def release_bridge_reconnect_lease(
     service: _HTTPBridgeServiceProtocol,
     session: Any,
-    lease: AccountLease,
-    *,
+    lease: AccountLease | None,
+    borrowed: AccountLease | None,
     on_failure: Callable[[], None],
 ) -> None:
-    """Release a bridge reconnect's selected lease even under cancellation.
-
-    The caller has already dropped its reference, so a cancellation that an
-    active cancel scope re-delivers while the session lock is acquired must
-    not skip the release. The release runs as its own task behind a shield:
-    a cancelled caller completes the failed handoff (``on_failure``) and
-    leaves at once while the task still gives the lease back, and a release
-    that never finishes cannot hold the caller.
-    """
-
-    async def release() -> None:
-        async with session.pending_lock:
-            if session.account_lease is not None and lease.lease_id == session.account_lease.lease_id:
-                session.account_lease = None
-        await service._load_balancer.release_account_lease(lease)
-
-    task = scheduler_for(service).create_task(release(), name="http-bridge-reconnect-lease-release")
+    """Release a reconnect's selected lease on a path that continues."""
+    released = _take_bridge_reconnect_lease(session, lease, borrowed)
+    if released is None:
+        return
     try:
-        await asyncio.shield(task)
+        await service._load_balancer.release_account_lease(released)
     except BaseException:
         on_failure()
         raise
+
+
+def discard_bridge_reconnect_lease(
+    service: Any,
+    session: Any,
+    lease: AccountLease | None,
+    borrowed: AccountLease | None,
+) -> None:
+    """Release a failed reconnect's lease on an owned background cleanup task.
+
+    Nothing is awaited. The task is registered with the service's background
+    cleanup tasks, whose bounded shutdown drain covers the
+    ``http-bridge-close-`` prefix, and its failure is logged instead of left
+    unretrieved.
+    """
+    released = _take_bridge_reconnect_lease(session, lease, borrowed)
+    if released is None:
+        return
+    _schedule_http_bridge_background_cleanup(
+        service,
+        service._load_balancer.release_account_lease(released),
+        name="http-bridge-close-reconnect-lease",
+        error_message="HTTP bridge reconnect lease release failed",
+    )

@@ -1588,13 +1588,14 @@ async def _close_http_bridge_session_resources(
     else:
         await service._unregister_http_bridge_turn_states(session)
         await service._unregister_http_bridge_previous_response_ids(session)
+    # Take the lease out of the slot before awaiting, so a reconnect that
+    # borrowed it cannot release it a second time.
     account_lease = getattr(session, "account_lease", None)
+    session.account_lease = None
     try:
         await service._load_balancer.release_account_lease(account_lease)
     except Exception:
         logger.warning("Failed to release HTTP bridge account lease during close", exc_info=True)
-    finally:
-        session.account_lease = None
     durable_release_succeeded = durable_owner_epoch is None
     if durable_release_allowed:
         try:

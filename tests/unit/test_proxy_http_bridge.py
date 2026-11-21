@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import gc
 import inspect
 import json
 import logging
@@ -13195,7 +13196,7 @@ async def test_reconnect_keeps_handoff_protected_during_lease_swap(
 
 
 @pytest.mark.asyncio
-async def test_reconnect_cancellation_during_wrong_owner_lease_release_completes_handoff(
+async def test_reconnect_stuck_wrong_owner_lease_release_still_completes_handoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
@@ -13250,19 +13251,21 @@ async def test_reconnect_cancellation_during_wrong_owner_lease_release_completes
     monkeypatch.setattr(service, "_select_account_with_budget_for_stream", select_account)
     monkeypatch.setattr(service._load_balancer, "release_account_lease", release_lease)
 
-    reconnect_task = asyncio.create_task(
-        service._reconnect_http_bridge_session(
-            session,
-            request_state=request_state,
-            require_preferred_account=True,
+    # The failed handoff never waits on the release: the owner-unavailable
+    # error surfaces while the stuck release is still running on its own
+    # cleanup task.
+    with pytest.raises(ProxyResponseError) as exc_info:
+        await asyncio.wait_for(
+            service._reconnect_http_bridge_session(
+                session,
+                request_state=request_state,
+                require_preferred_account=True,
+            ),
+            timeout=1.0,
         )
-    )
     await asyncio.wait_for(release_started.wait(), timeout=1.0)
-    reconnect_task.cancel()
 
-    with pytest.raises(asyncio.CancelledError):
-        await reconnect_task
-
+    assert exc_info.value.payload["error"]["code"] == "previous_response_owner_unavailable"
     assert session.closed is True
     assert session.handoff_in_progress is False
     assert session.handoff_future is None
@@ -13326,6 +13329,7 @@ async def test_reconnect_releases_replacement_lease_when_forced_refresh_fails(
 
     with pytest.raises(type(refresh_failure)):
         await service._reconnect_http_bridge_session(session, request_state=request_state)
+    await asyncio.gather(*list(service._background_cleanup_tasks), return_exceptions=True)
 
     assert released_leases.count(replacement_lease) == 1
     assert session.closed is True
@@ -13446,6 +13450,135 @@ async def test_reconnect_releases_replacement_lease_when_cancel_scope_cancels_fo
         await asyncio.sleep(0)
     assert released_leases == [replacement_lease]
     _assert_reconnect_handoff_failed(service, session)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_cancelled_in_forced_refresh_completes_handoff_without_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancellation caught during the forced refresh never waits on the release.
+
+    The session lock is held elsewhere, so a release that needed it would hang;
+    the failed handoff completes and the cancellation propagates at once.
+    """
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session()
+    refreshing = asyncio.Event()
+
+    async def refresh(account: Any, *, force: bool = False, **_: object) -> Any:
+        if force:
+            refreshing.set()
+            await asyncio.Future()
+        return account
+
+    _install_reconnect_after_401(monkeypatch, service, refresh=AsyncMock(side_effect=refresh), released_leases=[])
+    async with session.pending_lock:
+        task = asyncio.create_task(
+            service._reconnect_http_bridge_session(
+                session, request_state=_reconnect_request_state("req-cancel-refresh")
+            )
+        )
+        await refreshing.wait()
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=0.05)
+        observed = (task in done, session.handoff_in_progress)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert observed == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_borrowed_lease_is_released_once_when_close_races_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reconnect that borrowed the session lease does not release it after close did."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session()
+    session_lease = proxy_service.AccountLease("lease-borrowed", session.account.id, "stream", time.monotonic())
+    session.account_lease = session_lease
+    released_leases: list[proxy_service.AccountLease] = []
+
+    async def select_current(_deadline: float, **_: object) -> proxy_service.AccountSelection:
+        return proxy_service.AccountSelection(account=session.account, error_message=None, lease=None)
+
+    async def release_lease(lease: proxy_service.AccountLease | None) -> None:
+        if lease is not None:
+            released_leases.append(lease)
+
+    async def refresh(account: Any, *, force: bool = False, **_: object) -> Any:
+        if force:
+            # A concurrent close releases the session's lease meanwhile.
+            await http_bridge_helpers_module._close_http_bridge_session_resources(service, session)
+            raise TimeoutError()
+        return account
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=_bridge_selection_settings())),
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_for_stream", select_current)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(side_effect=refresh))
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=ProxyResponseError(401, openai_error("invalid_api_key", "expired"))),
+    )
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", release_lease)
+
+    with pytest.raises(TimeoutError):
+        await service._reconnect_http_bridge_session(session, request_state=_reconnect_request_state("req-race"))
+    await asyncio.gather(*list(service._background_cleanup_tasks), return_exceptions=True)
+
+    assert released_leases == [session_lease]
+    assert session.account_lease is None
+
+
+@pytest.mark.asyncio
+async def test_reconnect_stuck_lease_release_is_owned_and_bounded_at_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stuck failure-path release stays owned and cannot hold shutdown past its bound."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session()
+    loop_errors: list[dict[str, Any]] = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+
+    async def refresh(account: Any, *, force: bool = False, **_: object) -> Any:
+        if force:
+            raise TimeoutError()
+        return account
+
+    _install_reconnect_after_401(monkeypatch, service, refresh=AsyncMock(side_effect=refresh), released_leases=[])
+
+    async def stuck_release(_lease: proxy_service.AccountLease | None) -> None:
+        await asyncio.Future()
+
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", stuck_release)
+    monkeypatch.setattr(http_bridge_mixin_module, "_HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS", 0.05)
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                service._reconnect_http_bridge_session(session, request_state=_reconnect_request_state("req-stuck")),
+                timeout=1.0,
+            )
+        pending = [task for task in service._background_cleanup_tasks if not task.done()]
+        assert [task.get_name() for task in pending] == ["http-bridge-close-reconnect-lease"]
+        gc.collect()
+        assert (
+            await asyncio.wait_for(service._drain_http_bridge_background_cleanup_tasks(reason="test"), timeout=1.0)
+            is False
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        gc.collect()
+    finally:
+        loop.set_exception_handler(previous_handler)
+    assert loop_errors == []
 
 
 @pytest.mark.asyncio
