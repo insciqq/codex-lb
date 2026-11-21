@@ -62,6 +62,7 @@ from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
     ResponsesRequest,
     extract_input_file_ids,
+    responses_input_uses_lite_tools,
 )
 from app.core.types import JsonValue
 from app.core.utils.shared_future import (
@@ -362,6 +363,7 @@ from app.modules.proxy.http_bridge_forwarding import (
 )
 from app.modules.proxy.replay_safety import (
     anchor_free_replay_payload_is_account_neutral,
+    is_developer_role_message,
     responses_payload_is_account_neutral_fresh_replay,
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
@@ -2433,10 +2435,18 @@ def _trim_websocket_previous_response_input_items(input_items: list[JsonValue]) 
     )
     if first_output_index is None or first_output_index == 0:
         return input_items
-    prefix = input_items[:first_output_index]
-    if not all(_is_websocket_previous_response_output_item(item) for item in prefix):
+    # A fresh developer control message may sit between the echoed prior
+    # output and the tool result; it stays, in order, while the echo is trimmed.
+    lite_input = responses_input_uses_lite_tools(input_items)
+    kept_prefix_items: list[JsonValue] = []
+    for item in input_items[:first_output_index]:
+        if not lite_input and is_developer_role_message(item):
+            kept_prefix_items.append(item)
+        elif not _is_websocket_previous_response_output_item(item):
+            return input_items
+    if len(kept_prefix_items) == first_output_index:
         return input_items
-    return input_items[first_output_index:]
+    return [*kept_prefix_items, *input_items[first_output_index:]]
 
 
 def _anchor_free_replay_wire_text(request_text: str) -> str:

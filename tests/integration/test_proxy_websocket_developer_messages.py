@@ -1,0 +1,356 @@
+"""WebSocket continuity with developer messages kept inline in ``input``.
+
+Developer messages used to be hoisted into ``instructions`` before the proxy
+classified a request; they now stay in ``input`` (upstream issue 2563), and the
+replay heuristics must still judge conversation history without them.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+
+import app.modules.proxy.api as proxy_api_module
+import app.modules.proxy.service as proxy_module
+from tests.integration.test_proxy_websocket_responses import (
+    _FakeUpstreamMessage,
+    _SequencedUpstreamWebSocket,
+    _websocket_settings,
+)
+
+pytestmark = pytest.mark.integration
+
+_PREWARM_TURN_METADATA = json.dumps({"request_kind": "prewarm", "turn_id": "turn_prewarm"})
+
+
+def _message(role: str, text: str) -> dict[str, object]:
+    return {"type": "message", "role": role, "content": [{"type": "input_text", "text": text}]}
+
+
+def _response_batch(response_id: str, *, output_tokens: int = 1) -> list[_FakeUpstreamMessage]:
+    return [
+        _FakeUpstreamMessage(
+            "text",
+            text=json.dumps({"type": "response.created", "response": {"id": response_id, "status": "in_progress"}}),
+        ),
+        _FakeUpstreamMessage(
+            "text",
+            text=json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": response_id,
+                        "status": "completed",
+                        "usage": {
+                            "input_tokens": 1,
+                            "output_tokens": output_tokens,
+                            "total_tokens": 1 + output_tokens,
+                        },
+                    },
+                }
+            ),
+        ),
+    ]
+
+
+def _previous_response_not_found(response_id: str) -> list[_FakeUpstreamMessage]:
+    return [
+        _FakeUpstreamMessage(
+            "text",
+            text=json.dumps(
+                {
+                    "type": "error",
+                    "status": 400,
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "previous_response_not_found",
+                        "message": f"Previous response with id '{response_id}' not found.",
+                        "param": "previous_response_id",
+                    },
+                }
+            ),
+        )
+    ]
+
+
+def _install_upstreams(monkeypatch: pytest.MonkeyPatch, upstreams: list[_SequencedUpstreamWebSocket]) -> list[int]:
+    connects = [0]
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(_authorization: str | None, *, request: object | None = None):
+        return None
+
+    async def fake_connect_proxy_websocket(self, headers, **kwargs):
+        del self, headers, kwargs
+        upstream = upstreams[min(connects[0], len(upstreams) - 1)]
+        connects[0] += 1
+        return SimpleNamespace(id="acct_ws_developer_messages"), upstream
+
+    async def fake_write_request_log(self, **kwargs):
+        del self, kwargs
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
+    monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", fake_write_request_log)
+    return connects
+
+
+def _prewarm_frame() -> dict[str, object]:
+    return {
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "instructions": "",
+        "input": [
+            {"type": "additional_tools", "role": "developer", "tools": [{"type": "custom", "name": "shell"}]},
+            _message("developer", "base instructions"),
+        ],
+        "generate": False,
+        "stream": True,
+    }
+
+
+def _connection_headers(session_id: str) -> dict[str, str]:
+    return {
+        "Authorization": "Bearer external-token",
+        "chatgpt-account-id": "external-account",
+        "session_id": session_id,
+        "openai-beta": "responses_websockets=2026-02-06",
+        "x-codex-turn-metadata": _PREWARM_TURN_METADATA,
+    }
+
+
+def test_chained_turn_start_after_prewarm_keeps_developer_messages_in_input(app_instance, monkeypatch):
+    """``previous_response_id`` carries ``input`` forward but not ``instructions``."""
+    upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            _response_batch("resp_ws_prewarm", output_tokens=0),
+            _response_batch("resp_ws_turn"),
+        ],
+    )
+    _install_upstreams(monkeypatch, [upstream])
+    prewarm = _prewarm_frame()
+    permissions = _message("developer", "<permissions instructions>sandbox</permissions instructions>")
+    agents_md = _message("developer", "# AGENTS.md instructions")
+    user = _message("user", "fix the bug")
+    turn_start = {
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "instructions": "",
+        "previous_response_id": "resp_ws_prewarm",
+        "input": [permissions, _message("system", "system note"), agents_md, user],
+        "stream": True,
+    }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses", headers=_connection_headers("thread-ws-developer-prewarm")
+        ) as websocket:
+            for request in (prewarm, turn_start):
+                websocket.send_text(json.dumps(request))
+                events = [json.loads(websocket.receive_text()) for _ in range(2)]
+                assert [event["type"] for event in events] == ["response.created", "response.completed"]
+
+    sent_payloads = [json.loads(text) for text in upstream.sent_text]
+    assert len(sent_payloads) == 2
+    assert sent_payloads[0]["input"] == prewarm["input"]
+    chained = sent_payloads[1]
+    assert chained["previous_response_id"] == "resp_ws_prewarm"
+    # Developer messages keep their place in input; only the system message,
+    # which upstream rejects in input, moves into instructions.
+    assert chained["input"] == [permissions, agents_md, user]
+    assert chained["instructions"] == "system note"
+
+
+_CODEX_METADATA = "internal_chat_message_metadata_passthrough"
+
+
+def _developer_with(**extra: object) -> dict[str, object]:
+    return {**_message("developer", "<permissions instructions>sandbox</permissions instructions>"), **extra}
+
+
+def _run_anchor_rejection(
+    app_instance,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    turn: dict[str, object],
+    prewarm: dict[str, object] | None,
+    path: str = "/backend-api/codex/responses",
+) -> tuple[dict[str, object], _SequencedUpstreamWebSocket, list[int]]:
+    """Send ``turn`` after an optional prewarm; upstream rejects the turn's anchor."""
+    first_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            *([_response_batch("resp_ws_anchor", output_tokens=0)] if prewarm is not None else []),
+            _previous_response_not_found("resp_ws_anchor"),
+        ],
+    )
+    replay_upstream = _SequencedUpstreamWebSocket([], deferred_message_batches=[_response_batch("resp_ws_replayed")])
+    connects = _install_upstreams(monkeypatch, [first_upstream, replay_upstream])
+    headers = _connection_headers("thread-ws-developer-replay")
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(path, headers=headers) as websocket:
+            if prewarm is not None:
+                websocket.send_text(json.dumps(prewarm))
+                assert [json.loads(websocket.receive_text())["type"] for _ in range(2)] == [
+                    "response.created",
+                    "response.completed",
+                ]
+            websocket.send_text(json.dumps(turn))
+            while True:
+                terminal = json.loads(websocket.receive_text())
+                if terminal.get("type") in {"response.completed", "response.failed", "error"}:
+                    break
+    return terminal, replay_upstream, connects
+
+
+def _turn(input_items: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "instructions": "",
+        "previous_response_id": "resp_ws_anchor",
+        "input": input_items,
+        "stream": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("prewarm", "turn_input"),
+    [
+        pytest.param(
+            None,
+            [_message("developer", "new permissions"), _message("user", "continue")],
+            id="unknown-anchor-developer-and-user",
+        ),
+        pytest.param(
+            None,
+            [
+                _developer_with(**{_CODEX_METADATA: {"content_item_kinds": ["model.developer_instructions"]}}),
+                _message("user", "continue"),
+            ],
+            id="unknown-anchor-developer-with-content-kinds",
+        ),
+        pytest.param(
+            None,
+            [
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "perm"}, {"type": "input_text", "text": ""}],
+                },
+                _message("user", "continue"),
+            ],
+            id="unknown-anchor-developer-with-blank-part",
+        ),
+        pytest.param(
+            None,
+            [_developer_with(status="in_progress", name="x"), _message("user", "continue")],
+            id="unknown-anchor-developer-with-extra-keys",
+        ),
+        pytest.param(
+            _prewarm_frame(),
+            [
+                _message("developer", "<permissions instructions>sandbox</permissions instructions>"),
+                _message("developer", "# AGENTS.md instructions"),
+                _message("user", "fix the bug"),
+            ],
+            id="prewarm-anchor-developer-messages-and-user",
+        ),
+    ],
+)
+def test_rejected_turn_delta_is_not_replayed_without_its_anchor(app_instance, monkeypatch, prewarm, turn_input):
+    """A turn delta that lost its anchor fails closed instead of replaying as a new conversation.
+
+    Without the anchor the replay would drop everything the anchor carried:
+    the prewarm's tool bundle and base instructions, or the earlier turns.
+    """
+    terminal, replay_upstream, connects = _run_anchor_rejection(
+        app_instance,
+        monkeypatch,
+        turn=_turn(turn_input),
+        prewarm=prewarm,
+    )
+
+    assert terminal["type"] != "response.completed"
+    assert replay_upstream.sent_text == []
+    assert connects[0] == 1
+
+
+def test_v1_messages_alias_delta_with_empty_developer_is_not_replayed(app_instance, monkeypatch):
+    """The alias coerces ``content: ""`` into a blank text part; it is still no history."""
+    turn = _turn([])
+    del turn["input"]
+    turn["messages"] = [{"role": "developer", "content": ""}, {"role": "user", "content": "continue"}]
+
+    terminal, replay_upstream, connects = _run_anchor_rejection(
+        app_instance, monkeypatch, turn=turn, prewarm=None, path="/v1/responses"
+    )
+
+    assert terminal["type"] != "response.completed"
+    assert replay_upstream.sent_text == []
+    assert connects[0] == 1
+
+
+def test_standard_codex_first_turn_after_empty_prewarm_recovers_as_before(app_instance, monkeypatch):
+    """A captured standard Codex first turn chained to an empty prewarm still recovers.
+
+    Its developer message no longer moves into ``instructions``; the replay
+    decision must not change because of that.
+    """
+    body = json.loads(Path("tests/fixtures/codex_bodies/captured_gpt55_standard_http.json").read_text())
+    prewarm = {**body, "type": "response.create", "generate": False, "input": []}
+    turn = {**body, "type": "response.create", "previous_response_id": "resp_ws_anchor"}
+
+    terminal, replay_upstream, connects = _run_anchor_rejection(app_instance, monkeypatch, turn=turn, prewarm=prewarm)
+
+    assert terminal["type"] == "response.completed"
+    assert connects[0] == 2
+    assert json.loads(replay_upstream.sent_text[0])["input"] == body["input"]
+
+
+def test_anchored_tool_continuation_trims_echoed_output_around_a_developer_update(app_instance, monkeypatch):
+    """A developer update between the echoed prior output and the tool result stays; the echo goes."""
+    upstream = _SequencedUpstreamWebSocket([], deferred_message_batches=[_response_batch("resp_ws_tool_output")])
+    _install_upstreams(monkeypatch, [upstream])
+    developer_update = _message("developer", "new permissions")
+    tool_output = {"type": "function_call_output", "call_id": "call_repeat", "output": "Wed May 6 16:00:00 UTC 2026"}
+    request_payload = {
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "instructions": "",
+        "previous_response_id": "resp_prev_tool_call",
+        "input": [
+            {"type": "reasoning", "summary": []},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "running command"}]},
+            {"type": "function_call", "call_id": "call_repeat", "name": "exec_command", "arguments": '{"cmd":"date"}'},
+            developer_update,
+            tool_output,
+        ],
+        "stream": True,
+    }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect("/backend-api/codex/responses") as websocket:
+            websocket.send_text(json.dumps(request_payload))
+            assert [json.loads(websocket.receive_text())["type"] for _ in range(2)] == [
+                "response.created",
+                "response.completed",
+            ]
+
+    sent_payload = json.loads(upstream.sent_text[0])
+    assert sent_payload["previous_response_id"] == "resp_prev_tool_call"
+    assert sent_payload["input"] == [developer_update, tool_output]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from app.core.openai.requests import ResponsesRequest
@@ -151,6 +153,13 @@ def test_account_neutral_fresh_replay_accepts_self_contained_payloads(
     payload: dict[str, JsonValue],
 ) -> None:
     assert responses_payload_is_account_neutral_fresh_replay(payload) is True
+
+
+_LITE_TOOL_BUNDLE: JsonValue = {
+    "type": "additional_tools",
+    "role": "developer",
+    "tools": [{"type": "custom", "name": "shell"}],
+}
 
 
 def test_account_neutral_replay_projection_removes_response_owned_bookkeeping() -> None:
@@ -716,7 +725,9 @@ def test_full_resend_suffix_accepts_only_self_contained_tool_loops(
     pending_tool_calls: dict[str, str],
     expected: bool,
 ) -> None:
-    stored_input: list[JsonValue] = [{"role": "user", "content": "first question"}]
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
+    stored_input: list[JsonValue] = [_LITE_TOOL_BUNDLE, {"role": "user", "content": "first question"}]
     projection = project_responses_input_for_account_neutral_fresh_replay(
         [*stored_input, *suffix],
         stored_count=len(stored_input),
@@ -801,7 +812,10 @@ def test_full_resend_tool_loop_manifest_tolerates_fresh_developer_interleave_aft
 
 
 def test_full_resend_tool_loop_manifest_rejects_response_owned_historical_developer() -> None:
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
     stored_input: list[JsonValue] = [
+        _LITE_TOOL_BUNDLE,
         {"role": "user", "content": "first question"},
         {
             "type": "custom_tool_call",
@@ -863,7 +877,9 @@ def test_full_resend_tool_loop_manifest_rejects_response_owned_historical_develo
 
 
 def test_full_resend_tool_loop_manifest_rejects_response_owned_fresh_developer() -> None:
-    stored_input: list[JsonValue] = [{"role": "user", "content": "first question"}]
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
+    stored_input: list[JsonValue] = [_LITE_TOOL_BUNDLE, {"role": "user", "content": "first question"}]
     suffix: list[JsonValue] = [
         {
             "type": "custom_tool_call",
@@ -900,7 +916,9 @@ def test_full_resend_tool_loop_manifest_rejects_response_owned_fresh_developer()
 
 
 def test_full_resend_tool_loop_manifest_rejects_fresh_developer_inside_function_call_pair() -> None:
-    stored_input: list[JsonValue] = [{"role": "user", "content": "first question"}]
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
+    stored_input: list[JsonValue] = [_LITE_TOOL_BUNDLE, {"role": "user", "content": "first question"}]
     suffix: list[JsonValue] = [
         {
             "type": "function_call",
@@ -936,7 +954,9 @@ def test_full_resend_tool_loop_manifest_rejects_fresh_developer_inside_function_
 
 
 def test_full_resend_tool_loop_manifest_rejects_adjacent_pair_nested_in_parallel_batch() -> None:
-    stored_input: list[JsonValue] = [{"role": "user", "content": "first question"}]
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
+    stored_input: list[JsonValue] = [_LITE_TOOL_BUNDLE, {"role": "user", "content": "first question"}]
     suffix: list[JsonValue] = [
         {"type": "custom_tool_call", "call_id": "call_1", "name": "shell", "input": "pwd"},
         {"type": "custom_tool_call", "call_id": "call_2", "name": "shell", "input": "whoami"},
@@ -1068,7 +1088,9 @@ def test_full_resend_tool_loop_manifest_rejects_adjacent_pair_nested_in_parallel
 def test_full_resend_tool_loop_manifest_rejects_unproven_fresh_developer_positions(
     suffix: list[JsonValue],
 ) -> None:
-    stored_input: list[JsonValue] = [{"role": "user", "content": "first question"}]
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
+    stored_input: list[JsonValue] = [_LITE_TOOL_BUNDLE, {"role": "user", "content": "first question"}]
     projection = project_responses_input_for_account_neutral_fresh_replay(
         [*stored_input, *suffix],
         stored_count=len(stored_input),
@@ -1199,7 +1221,10 @@ def test_full_resend_exact_manifest_only_allows_historical_developer_interleavin
     interleaved_item: JsonValue,
     expected: bool,
 ) -> None:
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
     stored_input: list[JsonValue] = [
+        _LITE_TOOL_BUNDLE,
         {"role": "user", "content": "first question"},
         {
             "type": "custom_tool_call",
@@ -1293,7 +1318,13 @@ def test_full_resend_exact_manifest_only_allows_historical_developer_interleavin
 def test_full_resend_exact_manifest_rejects_unbounded_historical_developer_interleave(
     stored_prefix_tail: list[JsonValue],
 ) -> None:
-    stored_input: list[JsonValue] = [{"role": "user", "content": "first question"}, *stored_prefix_tail]
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
+    stored_input: list[JsonValue] = [
+        _LITE_TOOL_BUNDLE,
+        {"role": "user", "content": "first question"},
+        *stored_prefix_tail,
+    ]
     suffix: list[JsonValue] = [
         {
             "type": "custom_tool_call",
@@ -1432,6 +1463,7 @@ def test_full_resend_exact_manifest_accepts_canonical_lite_prefix_developer_with
     [
         pytest.param(
             [
+                _LITE_TOOL_BUNDLE,
                 {"role": "user", "content": "first question"},
                 {"type": "message", "role": "developer", "content": "stored control"},
             ],
@@ -1702,6 +1734,7 @@ def test_full_resend_retained_output_accepts_canonical_lite_prefix_developer_wit
     [
         pytest.param(
             [
+                _LITE_TOOL_BUNDLE,
                 {"role": "user", "content": "first question"},
                 {"type": "message", "role": "developer", "content": "stored control"},
             ],
@@ -1754,7 +1787,9 @@ def test_full_resend_retained_output_rejects_unverified_stored_developer_without
 
 
 def test_full_resend_retained_output_rejects_response_owned_fresh_developer() -> None:
-    stored_input: list[JsonValue] = [{"role": "user", "content": "first question"}]
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
+    stored_input: list[JsonValue] = [_LITE_TOOL_BUNDLE, {"role": "user", "content": "first question"}]
     suffix: list[JsonValue] = [
         {
             "type": "message",
@@ -1982,7 +2017,9 @@ def test_full_resend_retained_output_rejects_response_owned_fresh_developer() ->
 def test_full_resend_retained_output_rejects_unproven_fresh_developer_followup(
     suffix: list[JsonValue],
 ) -> None:
-    stored_input: list[JsonValue] = [{"role": "user", "content": "first question"}]
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
+    stored_input: list[JsonValue] = [_LITE_TOOL_BUNDLE, {"role": "user", "content": "first question"}]
 
     assert (
         responses_input_suffix_retains_prior_output(
@@ -2049,7 +2086,10 @@ def test_full_resend_retained_output_rejects_complete_tool_pair_between_output_a
 
 
 def test_full_resend_retained_output_rejects_historical_developer_interleaving() -> None:
+    # Developer rules are Responses-Lite rules; outside Lite the proofs ignore
+    # inline developer messages.
     stored_input: list[JsonValue] = [
+        _LITE_TOOL_BUNDLE,
         {"role": "user", "content": "first question"},
         {
             "type": "custom_tool_call",
@@ -2834,4 +2874,79 @@ def test_only_encrypted_account_scoped_state_requires_ciphertext() -> None:
             {"model": "gpt-5.4", "input": [{"role": "user", "content": "hello"}]}
         )
         is False
+    )
+
+
+@pytest.mark.parametrize(
+    "developer",
+    [
+        pytest.param({"role": "developer", "content": "permissions"}, id="plain"),
+        pytest.param(
+            {
+                "type": "message",
+                "role": "developer",
+                "id": "msg_client_context",
+                "content": [{"type": "input_text", "text": "permissions"}],
+            },
+            id="client-item-id",
+        ),
+        pytest.param(
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": "permissions"}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "turn_1",
+                    "content_item_kinds": ["model.developer_instructions"],
+                },
+            },
+            id="codex-content-kinds-metadata",
+        ),
+    ],
+)
+def test_non_lite_proofs_judge_history_without_inline_developer_messages(developer: JsonValue) -> None:
+    """Outside Responses Lite, developer messages used to be hoisted into instructions.
+
+    They now stay in ``input`` but carry no conversation history, so the proofs
+    must decide exactly as they did on the hoisted input.
+    """
+    stored_input: list[JsonValue] = [developer, {"role": "user", "content": "first question"}]
+    retained_suffix: list[JsonValue] = [
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "prior answer"}]},
+        developer,
+        {"role": "user", "content": "next question"},
+    ]
+    tool_suffix: list[JsonValue] = [
+        {"type": "custom_tool_call", "call_id": "call_current", "name": "shell", "input": "pwd"},
+        developer,
+        {"type": "custom_tool_call_output", "call_id": "call_current", "output": "/workspace"},
+    ]
+
+    assert responses_input_suffix_retains_prior_output(
+        [*stored_input, *retained_suffix], stored_count=len(stored_input)
+    )
+    assert responses_input_suffix_matches_pending_tool_calls(
+        [*stored_input, *tool_suffix],
+        stored_count=len(stored_input),
+        pending_tool_calls={"call_current": "custom_tool_call"},
+    )
+    # A developer message that is not a plain control message stays visible.
+    assert not responses_input_suffix_retains_prior_output(
+        [{**cast(dict[str, JsonValue], developer), "phase": "commentary"}, *stored_input[1:], *retained_suffix],
+        stored_count=len(stored_input),
+    )
+
+
+def test_non_lite_retained_output_proof_accepts_a_developer_only_stored_prefix() -> None:
+    """A verified prefix of developer controls alone still proves the suffix that follows it."""
+    developer: JsonValue = {"role": "developer", "content": "permissions"}
+    suffix: list[JsonValue] = [
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "prior answer"}]},
+        {"role": "user", "content": "next question"},
+    ]
+
+    assert responses_input_suffix_retains_prior_output([developer, *suffix], stored_count=1)
+    # Without prior output after the developer prefix there is nothing to prove.
+    assert not responses_input_suffix_retains_prior_output(
+        [developer, {"role": "user", "content": "next question"}], stored_count=1
     )

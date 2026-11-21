@@ -3463,10 +3463,12 @@ class _HTTPBridgeStreamingMixin:
                 # whether the anchor came from the durable or
                 # session-level injection path. Injection-only re-prepares
                 # keep the replay-safety decision made when the anchor was
-                # injected.
+                # injected. A trimmed prefix of developer messages alone
+                # leaves a delta (they used to be hoisted, and then no trim
+                # happened), so that trim keeps the earlier decision too.
                 request_state.fresh_upstream_request_is_retry_safe = (
                     (durable_full_resend_anchor_count is None or durable_full_resend_has_safe_fresh_context)
-                    if store_context_trim_applied
+                    if store_context_trim_applied and _http_bridge_payload_looks_like_full_resend(effective_payload)
                     else previous_request_state.fresh_upstream_request_is_retry_safe
                 )
             elif client_full_resend_fresh_upstream_request_text is not None:

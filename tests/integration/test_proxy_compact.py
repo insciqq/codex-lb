@@ -2077,8 +2077,20 @@ def _usage_limit_429() -> ProxyResponseError:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "full_resend_input",
+    [
+        pytest.param(_NEUTRAL_FULL_RESEND_INPUT, id="plain-history"),
+        # Developer messages stay in input; the proof judges history without
+        # them, as when they were hoisted into instructions.
+        pytest.param(
+            [{"role": "developer", "content": "permissions"}, *_NEUTRAL_FULL_RESEND_INPUT],
+            id="developer-prefix",
+        ),
+    ],
+)
 async def test_proxy_compact_pinned_owner_selection_time_quota_loss_replays_account_neutral_full_resend(
-    async_client, monkeypatch
+    async_client, monkeypatch, full_resend_input
 ):
     """A previous-response-pinned compact whose owner is quota-excluded at
     selection time recovers by dropping the anchor and replaying the verified
@@ -2098,7 +2110,7 @@ async def test_proxy_compact_pinned_owner_selection_time_quota_loss_replays_acco
         json={
             "model": "gpt-5.1",
             "instructions": "hi",
-            "input": _NEUTRAL_FULL_RESEND_INPUT,
+            "input": full_resend_input,
             "previous_response_id": "resp_quota_anchor",
         },
     )
@@ -2107,7 +2119,7 @@ async def test_proxy_compact_pinned_owner_selection_time_quota_loss_replays_acco
     assert [account_id for account_id, _payload, _headers in calls] == ["acc_quota_alt"]
     replay_payload = calls[0][1]
     assert "previous_response_id" not in replay_payload
-    assert replay_payload["input"] == _NEUTRAL_FULL_RESEND_INPUT
+    assert replay_payload["input"] == full_resend_input
 
 
 @pytest.mark.asyncio
@@ -2188,8 +2200,30 @@ async def test_proxy_compact_pinned_owner_post_selection_401_stays_owner_bound(a
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "delta_input",
+    [
+        pytest.param(
+            [
+                {"role": "user", "content": "first delta turn"},
+                {"role": "user", "content": "second delta turn"},
+            ],
+            id="user-turns-only",
+        ),
+        # Developer controls ahead of assistant output are no user turn: the
+        # history may still be a delta the owner resolves through the anchor.
+        pytest.param(
+            [
+                {"role": "developer", "content": "permissions"},
+                {"role": "assistant", "content": [{"type": "output_text", "text": "earlier answer"}]},
+                {"role": "user", "content": "next delta turn"},
+            ],
+            id="developer-prefix-before-assistant-output",
+        ),
+    ],
+)
 async def test_proxy_compact_pinned_owner_quota_loss_stays_owner_bound_without_retained_prior_output(
-    async_client, monkeypatch
+    async_client, monkeypatch, delta_input
 ):
     """A multi-item history without retained assistant output cannot be proven
     a full resend (it may be a delta the owner account resolves through the
@@ -2209,10 +2243,7 @@ async def test_proxy_compact_pinned_owner_quota_loss_stays_owner_bound_without_r
         json={
             "model": "gpt-5.1",
             "instructions": "hi",
-            "input": [
-                {"role": "user", "content": "first delta turn"},
-                {"role": "user", "content": "second delta turn"},
-            ],
+            "input": delta_input,
             "previous_response_id": "resp_delta_anchor",
         },
     )

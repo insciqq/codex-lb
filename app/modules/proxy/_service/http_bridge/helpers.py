@@ -69,6 +69,7 @@ from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
     ResponsesRequest,
+    responses_input_uses_lite_tools,
 )
 from app.core.resilience.overload import local_overload_error
 from app.core.types import JsonValue
@@ -204,6 +205,7 @@ from app.modules.proxy.helpers import (
     _parse_openai_error,
 )
 from app.modules.proxy.http_continuation import inferred_http_bridge_key
+from app.modules.proxy.replay_safety import is_developer_role_message, responses_input_classifier_history_view
 from app.modules.proxy.ring_membership import (
     RING_STALE_THRESHOLD_SECONDS,
     RingMembershipService,
@@ -1151,10 +1153,18 @@ def _trim_http_bridge_previous_response_input_items(input_items: list[JsonValue]
     )
     if first_output_index is None or first_output_index == 0:
         return input_items
-    prefix = input_items[:first_output_index]
-    if not all(_is_http_bridge_previous_response_output_item(item) for item in prefix):
+    # A fresh developer control message may sit between the echoed prior
+    # output and the tool result; it stays, in order, while the echo is trimmed.
+    lite_input = responses_input_uses_lite_tools(input_items)
+    kept_prefix_items: list[JsonValue] = []
+    for item in input_items[:first_output_index]:
+        if not lite_input and is_developer_role_message(item):
+            kept_prefix_items.append(item)
+        elif not _is_http_bridge_previous_response_output_item(item):
+            return input_items
+    if len(kept_prefix_items) == first_output_index:
         return input_items
-    return input_items[first_output_index:]
+    return [*kept_prefix_items, *input_items[first_output_index:]]
 
 
 def _is_http_bridge_previous_response_output_item(item: JsonValue) -> bool:
@@ -2104,11 +2114,14 @@ def _http_bridge_payload_looks_like_full_resend(payload: ResponsesRequest) -> bo
     if isinstance(input_value, str):
         return len(input_value) >= 4096
     if isinstance(input_value, Sequence) and not isinstance(input_value, (str, bytes, bytearray)):
-        if len(input_value) > 1:
+        # Developer messages carry no conversation history, so a turn delta
+        # that brings fresh developer messages is still a delta.
+        history_items = responses_input_classifier_history_view(list(input_value))
+        if len(history_items) > 1:
             return True
-        if len(input_value) == 1:
+        if len(history_items) == 1:
             try:
-                return len(json.dumps(input_value[0], ensure_ascii=True, separators=(",", ":"))) >= 4096
+                return len(json.dumps(history_items[0], ensure_ascii=True, separators=(",", ":"))) >= 4096
             except TypeError:
                 return False
     return False
