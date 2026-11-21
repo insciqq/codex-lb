@@ -7,9 +7,11 @@ import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import usage as usage_core
@@ -297,6 +299,9 @@ class QuotaWarmupService:
 
         started = time.monotonic()
         reservation_finalized = False
+        # Plain value: a log write for a deleted account rolls the session
+        # back, which expires the ORM rows loaded so far.
+        claimed_decision_id = decision.id
         route_trace = UpstreamProxyRouteTrace()
         try:
             # The probe must run under the same effective stream budget the
@@ -325,7 +330,7 @@ class QuotaWarmupService:
                 reservation_finalized = True
                 if settlement_cancellation is not None:
                     raise settlement_cancellation
-            await self._request_logs.add_log(
+            account_present = await self._add_warmup_log(
                 account_id=account_id,
                 api_key_id=api_key_id,
                 request_id=request_id,
@@ -344,14 +349,15 @@ class QuotaWarmupService:
                 upstream_proxy_endpoint_id=route_trace.endpoint_id,
                 upstream_proxy_fallback_used=route_trace.fallback_used,
             )
-            await self._try_record_warmup_effect(
-                account,
-                resolved_model,
-                source="warmup_probe",
-                confidence="observed",
-            )
+            if account_present:
+                await self._try_record_warmup_effect(
+                    account,
+                    resolved_model,
+                    source="warmup_probe",
+                    confidence="observed",
+                )
             row = await self._planner.update_decision_status(
-                decision.id,
+                claimed_decision_id,
                 status="executed",
                 reason="warmup_executed",
                 executed_at=utcnow(),
@@ -360,7 +366,7 @@ class QuotaWarmupService:
                 expected_lease_expires_at=claim_lease_expires_at,
             )
             return await self._result_from_update_or_current(
-                decision_id=decision.id,
+                decision_id=claimed_decision_id,
                 row=row,
                 fallback_status="executed",
                 fallback_reason="warmup_executed",
@@ -377,7 +383,7 @@ class QuotaWarmupService:
                 )
             raise
         except Exception as exc:
-            # The account was deleted after it was loaded: nothing was sent,
+            # The route lookup found the account deleted: nothing was sent,
             # and rows referencing it can no longer be written.
             account_gone = isinstance(exc, UpstreamProxyRouteError) and exc.reason == ACCOUNT_NOT_FOUND_REASON
             if reservation_id is not None:
@@ -388,7 +394,7 @@ class QuotaWarmupService:
                     output_tokens=0,
                     cached_input_tokens=0,
                 )
-            await self._request_logs.add_log(
+            account_present = await self._add_warmup_log(
                 account_id=None if account_gone else account_id,
                 api_key_id=api_key_id,
                 request_id=request_id,
@@ -407,7 +413,7 @@ class QuotaWarmupService:
                 upstream_proxy_fallback_used=route_trace.fallback_used,
                 upstream_proxy_fail_closed_reason=exc.reason if isinstance(exc, UpstreamProxyRouteError) else None,
             )
-            if not account_gone:
+            if account_present:
                 await self._try_record_warmup_effect(
                     account,
                     resolved_model,
@@ -415,7 +421,7 @@ class QuotaWarmupService:
                     confidence="failed",
                 )
             row = await self._planner.update_decision_status(
-                decision.id,
+                claimed_decision_id,
                 status="failed",
                 reason=f"warmup_failed:{type(exc).__name__}",
                 executed_at=utcnow(),
@@ -424,12 +430,30 @@ class QuotaWarmupService:
                 expected_lease_expires_at=claim_lease_expires_at,
             )
             return await self._result_from_update_or_current(
-                decision_id=decision.id,
+                decision_id=claimed_decision_id,
                 row=row,
                 fallback_status="failed",
                 fallback_reason=f"warmup_failed:{type(exc).__name__}",
                 request_id=request_id,
             )
+
+    async def _add_warmup_log(self, *, account_id: str | None, **fields: Any) -> bool:
+        """Write the warmup request log; False when its account is gone.
+
+        The account can be deleted while the probe runs. Its id then fails the
+        log's foreign key, so the log is kept without it and the caller skips
+        the account's observation; the decision still settles.
+        """
+        if account_id is not None:
+            try:
+                await self._request_logs.add_log(account_id=account_id, **fields)
+                return True
+            except IntegrityError:
+                await self._session.rollback()
+                if await self._session.scalar(select(Account.id).where(Account.id == account_id)) is not None:
+                    raise
+        await self._request_logs.add_log(account_id=None, **fields)
+        return False
 
     async def _try_record_warmup_effect(
         self,
@@ -672,6 +696,7 @@ class QuotaWarmupService:
                 scope="account",
                 encryptor=self._encryptor,
                 require_account=True,
+                installation_id=account.codex_installation_id,
             )
         if route_trace is not None:
             if route is None:

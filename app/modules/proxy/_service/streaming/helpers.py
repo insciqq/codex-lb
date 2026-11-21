@@ -62,7 +62,7 @@ from app.core.resilience.network_recovery import (
     PROCESS_NETWORK_UNAVAILABLE_CODE,
 )
 from app.core.types import JsonValue
-from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError
+from app.core.upstream_proxy import ACCOUNT_NOT_FOUND_REASON, ResolvedUpstreamRoute, UpstreamProxyRouteError
 from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import CODEX_KEEPALIVE_FRAME as CODEX_KEEPALIVE_FRAME  # noqa: F401
@@ -1027,9 +1027,14 @@ async def _resolve_upstream_route_for_account(
 ) -> ResolvedUpstreamRoute | None:
     # Outcomes (route / direct-egress None / fail-closed error) are cached
     # verbatim, so a hit can never change the degradation path the resolver
-    # chose; errors re-raise with their original reason.
+    # chose; errors re-raise with their original reason. The key includes the
+    # row's installation id: the lookup checks that the selected row still
+    # exists (``require_account``), and a row imported again under the same
+    # account id is another account with its own binding.
     cache = get_upstream_route_cache()
-    cached = cache.get(account.id)
+    installation_id = getattr(account, "codex_installation_id", None)
+    cache_key = f"{account.id}:{installation_id}"
+    cached = cache.get(cache_key)
     if cached is not None:
         return cached.unwrap(account.id)
     generation = cache.generation
@@ -1041,11 +1046,16 @@ async def _resolve_upstream_route_for_account(
                 operation=operation,
                 scope="account",
                 encryptor=proxy._encryptor,
+                require_account=True,
+                installation_id=installation_id,
             )
         except UpstreamProxyRouteError as exc:
-            cache.store_error(account.id, exc, generation=generation)
+            # A deleted account is not cached: a re-import that clears a
+            # pending deletion makes the same row routable again at once.
+            if exc.reason != ACCOUNT_NOT_FOUND_REASON:
+                cache.store_error(cache_key, exc, generation=generation)
             raise
-    cache.store_route(account.id, route, generation=generation)
+    cache.store_route(cache_key, route, generation=generation)
     return route
 
 

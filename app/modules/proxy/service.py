@@ -600,6 +600,8 @@ from app.modules.proxy._service.support import (
     _WebSocketRequestState,
     _WebSocketUpstreamControl,  # noqa: F401
     opportunistic_admission_account_scope,
+    route_failure_code,
+    route_failure_response,
 )
 from app.modules.proxy._service.support import (
     _HTTPBridgeOwnerForward as _HTTPBridgeOwnerForward,
@@ -1241,12 +1243,9 @@ class ProxyService(
             raise
         except UpstreamProxyRouteError as exc:
             route_fail_closed_reason = exc.reason
-            log_error_code = "upstream_proxy_unavailable"
+            log_error_code = route_failure_code(exc)
             log_error_message = exc.reason
-            raise ProxyResponseError(
-                502,
-                openai_error("upstream_proxy_unavailable", f"Upstream proxy route unavailable: {exc.reason}"),
-            ) from exc
+            raise route_failure_response(exc) from exc
         finally:
             await self._write_request_log(
                 account_id=account_id_value,

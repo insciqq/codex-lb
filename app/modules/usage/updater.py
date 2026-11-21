@@ -1578,6 +1578,7 @@ async def _resolve_upstream_route_for_account(account: Account, *, operation: st
             # The caller holds this account's token; a deletion since it was
             # loaded must fail the fetch, not unbind the account.
             require_account=True,
+            installation_id=account.codex_installation_id,
         )
 
 

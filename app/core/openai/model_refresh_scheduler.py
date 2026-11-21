@@ -396,6 +396,8 @@ async def _resolve_upstream_route_for_account(account: Account, *, operation: st
             account_id=account.id,
             operation=operation,
             scope="account",
+            require_account=True,
+            installation_id=account.codex_installation_id,
         )
 
 

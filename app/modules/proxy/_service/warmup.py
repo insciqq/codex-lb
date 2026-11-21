@@ -29,7 +29,11 @@ from app.core.resilience.toggles import bind_resilience_toggles
 from app.core.upstream_proxy import UpstreamProxyRouteError
 from app.db.models import Account, AccountStatus
 from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
-from app.modules.proxy._service.support import _call_with_supported_optional_kwargs, _request_log_client_fields
+from app.modules.proxy._service.support import (
+    _call_with_supported_optional_kwargs,
+    _request_log_client_fields,
+    route_failure_code,
+)
 from app.modules.proxy.helpers import _header_account_id, _normalize_error_code, _parse_openai_error
 from app.modules.proxy.request_policy import (
     apply_prohibit_fast_mode,
@@ -422,7 +426,7 @@ class _WarmupMixin:
             error_message = exc.message
         except UpstreamProxyRouteError as exc:
             upstream_proxy_fail_closed_reason = exc.reason
-            error_code = "upstream_proxy_unavailable"
+            error_code = route_failure_code(exc)
             error_message = str(exc) or "Warmup upstream proxy route is unavailable"
         except ProxyResponseError as exc:
             await proxy._handle_proxy_error(live_account, exc)

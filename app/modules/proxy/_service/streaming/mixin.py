@@ -299,6 +299,8 @@ from app.modules.proxy._service.support import (
     _ttft_event_latency_ms,
     _verbatim_relay_event_type,
     _WebSocketUpstreamControl,
+    route_failure_code,
+    route_failure_message,
 )
 from app.modules.proxy._service.support import (
     _HTTPBridgeOwnerForward as _HTTPBridgeOwnerForward,
@@ -989,18 +991,11 @@ class _StreamingMixin(_StreamingRetryMixin):
         except UpstreamProxyRouteError as exc:
             route_fail_closed_reason = exc.reason
             status = "error"
-            error_code = "upstream_proxy_unavailable"
-            error_message = f"Upstream proxy route unavailable: {exc.reason}"
+            error_code, error_message = route_failure_code(exc), route_failure_message(exc)
             settlement.record_success = False
             settlement.account_health_error = False
             settlement.error = {"message": error_message}
-            yield format_sse_event(
-                response_failed_event(
-                    "upstream_proxy_unavailable",
-                    error_message,
-                    response_id=request_id,
-                )
-            )
+            yield format_sse_event(response_failed_event(error_code, error_message, response_id=request_id))
             return
         except _TerminalStreamError:
             raise

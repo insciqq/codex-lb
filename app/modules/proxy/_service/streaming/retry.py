@@ -73,6 +73,8 @@ from app.modules.proxy._service.support import (
     _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE,
     _ACCOUNT_SELECTION_RECOVERY_HEARTBEAT_SECONDS,
     _LOCAL_ACCOUNT_CAP_ERROR_CODES,
+    ACCOUNT_DELETED_CODE,
+    ACCOUNT_DELETED_MESSAGE,
     _account_capacity_wait_payload,
     _account_selection_recovery_sleep_seconds,
     _request_log_client_fields,
@@ -85,6 +87,10 @@ from app.modules.proxy._service.support import (
     _TransientStreamError,
     _WebSocketUpstreamControl,
     configured_upstream_stream_transport,
+    is_account_gone,
+    raise_if_selected_account_gone,
+    route_failure_code,
+    route_failure_message,
     upstream_websocket_transport_recently_failed,
 )
 from app.modules.proxy._service.websocket.helpers import (
@@ -2190,8 +2196,25 @@ class _StreamingRetryMixin:
                         return
                     try:
                         account = await proxy._ensure_fresh_with_budget(account, timeout_seconds=remaining_budget)
+                        await raise_if_selected_account_gone(proxy, account, operation="responses")
                     except UpstreamProxyRouteError as exc:
-                        message = f"Upstream proxy route unavailable: {exc.reason}"
+                        if (
+                            is_account_gone(exc)
+                            and account.id != account_model_replacement_account_id
+                            and not require_preferred_account
+                            and preferred_account_id is None
+                        ):
+                            # Deleted since selection: not the account's fault
+                            # and not a proxy outage. Fail over to another
+                            # account without a health penalty.
+                            await _release_tracked_stream_lease(current_account_lease)
+                            current_account_lease = None
+                            excluded_account_ids.add(account.id)
+                            last_retryable_stream_error = _RetryableStreamError(
+                                ACCOUNT_DELETED_CODE, {"message": ACCOUNT_DELETED_MESSAGE}, exclude_account=True
+                            )
+                            continue
+                        message = route_failure_message(exc)
                         await proxy._write_stream_preflight_error(
                             affinity_observation=affinity_observation,
                             account_id=account.id,
@@ -2199,7 +2222,7 @@ class _StreamingRetryMixin:
                             request_id=request_id,
                             model=payload.model,
                             start=start,
-                            error_code="upstream_proxy_unavailable",
+                            error_code=route_failure_code(exc),
                             error_message=message,
                             reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
                             service_tier=payload.service_tier,
@@ -2212,7 +2235,7 @@ class _StreamingRetryMixin:
                             client_ip=client_ip,
                         )
                         event = response_failed_event(
-                            "upstream_proxy_unavailable",
+                            route_failure_code(exc),
                             message,
                             response_id=request_id,
                         )

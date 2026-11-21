@@ -104,6 +104,8 @@ async def _resolve_upstream_route_for_account(
             operation="automation",
             scope="account",
             encryptor=encryptor,
+            require_account=True,
+            installation_id=account.codex_installation_id,
         )
 
 

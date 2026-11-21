@@ -226,4 +226,6 @@ class CacheProbeSender:
                 operation="cache_isolation_probe",
                 scope="account",
                 encryptor=self._encryptor,
+                require_account=True,
+                installation_id=account.codex_installation_id,
             )

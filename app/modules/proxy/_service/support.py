@@ -32,7 +32,7 @@ from app.core.plan_types import account_plan_matches_allowed
 from app.core.resilience.network_recovery import PROCESS_NETWORK_UNAVAILABLE_CODE
 from app.core.resilience.overload import is_local_overload_error_code
 from app.core.types import JsonValue
-from app.core.upstream_proxy import ResolvedUpstreamRoute
+from app.core.upstream_proxy import ACCOUNT_NOT_FOUND_REASON, ResolvedUpstreamRoute, UpstreamProxyRouteError
 from app.core.utils.locks import fast_lock
 from app.core.utils.sse import sse_event_type_from_block
 from app.db.models import Account, StickySessionKind
@@ -2163,3 +2163,48 @@ def configured_upstream_stream_transport(dashboard_settings: Any) -> str:
 def upstream_websocket_transport_recently_failed() -> bool:
     marked_at = _upstream_ws_transport_failure_at
     return marked_at is not None and time.monotonic() - marked_at < UPSTREAM_WS_TRANSPORT_FAILURE_TTL_SECONDS
+
+
+# --- Selected account deleted before dispatch ---
+#
+# The request path resolves its route with ``require_account``, so an account
+# deleted (or replaced under the same id) after selection fails with
+# ``account_not_found`` instead of resolving like an unbound account. That is
+# not a proxy outage and not the account's fault: movable requests fail over
+# to another account without a health penalty, and requests that cannot move
+# answer a retryable ``account_deleted`` error.
+
+ACCOUNT_DELETED_CODE = "account_deleted"
+ACCOUNT_DELETED_MESSAGE = "The selected account was removed; retry the request."
+
+
+def is_account_gone(exc: BaseException) -> bool:
+    return isinstance(exc, UpstreamProxyRouteError) and exc.reason == ACCOUNT_NOT_FOUND_REASON
+
+
+def route_failure_code(exc: UpstreamProxyRouteError) -> str:
+    return ACCOUNT_DELETED_CODE if is_account_gone(exc) else "upstream_proxy_unavailable"
+
+
+def route_failure_message(exc: UpstreamProxyRouteError) -> str:
+    return ACCOUNT_DELETED_MESSAGE if is_account_gone(exc) else f"Upstream proxy route unavailable: {exc.reason}"
+
+
+def route_failure_response(exc: UpstreamProxyRouteError) -> ProxyResponseError:
+    if is_account_gone(exc):
+        return ProxyResponseError(503, openai_error(ACCOUNT_DELETED_CODE, ACCOUNT_DELETED_MESSAGE))
+    return ProxyResponseError(502, openai_error("upstream_proxy_unavailable", route_failure_message(exc)))
+
+
+async def raise_if_selected_account_gone(proxy: Any, account: Any, *, operation: str) -> None:
+    """Fail with ``account_not_found`` when ``account`` no longer exists.
+
+    Called right after selection and refresh, where the caller can still fail
+    over. Any other route failure is left to the dispatch that follows, which
+    resolves the (cached) route again and reports it as before.
+    """
+    try:
+        await proxy._resolve_upstream_route_for_account(account, operation=operation)
+    except UpstreamProxyRouteError as exc:
+        if is_account_gone(exc):
+            raise

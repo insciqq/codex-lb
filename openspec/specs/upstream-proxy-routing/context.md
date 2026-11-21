@@ -53,24 +53,42 @@ Deleting an account removes its `account_proxy_bindings` row by cascade. An
 operation that loaded the account, and holds its tokens in memory, used to
 look up the binding afterwards; when the deletion finished in between it saw
 no binding and, with global routing off, sent the tokens over direct egress.
+Account ids are deterministic, so the same happens when the account is
+deleted and imported again: the new row has the old id and no binding.
 
-`resolve_upstream_route(..., require_account=True)` closes that window. It
-reads the account row and its active binding in one statement and raises
-`account_not_found` when the row is gone or marked for deletion
-(`allow_pending_deletion=True` keeps a deleting row, whose binding still
-exists). Force Probe and the dashboard reset-credit endpoints, quota warmup,
-targeted OAuth, `AuthManager` token refreshes, `UsageUpdater` usage fetches
-and Codex usage identity validation use it. The dashboard endpoints answer
-404, as when the account was gone on arrival. Quota warmup logs the failure
-without an account id, because the request-log foreign key can no longer
-point at the row, and skips the account observation.
+`resolve_upstream_route(..., require_account=True, installation_id=...)`
+closes that window. It reads the account row and its active binding in one
+statement and raises `account_not_found` when the row is gone, marked for
+deletion, or carries another `codex_installation_id` than the loaded row
+(the column is fixed for a row's lifetime and kept by in-place credential
+replacement). `allow_pending_deletion=True` keeps a deleting row, whose
+binding still exists. The default (lenient) mode remains for callers that
+resolve without a loaded account (bootstrap OAuth, import-time checks).
 
-The default stays lenient (an unknown id reads as "no binding"). The proxy
-request path and its per-account route cache, automations, limit warmup, the
-cache-isolation probe and model discovery still use it directly; their unit
-suites resolve routes for in-memory accounts without rows, and the request
-path's failure handling is a separate change. Their token refreshes and usage
-fetches go through `AuthManager` and `UsageUpdater` and are strict.
+Callers and outcomes:
+
+- The proxy request path (`streaming/helpers.py`, shared by HTTP and
+  WebSocket Responses, compact, transcription, files, Codex control, proxy
+  warmup and realtime) is strict. Its route cache keys entries by account id
+  and installation id and does not keep `account_not_found`, so a re-import
+  that clears a pending deletion routes again at once. Right after selection
+  and refresh, HTTP streaming and the WebSocket connect check the account
+  once more and fail over to another account without a health penalty;
+  requests that cannot move, and the single-shot paths, answer a retryable
+  503 `account_deleted` rather than the proxy-outage error.
+- Force Probe and the dashboard reset-credit endpoints answer 404, as when
+  the account was gone on arrival, also when the refresh before them or the
+  SQLite redeem claim fails because the row is gone (the claim rows
+  reference the account).
+- Quota warmup logs without the account id when the row is gone at any
+  point, skips the account observation and still settles the decision.
+- `AuthManager`, `UsageUpdater`, automations, limit warmup, the
+  cache-isolation probe and model discovery are strict.
+
+Unit suites that drive these paths with in-memory accounts, which have no
+row, stub the route lookup; real-row coverage lives in
+`tests/integration/test_account_diagnostic_routing.py` and
+`tests/integration/test_deleted_account_failover.py`.
 
 ## Codex usage identity and team seats
 

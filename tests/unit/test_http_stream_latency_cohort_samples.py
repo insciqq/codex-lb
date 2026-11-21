@@ -17,9 +17,15 @@ import pytest
 
 from app.core.openai.requests import ResponsesRequest
 from app.modules.proxy import service as proxy_service
+from tests.unit._proxy_test_helpers import use_rowless_request_path_routes
 from tests.unit.test_streaming_retry_virtual_time import _make_account, _RequestLogsRecorder, _virtual_service
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _rowless_request_path_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    use_rowless_request_path_routes(monkeypatch)
 
 
 def _sse(event: dict[str, object]) -> str:

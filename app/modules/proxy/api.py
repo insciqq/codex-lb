@@ -2063,6 +2063,8 @@ async def _resolve_reset_credit_route(session: AsyncSession, account_id: str) ->
         account_id=account_id,
         operation="reset_credits_consume",
         scope="account",
+        # The account was loaded above; a deletion since must not unbind it.
+        require_account=True,
     )
 
 

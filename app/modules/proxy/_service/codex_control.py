@@ -33,7 +33,12 @@ from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteErr
 from app.core.utils.request_id import ensure_request_id, get_request_id
 from app.db.models import Account
 from app.modules.api_keys.service import ApiKeyData
-from app.modules.proxy._service.support import _request_log_client_fields, _RequestLogFailureMetadata
+from app.modules.proxy._service.support import (
+    _request_log_client_fields,
+    _RequestLogFailureMetadata,
+    route_failure_code,
+    route_failure_response,
+)
 from app.modules.proxy.affinity import _AffinityPolicy, _sticky_key_for_codex_control_request
 from app.modules.proxy.helpers import _header_account_id, _normalize_error_code, _parse_openai_error
 from app.modules.proxy.load_balancer import (
@@ -573,12 +578,9 @@ class _CodexControlMixin:
             raise
         except UpstreamProxyRouteError as exc:
             route_fail_closed_reason = exc.reason
-            log_error_code = "upstream_proxy_unavailable"
+            log_error_code = route_failure_code(exc)
             log_error_message = exc.reason
-            raise ProxyResponseError(
-                502,
-                openai_error("upstream_proxy_unavailable", f"Upstream proxy route unavailable: {exc.reason}"),
-            ) from exc
+            raise route_failure_response(exc) from exc
         finally:
             await proxy._write_request_log(
                 account_id=None if sensitive_realtime_request else account_id_value,

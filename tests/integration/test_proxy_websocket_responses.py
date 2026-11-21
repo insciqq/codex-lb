@@ -2135,6 +2135,8 @@ def test_backend_responses_websocket_transient_refresh_claim_fails_over_instead_
         fake_select_websocket_connect_account,
     )
     monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh)
+    # The selected accounts are namespaces without database rows.
+    monkeypatch.setattr(proxy_module.ProxyService, "_resolve_upstream_route_for_account", AsyncMock(return_value=None))
     monkeypatch.setattr(
         proxy_module.ProxyService,
         "_open_upstream_websocket_with_budget",
@@ -2294,6 +2296,8 @@ def test_backend_responses_websocket_genuine_transport_error_penalizes_and_fails
         fake_select_websocket_connect_account,
     )
     monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh)
+    # The selected accounts are namespaces without database rows.
+    monkeypatch.setattr(proxy_module.ProxyService, "_resolve_upstream_route_for_account", AsyncMock(return_value=None))
     monkeypatch.setattr(
         proxy_module.ProxyService,
         "_open_upstream_websocket_with_budget",

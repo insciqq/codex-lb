@@ -33,6 +33,7 @@ from app.modules.proxy.capability_lineage_repository import CapabilityLineageRep
 from app.modules.proxy.repo_bundle import ProxyRepositories
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.usage.repository import AdditionalUsageRepository
+from tests.unit._proxy_test_helpers import use_rowless_request_path_routes
 from tests.unit.test_load_balancer_concurrency import (
     _make_account,
     _StubAccountsRepository,
@@ -43,6 +44,12 @@ from tests.unit.test_load_balancer_concurrency import (
 from tests.unit.test_proxy_utils import _make_proxy_settings, _RequestLogsRecorder, _SettingsCache
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _rowless_request_path_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    use_rowless_request_path_routes(monkeypatch)
+
 
 _MODEL_UNSUPPORTED_MESSAGE = "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."
 

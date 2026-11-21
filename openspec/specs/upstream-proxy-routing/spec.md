@@ -278,28 +278,35 @@ An upstream proxy endpoint whose scheme is `http`, `socks5`, or `socks5h` and wh
 
 ### Requirement: Operations on a loaded account fail closed when it is deleted
 
-An operation that already loaded an account and holds its credentials MUST read that account's row and its active binding in one statement when it resolves the account's route, and MUST fail with `account_not_found` before any upstream request when the row is gone or marked for deletion. This applies to Force Probe (including the token refresh before the probe and the usage refresh after it), quota warmup, targeted OAuth, the dashboard reset-credit read and consume, background usage refreshes and token refreshes. A missing row MUST NOT be treated as an unbound account, because deleting an account removes its binding by cascade. Codex usage identity validation MUST read its candidate seats the same way, except that a seat pending deletion still counts with its binding.
+An operation that already loaded an account and dispatches with that account's credentials MUST read the account's row and its active binding in one statement when it resolves the route, and MUST fail with `account_not_found` before any upstream request when the row is gone, marked for deletion, or is a different row under the same id (its `codex_installation_id` differs from the loaded one). A missing or replaced row MUST NOT be treated as an unbound account: deleting an account removes its binding by cascade, and account ids are deterministic, so a re-import creates a new, unbound row under the old id. This applies to the proxy request path (HTTP and WebSocket Responses, compact, transcription, files, Codex control and thread-goal requests, proxy warmup, realtime), Force Probe including its token refresh and its post-probe usage refresh, quota warmup, the dashboard and `/v1` reset-credit reads and consumes, background usage refreshes, token refreshes, automations, limit warmup, the cache-isolation probe and model discovery. Targeted OAuth MUST apply the same existence and pending-deletion check to its target. A foreign-key failure while writing a claim or log row for an account deleted meanwhile MUST be reported the same way as `account_not_found`.
 
 #### Scenario: Deletion between account load and route lookup
 - **GIVEN** an operation has loaded an account that has an active binding
 - **AND** global proxy routing is disabled
-- **WHEN** the account is marked for deletion, or its deletion is finalized, before the operation resolves its route
-- **THEN** no request MUST be dispatched, directly or through any pool
+- **WHEN** the account is marked for deletion, its deletion is finalized, or it is deleted and imported again before the operation resolves its route
+- **THEN** no request MUST be dispatched with the loaded credentials, directly or through any pool
+
+#### Scenario: Request path fails over from a deleted account
+- **GIVEN** a proxy request selected an account that is deleted before dispatch
+- **WHEN** the request may move to another account
+- **THEN** it MUST fail over to another account without writing a health penalty for the deleted one
+- **AND** a request that cannot move MUST fail with the retryable `account_deleted` error, not the upstream-proxy-unavailable error
+- **AND** the route cache MUST NOT keep the `account_not_found` outcome, and its entries MUST belong to one row incarnation
 
 #### Scenario: Deleted account answers like a missing account
 - **GIVEN** the account was deleted while Force Probe, a stale-token refresh before it, or a dashboard reset-credit read or consume was running
-- **WHEN** route resolution reports `account_not_found`
+- **WHEN** route resolution, or the refresh or redeem claim for the account, reports the account missing
 - **THEN** the endpoint MUST answer 404 `account_not_found`, as it does when the account is already gone on arrival
 
 #### Scenario: Post-probe usage refresh after deletion
-- **GIVEN** the account was deleted while its routed Force Probe was in flight
+- **GIVEN** the account was deleted, or deleted and imported again, while its routed Force Probe was in flight
 - **WHEN** Force Probe refreshes usage with the access token it holds
 - **THEN** the usage request MUST NOT be dispatched
 
-#### Scenario: Quota warmup for a deleted account settles as failed
-- **WHEN** quota warmup's route resolution reports `account_not_found`
-- **THEN** the decision MUST be marked failed
-- **AND** the failure request log MUST be written without an account id and with the `account_not_found` fail-closed reason
+#### Scenario: Quota warmup for a deleted account settles
+- **WHEN** the account is deleted before quota warmup resolves its route, or while the routed warmup stream runs
+- **THEN** the decision MUST settle (failed, or executed when the stream completed)
+- **AND** the request log MUST be written without an account id
 - **AND** no warmup-effect observation MUST be written for the account
 
 #### Scenario: Targeted OAuth target deleted after the flow started

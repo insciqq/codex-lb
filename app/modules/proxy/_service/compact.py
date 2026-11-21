@@ -50,7 +50,12 @@ from app.modules.api_keys.service import (
     ApiKeyRequestUsageBudget,
     ApiKeyUsageReservationData,
 )
-from app.modules.proxy._service.support import _request_log_client_fields, _RequestLogFailureMetadata
+from app.modules.proxy._service.support import (
+    _request_log_client_fields,
+    _RequestLogFailureMetadata,
+    route_failure_code,
+    route_failure_response,
+)
 from app.modules.proxy.affinity import (
     _affinity_with_payload_continuity,
     _AffinityPolicy,
@@ -2118,7 +2123,7 @@ class _CompactMixin:
             raise
         except UpstreamProxyRouteError as exc:
             route_fail_closed_reason = exc.reason
-            log_error_code = "upstream_proxy_unavailable"
+            log_error_code = route_failure_code(exc)
             log_error_message = exc.reason
             await settle_compact_usage(
                 api_key=api_key,
@@ -2126,10 +2131,7 @@ class _CompactMixin:
                 response=None,
                 request_service_tier=request_service_tier,
             )
-            raise ProxyResponseError(
-                502,
-                openai_error("upstream_proxy_unavailable", f"Upstream proxy route unavailable: {exc.reason}"),
-            ) from exc
+            raise route_failure_response(exc) from exc
         except BaseException:
             await settle_on_terminal_exit()
             raise

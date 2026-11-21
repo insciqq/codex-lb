@@ -361,7 +361,10 @@ from app.modules.proxy._service.support import (
     _WebSocketTransientRefreshFailover,
     _WebSocketUpstreamControl,
     clear_upstream_websocket_transport_failure,
+    is_account_gone,
     mark_upstream_websocket_transport_failure,
+    raise_if_selected_account_gone,
+    route_failure_response,
     websocket_connect_transport_failure_code,
 )
 from app.modules.proxy._service.support import (
@@ -4428,11 +4431,21 @@ class _WebSocketMixin:
                     request_state=request_state,
                 )
                 return None
-            account = await proxy._ensure_fresh_with_budget(
-                account,
-                force=force_refresh,
-                timeout_seconds=remaining_budget,
-            )
+            try:
+                account = await proxy._ensure_fresh_with_budget(
+                    account,
+                    force=force_refresh,
+                    timeout_seconds=remaining_budget,
+                )
+                await raise_if_selected_account_gone(proxy, account, operation="responses_websocket")
+            except UpstreamProxyRouteError as exc:
+                if not is_account_gone(exc):
+                    raise
+                if can_transient_failover:
+                    # Deleted since selection: fail over without a health
+                    # penalty, like a transient refresh failure.
+                    raise _WebSocketTransientRefreshFailover(account.id) from exc
+                raise route_failure_response(exc) from exc
             if force_refresh and request_state.force_refresh_account_id == account.id:
                 request_state.force_refresh_account_id = None
                 request_state.completed_forced_refresh_account_id = account.id
@@ -4917,6 +4930,8 @@ class _WebSocketMixin:
             except UpstreamProxyRouteError as exc:
                 if request_state is not None:
                     request_state.upstream_proxy_fail_closed_reason = exc.reason
+                if is_account_gone(exc):
+                    raise route_failure_response(exc) from exc
                 raise ProxyResponseError(
                     502,
                     openai_error(

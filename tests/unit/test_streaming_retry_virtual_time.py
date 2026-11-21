@@ -40,6 +40,13 @@ from tests.simulation.virtual_time import VirtualClock, VirtualScheduler
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _rowless_request_path_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Virtual time cannot drive the database, so these unbound in-memory
+    # accounts resolve to direct egress without a lookup.
+    monkeypatch.setattr(proxy_service, "resolve_upstream_route", AsyncMock(return_value=None))
+
+
 class _RecordingScheduler(VirtualScheduler):
     """Virtual scheduler that remembers which coroutines it was asked to own."""
 

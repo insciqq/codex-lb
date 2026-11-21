@@ -12,7 +12,7 @@ from hashlib import sha256
 from typing import Any, Protocol, TypeAlias
 
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import DEFAULT_PLAN, OpenAIAuthClaims, extract_id_token_claims
@@ -29,7 +29,7 @@ from app.core.auth.refresh import (
 from app.core.balancer import PERMANENT_FAILURE_CODES, account_status_for_permanent_failure
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
-from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
+from app.core.upstream_proxy import ACCOUNT_NOT_FOUND_REASON, UpstreamProxyRouteError, resolve_upstream_route
 from app.core.utils.shared_future import wait_on_shared_future
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountProxyBinding, AccountStatus
@@ -424,11 +424,7 @@ class AuthManager:
         # identity-map object in place, so comparing against the live attribute
         # would compare the row with itself.
         while True:
-            if await claims.try_acquire(
-                account.id,
-                ttl_seconds=_token_refresh_claim_ttl_seconds(),
-                owner=requested_fingerprint,
-            ):
+            if await self._try_acquire_refresh_claim(claims, account, owner=requested_fingerprint):
                 # Monotonic deadline covering the ENTIRE claim hold from this
                 # point: the exchange AND the post-exchange DB persist/status-CAS
                 # loops all run while this claim is held. The exchange itself is
@@ -537,6 +533,23 @@ class AuthManager:
             # callers join. Sleep the smaller of the poll interval and the time
             # remaining so the claim wait is truly bounded by the caller budget.
             await asyncio.sleep(min(poll_seconds, remaining))
+
+    async def _try_acquire_refresh_claim(
+        self,
+        claims: RefreshClaimCoordinatorPort,
+        account: Account,
+        *,
+        owner: str,
+    ) -> bool:
+        try:
+            return await claims.try_acquire(account.id, ttl_seconds=_token_refresh_claim_ttl_seconds(), owner=owner)
+        except IntegrityError as exc:
+            # The claim row references the account; a deletion finalized after
+            # the caller loaded it fails that foreign key. Report it as the
+            # missing account it is, like the route lookup would.
+            if await self._repo.get_by_id_fresh(account.id) is not None:
+                raise
+            raise _account_gone_refresh_error(account) from exc
 
     async def _release_claim_quietly(
         self,
@@ -1182,6 +1195,7 @@ class AuthManager:
                         # The refresh token in hand belongs to a loaded row; a
                         # deletion since then must not unbind the account.
                         require_account=True,
+                        installation_id=account.codex_installation_id,
                     )
                 except UpstreamProxyRouteError as exc:
                     raise RefreshError(
@@ -1428,6 +1442,16 @@ async def _call_with_supported_optional_kwargs(
 
 def _clear_refresh_singleflight_state() -> None:
     _REFRESH_SINGLEFLIGHT.clear()
+
+
+def _account_gone_refresh_error(account: Account) -> RefreshError:
+    return RefreshError(
+        "upstream_proxy_unavailable",
+        f"Account {account.id} was deleted before its token refresh",
+        False,
+        transport_error=True,
+        upstream_proxy_fail_closed_reason=ACCOUNT_NOT_FOUND_REASON,
+    )
 
 
 async def _account_has_active_proxy_binding(session: AsyncSession, account_id: str) -> bool:

@@ -43,9 +43,10 @@ def _route() -> ResolvedUpstreamRoute:
 def _wire_resolver(monkeypatch, outcome):
     calls = {"count": 0}
 
-    async def fake_resolve(session, *, account_id, operation, scope, encryptor):
+    async def fake_resolve(session, *, account_id, operation, scope, encryptor, require_account, installation_id):
         calls["count"] += 1
         assert scope == "account"
+        assert require_account is True
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
@@ -109,5 +110,36 @@ async def test_invalidation_forces_re_resolution(route_cache_ttl, monkeypatch) -
     await helpers._resolve_upstream_route_for_account(proxy, account, operation="responses")
     get_upstream_route_cache().clear()
     await helpers._resolve_upstream_route_for_account(proxy, account, operation="responses")
+
+    assert calls["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_deleted_account_outcome_is_not_cached(route_cache_ttl, monkeypatch) -> None:
+    # A re-import that clears a pending deletion makes the same row routable
+    # at once; a cached account_not_found would keep failing it until expiry.
+    error = UpstreamProxyRouteError("account_not_found", account_id="acct-1")
+    calls = _wire_resolver(monkeypatch, error)
+    proxy = SimpleNamespace(_encryptor=None)
+    account = cast(Account, SimpleNamespace(id="acct-1", codex_installation_id="install-1"))
+
+    for _ in range(2):
+        with pytest.raises(UpstreamProxyRouteError):
+            await helpers._resolve_upstream_route_for_account(proxy, account, operation="responses")
+
+    assert calls["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_entry_belongs_to_one_row_incarnation(route_cache_ttl, monkeypatch) -> None:
+    # Account ids are deterministic: a row deleted and imported again under
+    # the same id is another account and must not reuse the old route.
+    calls = _wire_resolver(monkeypatch, _route())
+    proxy = SimpleNamespace(_encryptor=None)
+    old = cast(Account, SimpleNamespace(id="acct-1", codex_installation_id="install-old"))
+    new = cast(Account, SimpleNamespace(id="acct-1", codex_installation_id="install-new"))
+
+    await helpers._resolve_upstream_route_for_account(proxy, old, operation="responses")
+    await helpers._resolve_upstream_route_for_account(proxy, new, operation="responses")
 
     assert calls["count"] == 2

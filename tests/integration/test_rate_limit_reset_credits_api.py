@@ -320,3 +320,36 @@ async def test_consume_account_deleted_before_route_lookup_returns_404_without_u
     assert response.status_code == 404, response.text
     assert response.json()["error"]["code"] == "account_not_found"
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_consume_account_deleted_before_redeem_claim_returns_404(async_client, monkeypatch) -> None:
+    """On SQLite the redeem section starts with a claim row that references
+    the account; a deletion finalized before it fails that foreign key."""
+    from app.modules.accounts.repository import AccountsRepository
+
+    async def _should_not_fetch(*args: Any, **kwargs: Any) -> ResetCreditsResponse:
+        raise AssertionError("a deleted account must not reach upstream")
+
+    account_id = await _import_test_account(
+        async_client,
+        email="reset-claim-deleted@example.com",
+        account_id="acc_reset_claim_deleted",
+    )
+    await get_rate_limit_reset_credits_store().set(account_id, _snapshot([_credit("credit-1")]))
+    acquire = reset_credits_api.acquire_redeem_claim
+
+    async def _acquire_after_deletion(claim_account_id: str, *args: Any, **kwargs: Any) -> None:
+        async with SessionLocal() as writer:
+            repo = AccountsRepository(writer)
+            assert await repo.begin_delete(claim_account_id)
+            assert await repo.delete(claim_account_id, only_pending=True)
+        await acquire(claim_account_id, *args, **kwargs)
+
+    monkeypatch.setattr(reset_credits_api, "fetch_reset_credits", _should_not_fetch)
+    monkeypatch.setattr(reset_credits_api, "acquire_redeem_claim", _acquire_after_deletion)
+
+    response = await async_client.post(f"/api/accounts/{account_id}/rate-limit-reset-credits/consume")
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "account_not_found"

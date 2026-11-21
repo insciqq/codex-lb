@@ -115,10 +115,15 @@ from app.modules.request_logs.repository import PreviousResponseOwnerRecord, Req
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 from app.modules.usage.updater import UsageUpdater
 from tests.simulation.virtual_time import VirtualClock
-from tests.unit._proxy_test_helpers import runtime_basic_auth_url
+from tests.unit._proxy_test_helpers import runtime_basic_auth_url, use_rowless_request_path_routes
 from tests.unit.hypothesis_strategies import json_objects, json_values
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _rowless_request_path_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    use_rowless_request_path_routes(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

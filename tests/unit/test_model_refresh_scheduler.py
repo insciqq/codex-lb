@@ -25,6 +25,14 @@ from app.db.models import Account, AccountStatus
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _unbound_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The accounts here are in-memory rows the route lookup cannot find;
+    # discovery routing over real rows is covered by
+    # tests/integration/test_deleted_account_failover.py.
+    monkeypatch.setattr(scheduler_module, "resolve_upstream_route", AsyncMock(return_value=None))
+
+
 def _account(account_id: str = "account-1") -> Account:
     return Account(
         id=account_id,

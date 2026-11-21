@@ -464,6 +464,7 @@ class AccountsService:
                 # The account was loaded before this lookup; a deletion in
                 # between must fail the operation, not unbind the account.
                 require_account=True,
+                installation_id=account.codex_installation_id,
             )
 
     async def _get_visible_account(self, account_id: str) -> Account | None:

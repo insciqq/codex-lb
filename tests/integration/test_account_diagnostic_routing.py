@@ -420,15 +420,34 @@ async def _delete_account(account_id: str, stage: str) -> None:
     """Run the deletion worker's steps on ``account_id`` from another session.
 
     ``pending`` stops after the dashboard's ``begin_delete`` mark; ``finalized``
-    also runs the worker's final delete, whose cascade removes the binding.
+    also runs the worker's final delete, whose cascade removes the binding;
+    ``reimported`` then imports the account again under the same id, as a new
+    row without a binding.
     """
     from app.modules.accounts.repository import AccountsRepository
 
     async with SessionLocal() as writer:
         repo = AccountsRepository(writer)
         assert await repo.begin_delete(account_id)
-        if stage == "finalized":
+        if stage in ("finalized", "reimported"):
             assert await repo.delete(account_id, only_pending=True)
+        if stage == "reimported":
+            fresh = TokenEncryptor().encrypt("replacement-token")
+            writer.add(
+                Account(
+                    id=account_id,
+                    email=f"{account_id}@example.test",
+                    plan_type="plus",
+                    chatgpt_account_id="shared-workspace",
+                    chatgpt_user_id=account_id,
+                    access_token_encrypted=fresh,
+                    refresh_token_encrypted=fresh,
+                    id_token_encrypted=fresh,
+                    last_refresh=utcnow(),
+                    status=AccountStatus.ACTIVE,
+                )
+            )
+            await writer.commit()
 
 
 def _delete_before(monkeypatch, module, account_id: str, stage: str) -> None:
@@ -444,7 +463,7 @@ def _delete_before(monkeypatch, module, account_id: str, stage: str) -> None:
     monkeypatch.setattr(module, "resolve_upstream_route", resolve_after_deletion)
 
 
-_DELETION_STAGES = pytest.mark.parametrize("stage", ["pending", "finalized"])
+_DELETION_STAGES = pytest.mark.parametrize("stage", ["pending", "finalized", "reimported"])
 
 
 @_DELETION_STAGES
@@ -746,3 +765,61 @@ async def test_codex_reset_credit_consume_keeps_the_identified_seat_through_work
     assert route is not None and route.pool_id == "bound-pool"
     assert allow_direct is False
     assert refreshed == ["bound-seat"]
+
+
+async def test_force_probe_stale_token_deleted_before_refresh_claim_answers_not_found(async_client, monkeypatch):
+    """With the production refresh-claim coordinator the claim row is written
+    first; a deletion finalized before it fails that foreign key."""
+    from datetime import timedelta
+
+    from app.modules.accounts import auth_manager, refresh_claims
+
+    await _seed()
+    async with SessionLocal() as session:
+        account = await session.get(Account, "bound-seat")
+        assert account is not None
+        account.last_refresh = utcnow() - timedelta(days=90)
+        await session.commit()
+    coordinator = refresh_claims.RefreshClaimCoordinator()
+    acquire = coordinator.try_acquire
+
+    async def acquire_after_deletion(account_id, **kwargs):
+        await _delete_account(account_id, "finalized")
+        return await acquire(account_id, **kwargs)
+
+    refresh = AsyncMock()
+    monkeypatch.setattr(coordinator, "try_acquire", acquire_after_deletion)
+    monkeypatch.setattr(auth_manager, "refresh_access_token", refresh)
+    monkeypatch.setattr(accounts_service, "lease_http_session", AsyncMock(side_effect=AssertionError("no probe")))
+    refresh_claims.set_refresh_claim_coordinator(coordinator)
+
+    response = await async_client.post("/api/accounts/bound-seat/probe")
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "account_not_found"
+    refresh.assert_not_awaited()
+
+
+@pytest.mark.parametrize("terminal", ["completed", "failed"])
+async def test_quota_warmup_deleted_during_routed_stream_settles(db_setup, transports, monkeypatch, terminal):
+    """Deletion finishes while the probe streams; its log can no longer
+    reference the account, and the decision must still settle."""
+    await _seed()
+
+    async def stream(*args, **kwargs):
+        await _delete_account("bound-seat", "finalized")
+        yield f'data: {{"type":"response.{terminal}","response":{{}}}}\n\n'
+
+    monkeypatch.setattr(warmup, "stream_responses", stream)
+    async with SessionLocal() as session:
+        result = await warmup.QuotaWarmupService(session).warm_now(
+            account_id="bound-seat", model="gpt-5.4-mini", force_probe=True
+        )
+
+    assert result.status == ("executed" if terminal == "completed" else "failed"), result
+    async with SessionLocal() as session:
+        row = await session.scalar(select(RequestLog).where(RequestLog.request_id == result.request_id))
+        decision = await session.get(QuotaPlannerDecision, result.decision_id)
+        assert row is not None and row.account_id is None
+        assert row.status == ("success" if terminal == "completed" else "error")
+        assert decision is not None and decision.status == result.status

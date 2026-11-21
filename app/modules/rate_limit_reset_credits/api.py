@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import Field
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit.service import AuditActor, AuditService, AuditTarget
@@ -287,7 +288,14 @@ async def serialize_reset_credit_redeem(
             # live holders keep the lease renewed via a heartbeat task so a
             # legitimately slow redemption is not taken over mid-section.
             holder_id = new_redeem_claim_holder_id()
-            await acquire_redeem_claim(account_id, holder_id)
+            try:
+                await acquire_redeem_claim(account_id, holder_id)
+            except IntegrityError as exc:
+                # The claim row references the account: a deletion finalized
+                # after the caller loaded it fails that foreign key.
+                if await session.scalar(select(Account.id).where(Account.id == account_id)) is not None:
+                    raise
+                raise UpstreamProxyRouteError(ACCOUNT_NOT_FOUND_REASON, account_id=account_id) from exc
             heartbeat = asyncio.create_task(
                 renew_redeem_claim_periodically(account_id, holder_id),
                 name=f"reset-credit-redeem-claim-heartbeat:{account_id}",

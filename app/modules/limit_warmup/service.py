@@ -312,6 +312,8 @@ class StreamingLimitWarmupSender:
                     operation="limit_warmup",
                     scope="account",
                     encryptor=self._encryptor,
+                    require_account=True,
+                    installation_id=account.codex_installation_id,
                 )
         return await resolve_upstream_route(
             self._accounts_repo.session,
@@ -319,6 +321,8 @@ class StreamingLimitWarmupSender:
             operation="limit_warmup",
             scope="account",
             encryptor=self._encryptor,
+            require_account=True,
+            installation_id=account.codex_installation_id,
         )
 
 
