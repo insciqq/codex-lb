@@ -130,6 +130,7 @@ reason = "Support for response.steer, which current Codex clients do not emit."
 title = "fix(proxy): retire revoked stream accounts"
 state = "open"
 status = "pending"
+reason = "Deferred until after the first release: retiring an account on a single token_revoked or token_invalidated observation needs a recovery path and race-free quarantine first."
 
 [pr.2118]
 title = "feat(ui): add Japanese dashboard localization"
@@ -156,7 +157,8 @@ reason = "Revives a warm-up usage gate that upstream removed on purpose and adds
 [pr.2133]
 title = "fix(proxy): isolate bridge heartbeat from maintenance"
 state = "open"
-status = "pending"
+status = "own-fix"
+reason = "Replaced by a narrow own fix: the ring heartbeat runs on its own loop and connection, independent of bridge maintenance; the new periodic framework and health-envelope changes are not taken."
 
 [pr.2146]
 title = "feat(dashboard): add request heatmap on dashboard"
@@ -241,6 +243,7 @@ status = "pending"
 title = "fix(accounts): preserve observed monthly quota across plans"
 state = "open"
 status = "pending"
+reason = "Deferred until after the first release: moving the 30-day Team quota from the primary to the monthly slot needs a migration-safe path for existing blocks and reset evidence."
 
 [pr.2322]
 title = "feat(db): explain guarded migration recovery stamping"
@@ -271,6 +274,7 @@ reason = "CLI retag performance work and a new progress flag."
 title = "fix(warmup): preserve live reset evidence across skipped polls"
 state = "open"
 status = "pending"
+reason = "Deferred until after the first release: the reset-confirmed warm-up after a skipped poll is being redesigned without the second history scan."
 
 [pr.2332]
 title = "fix(proxy): fail over account-local model rejection"
@@ -1583,6 +1587,7 @@ reason = "Feature request: automatic re-login."
 title = "bug(warmup): live usage ingestion can consume reset evidence without invoking limit warm-up"
 state = "open"
 status = "pending"
+reason = "Deferred until after the first release: the reset-confirmed warm-up after a skipped poll is being redesigned."
 
 [issue.1976]
 title = "bug(warmup): staggered idle slots can be unreachable for sliding reset_at"
@@ -1830,6 +1835,7 @@ status = "pending"
 title = "bug(proxy): early token_expired reauth account poisons fresh Codex HTTP routing"
 state = "open"
 status = "pending"
+reason = "Deferred until after the first release: blocking an account on a refused access token must not retire accounts whose refresh token still works."
 
 [issue.2443]
 title = "bug(metrics): dashboard/report TPS uses post-settlement latency and reasoning-inclusive TTFT"
