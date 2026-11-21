@@ -646,3 +646,60 @@ async def test_client_disconnect_mid_sse_stops_stream_after_replayed_body():
 
     await asyncio.wait_for(app(scope, receive, send), timeout=5)
     assert chunk_count >= 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("encoding", "encode"),
+    [
+        ("zstd", lambda body: zstd.ZstdCompressor().compress(body)),
+        ("gzip", gzip.compress),
+        ("deflate", zlib.compress),
+    ],
+)
+async def test_decoded_body_is_not_copied_once_more_before_the_route(encoding: str, encode) -> None:
+    import gc
+    import tracemalloc
+
+    body = b'{"input":"' + b"screenshot " * (16 * 1024 * 1024 // 11) + b'"}'
+    compressed = encode(body)
+    received: list[bytes] = []
+
+    async def route(scope: Scope, receive: Receive, send: Send) -> None:
+        received.append((await receive())["body"])
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    chunks = [compressed[start : start + 65536] for start in range(0, len(compressed), 65536)]
+    messages: list[Message] = [
+        {"type": "http.request", "body": chunk, "more_body": index < len(chunks) - 1}
+        for index, chunk in enumerate(chunks)
+    ]
+
+    async def receive() -> Message:
+        return messages.pop(0)
+
+    async def send(_message: Message) -> None:
+        return None
+
+    scope: Scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/backend-api/codex/responses",
+        "root_path": "",
+        "headers": [(b"content-encoding", encoding.encode())],
+    }
+    gc.collect()
+    tracemalloc.start()
+    baseline, _ = tracemalloc.get_traced_memory()
+    tracemalloc.reset_peak()
+    try:
+        await RequestDecompressionMiddleware(route)(scope, receive, send)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert received == [body]
+    # The decoded body once (plus growth slack and the encoded input), not
+    # accumulated in a bytearray and then copied into ``bytes``.
+    assert peak - baseline < 1.5 * len(body) + 2 * len(compressed)

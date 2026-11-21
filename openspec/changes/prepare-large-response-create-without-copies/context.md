@@ -40,3 +40,9 @@ cancellation is not held up by a slow helper. Before this change the whole
 line sat in the pipe buffer, which on Python 3.13 alone added about 2x the
 body. The parsed payload and the ingress body itself are outside these
 numbers.
+
+Decoding a 16 MiB encoded body accumulated it in a `bytearray` and copied it
+into `bytes` (about 2.1x the decoded size at peak); `io.BytesIO.getvalue()`
+hands its buffer over without that copy (about 1.1x). A deflate layer could
+also return the whole body from one call, so its output pieces are capped at
+the 64 KiB read size.

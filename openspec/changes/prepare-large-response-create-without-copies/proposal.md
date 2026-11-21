@@ -23,7 +23,11 @@ size in Python on the direct HTTP path, and every retry repeated the work.
   slices with pipe backpressure between them; a cancelled sender still queues
   the whole line.
 
+- Request decompression accumulates bodies without a final full copy, bounds
+  each deflate output piece and releases the encoded body once it is decoded.
+
 ## Impact
 
-Request preparation only. Wire bodies, size decisions, slimming, digests and
-the native helper protocol are unchanged. No setting, schema or API change.
+Request ingress and preparation only. Decoded bodies, wire bodies, size
+decisions, slimming, digests and the native helper protocol are unchanged. No
+setting, schema or API change.

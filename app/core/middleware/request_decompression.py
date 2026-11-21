@@ -32,8 +32,10 @@ class _Readable(Protocol):
     def read(self, size: int = ...) -> bytes: ...
 
 
+# Bodies are accumulated in ``io.BytesIO``: ``getvalue()`` hands over its
+# buffer as ``bytes`` without the full copy that ``bytes(bytearray)`` makes.
 def _read_limited(reader: _Readable, max_size: int) -> bytes:
-    buffer = bytearray()
+    buffer = io.BytesIO()
     total = 0
     chunk_size = 64 * 1024
     while True:
@@ -43,8 +45,8 @@ def _read_limited(reader: _Readable, max_size: int) -> bytes:
         total += len(chunk)
         if total > max_size:
             raise _DecompressedBodyTooLarge(max_size)
-        buffer.extend(chunk)
-    return bytes(buffer)
+        buffer.write(chunk)
+    return buffer.getvalue()
 
 
 def _decompress_gzip(data: bytes, max_size: int) -> bytes:
@@ -54,29 +56,33 @@ def _decompress_gzip(data: bytes, max_size: int) -> bytes:
 
 def _decompress_deflate(data: bytes, max_size: int) -> bytes:
     decompressor = zlib.decompressobj()
-    buffer = bytearray()
+    buffer = io.BytesIO()
+    total = 0
     chunk_size = 64 * 1024
     for start in range(0, len(data), chunk_size):
         chunk = data[start : start + chunk_size]
-        # Bound output growth to avoid oversized allocations.
+        # Bound each output piece, so neither the budget check nor the copy
+        # into the buffer ever handles a large piece.
         while chunk:
-            remaining = max_size - len(buffer)
-            decompressed = decompressor.decompress(chunk, max_length=remaining + 1)
+            remaining = max_size - total
+            decompressed = decompressor.decompress(chunk, max_length=min(remaining + 1, chunk_size))
             if len(decompressed) > remaining:
                 raise _DecompressedBodyTooLarge(max_size)
-            buffer.extend(decompressed)
+            buffer.write(decompressed)
+            total += len(decompressed)
             chunk = decompressor.unconsumed_tail
     while True:
-        remaining = max_size - len(buffer)
-        drained = decompressor.decompress(b"", max_length=remaining + 1)
+        remaining = max_size - total
+        drained = decompressor.decompress(b"", max_length=min(remaining + 1, chunk_size))
         if len(drained) > remaining:
             raise _DecompressedBodyTooLarge(max_size)
         if not drained:
             break
-        buffer.extend(drained)
+        buffer.write(drained)
+        total += len(drained)
     if not decompressor.eof:
         raise zlib.error("Incomplete deflate stream")
-    return bytes(buffer)
+    return buffer.getvalue()
 
 
 def _decompress_zstd(data: bytes, max_size: int) -> bytes:
@@ -123,14 +129,14 @@ async def _drain_request_body(receive: Receive) -> bytes:
     ``receive`` is the body-limit middleware's limited receive, so the wire-size
     cap (``_RequestBodyTooLarge``) propagates through this drain unchanged.
     """
-    chunks = bytearray()
+    chunks = io.BytesIO()
     while True:
         message = await receive()
         if message["type"] == "http.disconnect":
             raise ClientDisconnect()
-        chunks.extend(message.get("body", b""))
+        chunks.write(message.get("body", b""))
         if not message.get("more_body", False):
-            return bytes(chunks)
+            return chunks.getvalue()
 
 
 class RequestDecompressionMiddleware:
@@ -207,14 +213,18 @@ class RequestDecompressionMiddleware:
             await response(scope, receive, send)
             return
 
+        # Neither the encoded body nor, once handed over, the decoded one is
+        # kept alive by this middleware for the rest of the request.
+        del body
         _rewrite_scope_headers_for_body(scope, len(decompressed))
         body_replayed = False
 
         async def replay_receive() -> Message:
-            nonlocal body_replayed
+            nonlocal body_replayed, decompressed
             if not body_replayed:
                 body_replayed = True
-                return {"type": "http.request", "body": decompressed, "more_body": False}
+                replayed, decompressed = decompressed, b""
+                return {"type": "http.request", "body": replayed, "more_body": False}
             return await receive()
 
         await self.app(scope, replay_receive, send)
