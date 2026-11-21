@@ -105,12 +105,15 @@ Images are built by GitHub Actions, never locally.
   Production and automated updaters should pin a version, `sha-` tag or
   digest, because a release can include database migrations that an image
   rollback cannot undo.
-* The workflow runs on the tag ref only. Before building, it requires the
-  run's commit to be the tag commit, a tag of either form, the commit to be
-  reachable from the fork's `main` and not from `upstream-main` (a plain tag
-  on an upstream commit is not a fork release), a successful full CI run for
-  that exact commit, the tag's version in every release-managed file listed
-  above and in the fork versions named by the READMEs, `docs/` and the chart
+* The workflow runs on the tag ref only. Before building, it requires, in
+  this order: a tag of either form (checked in shell, ASCII digits only),
+  the run's commit to be the tag commit, the commit to be reachable from the
+  fork's `main` and not from `upstream-main` (a plain tag on an upstream
+  commit is not a fork release), and a successful full CI run for that exact
+  commit. Until these pass it runs nothing from the checkout, no Python and
+  no script. Then it requires the release-version module to agree on the
+  tag forms, the tag's version in every release-managed file listed above
+  and in the fork versions named by the READMEs, `docs/` and the chart
   README, and that `:<version>` is not published yet. Whether a tag exists
   is read from the registry for that exact tag; only HTTP 404 counts as
   missing, and any other answer fails the run.
