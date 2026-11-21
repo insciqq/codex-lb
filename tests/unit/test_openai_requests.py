@@ -1323,6 +1323,33 @@ def test_responses_compact_to_payload_strips_late_system_message():
     assert dumped["input"] == [{"role": "user", "content": "compact me"}]
 
 
+@pytest.mark.parametrize("request_type", [ResponsesRequest, ResponsesCompactRequest])
+@pytest.mark.parametrize(
+    "empty_developer",
+    [
+        pytest.param({"role": "developer"}, id="content-omitted"),
+        pytest.param({"role": "developer", "content": None}, id="content-null"),
+        pytest.param({"type": "message", "role": "developer", "content": ""}, id="content-empty-string"),
+        pytest.param({"type": "message", "role": "developer", "content": []}, id="content-empty-list"),
+        pytest.param({"role": "developer", "content": "  \n"}, id="content-blank-string"),
+        pytest.param(
+            {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": ""}]},
+            id="content-blank-text-part",
+        ),
+        pytest.param(
+            {"type": "message", "role": "developer", "content": [{"type": "reasoning", "text": "x"}]},
+            id="content-only-a-reasoning-part",
+        ),
+    ],
+)
+def test_responses_input_developer_message_without_content_is_dropped(request_type, empty_developer):
+    user = {"role": "user", "content": "hi"}
+    request = request_type.model_validate({"model": "gpt-5.1", "input": [empty_developer, user]})
+
+    assert request.instructions == ""
+    assert request.to_payload()["input"] == [user]
+
+
 def test_v1_instructions_merge():
     payload = {
         "model": "gpt-5.1",

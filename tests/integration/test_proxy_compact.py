@@ -354,9 +354,16 @@ async def test_proxy_compact_strips_tool_fields_before_upstream(async_client, mo
     assert "text" not in seen_payloads[0]
 
 
-async def test_proxy_compact_keeps_developer_messages_in_input(async_client, monkeypatch):
-    raw_account_id = "acc_compact_developer_messages"
-    auth_json = _make_auth_json(raw_account_id, "compact-developer-messages@example.com")
+@pytest.mark.parametrize(
+    ("path", "conversation_field"),
+    [
+        ("/backend-api/codex/responses/compact", "input"),
+        ("/v1/responses/compact", "messages"),
+    ],
+)
+async def test_proxy_compact_keeps_developer_messages_in_input(async_client, monkeypatch, path, conversation_field):
+    raw_account_id = f"acc_compact_developer_messages_{conversation_field}"
+    auth_json = _make_auth_json(raw_account_id, f"compact-developer-messages-{conversation_field}@example.com")
     files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
     response = await async_client.post("/api/accounts/import", files=files)
     assert response.status_code == 200
@@ -375,17 +382,24 @@ async def test_proxy_compact_keeps_developer_messages_in_input(async_client, mon
     payload = {
         "model": "gpt-5.1",
         "instructions": "base",
-        "input": [
+        conversation_field: [
             developer,
             {"type": "message", "role": "system", "content": [{"type": "input_text", "text": "sys rules"}]},
+            # Developer messages without content are dropped on both paths.
+            {"role": "developer", "content": ""},
+            {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": ""}]},
             user,
         ],
     }
-    response = await async_client.post("/backend-api/codex/responses/compact", json=payload)
+    response = await async_client.post(path, json=payload)
 
     assert response.status_code == 200
     assert len(seen_payloads) == 1
-    assert seen_payloads[0]["input"] == [developer, user]
+    expected_input = [developer, user]
+    if conversation_field == "messages":
+        # Message coercion forwards only ``role`` and ``content``.
+        expected_input = [{key: item[key] for key in ("role", "content")} for item in expected_input]
+    assert seen_payloads[0]["input"] == expected_input
     assert seen_payloads[0]["instructions"] == "base\nsys rules"
 
 

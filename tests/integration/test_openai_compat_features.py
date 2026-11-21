@@ -762,6 +762,46 @@ async def test_v1_responses_json_object_keeps_json_instruction_in_input(
 
 
 @pytest.mark.asyncio
+async def test_v1_responses_messages_alias_keeps_developer_message_in_input(async_client, monkeypatch):
+    """``previous_response_id`` carries ``input`` but not ``instructions`` into chained responses.
+
+    Developer messages without content carry no instruction and are dropped.
+    """
+    await _import_account(async_client, "acc_responses_messages_developer", "responses-messages-developer@example.com")
+
+    seen = {}
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen["payload"] = payload
+        yield _completed_event("resp_responses_messages_developer")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {
+        "model": "gpt-5.2",
+        "instructions": "Base.",
+        "messages": [
+            {"role": "developer", "content": "Follow the repository rules."},
+            {"role": "developer"},
+            {"role": "system", "content": "Be brief."},
+            {"role": "developer", "content": None},
+            {"role": "developer", "content": ""},
+            {"role": "developer", "content": [{"type": "input_text", "text": ""}]},
+            {"role": "user", "content": "Say hello."},
+        ],
+    }
+    resp = await async_client.post("/v1/responses", json=payload)
+
+    assert resp.status_code == 200
+    forwarded = seen["payload"].to_payload()
+    assert forwarded["instructions"] == "Base.\nBe brief."
+    assert forwarded["input"] == [
+        {"role": "developer", "content": [{"type": "input_text", "text": "Follow the repository rules."}]},
+        {"role": "user", "content": [{"type": "input_text", "text": "Say hello."}]},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_v1_chat_completions_rejects_strict_schema_violation(async_client):
     """Strict-mode schema violations are rejected locally with 400.
 

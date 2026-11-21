@@ -371,7 +371,10 @@ def _normalize_responses_input_instructions(data: JsonValue, *, keep_json_mode_i
             # Upstream accepts developer messages in ``input``, and
             # ``previous_response_id`` carries ``input`` forward but not
             # ``instructions``; hoisting would drop them from chained responses.
-            input_items.append(item)
+            # One without content carries no instruction and is dropped, as the
+            # hoist dropped it.
+            if _developer_message_has_content(item_mapping.get("content")):
+                input_items.append(item)
             # A developer-only input still needs ``instructions`` to default to "".
             changed = True
             continue
@@ -411,6 +414,36 @@ def _normalize_responses_input_instructions(data: JsonValue, *, keep_json_mode_i
     normalized["instructions"] = merged_instructions
     normalized["input"] = input_items
     return normalized
+
+
+def _developer_message_has_content(content: JsonValue) -> bool:
+    """Whether a developer message keeps content after part sanitization.
+
+    Empty or blank text and parts the reasoning sanitizer removes do not count,
+    so the ``messages`` alias's coerced ``[{"type": "input_text", "text": ""}]``
+    is as empty as ``""``.
+    """
+    if isinstance(content, str):
+        return bool(content.strip())
+    parts = content if is_json_list(content) else [content] if is_json_mapping(content) else []
+    for part in parts:
+        if isinstance(part, str):
+            if part.strip():
+                return True
+            continue
+        part_mapping = _json_mapping_or_none(part)
+        if part_mapping is None:
+            continue
+        part_type = part_mapping.get("type")
+        if isinstance(part_type, str) and part_type in _INTERLEAVED_REASONING_PART_TYPES:
+            continue
+        text = part_mapping.get("text")
+        if isinstance(text, str):
+            if text.strip():
+                return True
+            continue
+        return True
+    return False
 
 
 def _mentions_json(text: str) -> bool:
