@@ -203,6 +203,16 @@ async def test_cold_bridge_keeps_durable_anchor_for_developer_and_user_delta(
             ],
             id="developer-with-content-kinds-and-user",
         ),
+        pytest.param(
+            [
+                {
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "rules"}, {"type": "input_text", "text": " "}],
+                },
+                {"role": "user", "content": "hello"},
+            ],
+            id="developer-with-blank-part-and-user",
+        ),
         pytest.param([_DEVELOPER], id="developer-only"),
     ],
 )
@@ -216,11 +226,18 @@ async def test_fresh_bridge_preserves_non_lite_full_resend_with_developer_prefix
     """
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
     suffix_items: list[proxy_service.JsonValue] = [
-        {"role": "assistant", "content": "hello back"},
+        {"role": "assistant", "content": "hello back", "id": "msg_prior"},
         {"role": "user", "content": "follow up"},
     ]
     payload = proxy_service.ResponsesRequest.model_validate(
         {"model": "gpt-5.4", "instructions": "hi", "input": [*stored_input_items, *suffix_items]},
+    )
+    # The durable context is what the bridge recorded for the stored turn.
+    stored_request = proxy_service.ResponsesRequest.model_validate(
+        {"model": "gpt-5.4", "instructions": "hi", "input": stored_input_items},
+    )
+    stored_count, stored_fingerprint = proxy_service._input_context(
+        cast(list[proxy_service.JsonValue], stored_request.input)
     )
     request_state = _request_state("req-developer-full-resend")
     assert request_state.event_queue is not None
@@ -242,8 +259,8 @@ async def test_fresh_bridge_preserves_non_lite_full_resend_with_developer_prefix
         "lookup_request_targets",
         AsyncMock(
             return_value=_durable_lookup(
-                latest_input_item_count=len(stored_input_items),
-                latest_input_full_fingerprint=proxy_service._fingerprint_input_items(stored_input_items),
+                latest_input_item_count=stored_count or None,
+                latest_input_full_fingerprint=stored_fingerprint if stored_count else None,
                 lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
             )
         ),
@@ -329,24 +346,23 @@ async def test_anchored_tool_continuation_trims_echoed_output_around_a_developer
 
 
 @pytest.mark.asyncio
-async def test_trimmed_developer_only_prefix_does_not_make_the_delta_replayable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Trimming a stored prefix of developer messages leaves a delta, as before they stayed inline.
+async def test_developer_only_previous_turn_leaves_no_stored_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A previous turn of developer messages alone stores no context, as when they were hoisted.
 
-    The previous turn sent only a developer message; its answer lives in the
-    anchor. The unanchored body ``[developer, question]`` lacks that answer, so
-    a pre-create retry must not send it without the anchor.
+    The bridge therefore neither trims nor anchors the next turn on that
+    context, and the unanchored body is not promoted to a safe retry.
     """
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
-    # The stored context is the previous request's input as normalized.
     previous_request = proxy_service.ResponsesRequest.model_validate(
         {"model": "gpt-5.4", "instructions": "hi", "input": [_DEVELOPER]},
     )
-    stored_input_items = cast(list[proxy_service.JsonValue], previous_request.input)
+    stored_count, stored_fingerprint = proxy_service._input_context(
+        cast(list[proxy_service.JsonValue], previous_request.input)
+    )
+    assert stored_count == 0
     question: proxy_service.JsonValue = {"role": "user", "content": "explain your previous answer"}
     payload = proxy_service.ResponsesRequest.model_validate(
-        {"model": "gpt-5.4", "instructions": "hi", "input": [*stored_input_items, question]},
+        {"model": "gpt-5.4", "instructions": "hi", "input": [_DEVELOPER, question]},
     )
     request_state = _request_state("req-developer-prefix-trim")
     assert request_state.event_queue is not None
@@ -362,9 +378,52 @@ async def test_trimmed_developer_only_prefix_does_not_make_the_delta_replayable(
     session.codex_session = True
     session.last_completed_response_id = "resp_session_latest"
     session.last_completed_response_account_id = "acc-1"
-    if stored_input_items:
-        session.last_completed_input_count = len(stored_input_items)
-        session.last_completed_input_prefix_fingerprint = proxy_service._fingerprint_input_items(stored_input_items)
+    _patch_settings(monkeypatch)
+    monkeypatch.setattr(service._durable_bridge, "lookup_request_targets", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_prepare_http_bridge_request", fake_prepare)
+    monkeypatch.setattr(service, "_get_or_create_http_bridge_session", AsyncMock(return_value=session))
+    monkeypatch.setattr(service, "_submit_http_bridge_request", AsyncMock())
+    monkeypatch.setattr(service, "_detach_http_bridge_request", AsyncMock())
+
+    assert await _drain(service, payload, codex=True) == []
+
+    assert prepared[-1].input == payload.input
+    assert request_state.fresh_upstream_request_is_retry_safe is False
+
+
+@pytest.mark.asyncio
+async def test_prepended_developer_message_keeps_the_warm_session_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A developer message placed ahead of the stored history does not break the stored-prefix match."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    prefix_items: list[proxy_service.JsonValue] = [
+        {"role": "user", "content": [{"type": "input_text", "text": "a"}]},
+        {"role": "assistant", "content": [{"type": "output_text", "text": "b"}]},
+        {"role": "user", "content": [{"type": "input_text", "text": "c"}]},
+    ]
+    new_turn: proxy_service.JsonValue = {"role": "user", "content": [{"type": "input_text", "text": "d"}]}
+    payload = proxy_service.ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.4",
+            "instructions": "hi",
+            "input": [{"role": "developer", "content": "Answer in Spanish"}, *prefix_items, new_turn],
+        },
+    )
+    request_state = _request_state("req-prepended-developer")
+    assert request_state.event_queue is not None
+    await request_state.event_queue.put(None)
+    prepared: list[proxy_service.ResponsesRequest] = []
+
+    def fake_prepare(prepared_payload: proxy_service.ResponsesRequest, _headers: Any, **kwargs: Any) -> Any:
+        del kwargs
+        prepared.append(prepared_payload)
+        return request_state, '{"type":"response.create"}'
+
+    session = _codex_session()
+    session.codex_session = True
+    session.last_completed_response_id = "resp_session_latest"
+    session.last_completed_response_account_id = "acc-1"
+    session.last_completed_input_count = len(prefix_items)
+    session.last_completed_input_prefix_fingerprint = proxy_service._fingerprint_input_items(prefix_items)
     _patch_settings(monkeypatch)
     monkeypatch.setattr(service._durable_bridge, "lookup_request_targets", AsyncMock(return_value=None))
     monkeypatch.setattr(service, "_prepare_http_bridge_request", fake_prepare)
@@ -375,5 +434,133 @@ async def test_trimmed_developer_only_prefix_does_not_make_the_delta_replayable(
     assert await _drain(service, payload, codex=True) == []
 
     assert prepared[-1].previous_response_id == "resp_session_latest"
-    assert prepared[-1].input == [question]
-    assert request_state.fresh_upstream_request_is_retry_safe is False
+    assert prepared[-1].input == [new_turn]
+
+
+def test_developer_update_does_not_split_replayed_tool_call_dedupe() -> None:
+    """A developer message the old hoist removed is no segment boundary for replayed tool calls."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    call: proxy_service.JsonValue = {
+        "type": "function_call",
+        "name": "write_stdin",
+        "arguments": json.dumps({"session_id": 75180, "chars": "", "yield_time_ms": 30000}),
+        "call_id": "call_first",
+    }
+    output: proxy_service.JsonValue = {
+        "type": "function_call_output",
+        "call_id": "call_first",
+        "output": "Process running with session ID 75180",
+    }
+    payload = proxy_service.ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "",
+            "previous_response_id": "resp_anchor",
+            "input": [
+                {"role": "user", "content": "check the terminal"},
+                call,
+                output,
+                {"role": "developer", "content": "updated instructions"},
+                call,
+                output,
+            ],
+        }
+    )
+
+    _, text_data = service._prepare_response_bridge_request_state(
+        payload,
+        api_key=None,
+        api_key_reservation=None,
+        include_type_field=True,
+        attach_event_queue=False,
+        transport=proxy_service._REQUEST_TRANSPORT_WEBSOCKET,
+        client_metadata=None,
+    )
+
+    upstream_input = json.loads(text_data)["input"]
+    assert sum(item.get("type") == "function_call" for item in upstream_input) == 1
+    assert {"role": "developer", "content": "updated instructions"} in upstream_input
+
+
+@pytest.mark.asyncio
+async def test_repeated_developer_instruction_is_no_proof_for_cross_transport_failover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A WebSocket turn of one developer message, then an HTTP turn repeating it, stays on the owner.
+
+    The repeated developer message carries no history: the prior answer lives
+    only in the anchor, so the request must not move to another account
+    without it.
+    """
+    from tests.unit.test_proxy_utils import (
+        AccountSelection,
+        _make_account,
+        _make_proxy_settings,
+        _repo_factory,
+        _RequestLogsRecorder,
+        _SettingsCache,
+    )
+
+    settings = _make_proxy_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    owner_account = _make_account("acc_dev_replay_owner")
+    replacement_account = _make_account("acc_dev_replay_replacement")
+    session_id = "sid_dev_cross_transport"
+    previous_response_id = "resp_dev_cross_transport"
+    request_logs.response_owner_by_id[(previous_response_id, None, session_id)] = owner_account.id
+    developer: proxy_service.JsonValue = {"role": "developer", "content": "Describe a new design"}
+    initial_input = cast(
+        list[proxy_service.JsonValue],
+        proxy_service.ResponsesRequest(model="m", instructions="", input=[developer]).input,
+    )
+    service._websocket_continuity_index[(session_id, None)] = proxy_service._WebSocketContinuityState(
+        last_completed_response_id=previous_response_id,
+        last_completed_input_count=len(initial_input),
+        last_completed_input_prefix_fingerprint=proxy_service._fingerprint_input_items(initial_input),
+    )
+    streamed_payloads: list[proxy_service.ResponsesRequest] = []
+
+    async def fake_select_account(**kwargs: Any) -> Any:
+        if kwargs.get("required_account_id") == owner_account.id:
+            return AccountSelection(account=owner_account, error_message=None)
+        return AccountSelection(account=replacement_account, error_message=None)
+
+    async def fake_stream(payload: Any, headers: Any, access_token: Any, account_id: Any, **kwargs: Any):
+        del headers, access_token, kwargs
+        streamed_payloads.append(payload)
+        if account_id == owner_account.chatgpt_account_id:
+            yield (
+                'data: {"type":"response.failed","response":{"id":"resp_owner_quota",'
+                '"status":"failed","error":{"code":"usage_limit_reached",'
+                '"message":"usage limit reached"},"usage":{"input_tokens":0,'
+                '"output_tokens":0,"total_tokens":0}}}\n\n'
+            )
+            return
+        yield (
+            'data: {"type":"response.completed","response":{"id":"resp_replay_ok",'
+            '"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n'
+        )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", AsyncMock(side_effect=fake_select_account))
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock(return_value={"failure_class": "rate_limit"}))
+    monkeypatch.setattr(service, "_resolve_upstream_route_for_account", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=lambda account, **kwargs: account))
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    payload = proxy_service.ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "",
+            "input": [developer, {"role": "user", "content": "Revise your previous design"}],
+            "previous_response_id": previous_response_id,
+            "stream": True,
+        }
+    )
+
+    [chunk async for chunk in service.stream_responses(payload, {"session_id": session_id})]
+
+    assert [streamed.previous_response_id for streamed in streamed_payloads] == [previous_response_id]

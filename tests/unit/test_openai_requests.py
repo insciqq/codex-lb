@@ -25,8 +25,11 @@ from app.core.openai.requests import (
     _sanitize_input_items,
     _strip_unsupported_fields,
     _trim_compact_input_for_upstream,
+    base_equivalent_input,
+    base_equivalent_wire_prefix_end,
     extract_input_file_ids,
     extract_input_image_file_references,
+    responses_payload_json_mode,
 )
 from app.core.openai.v1_requests import V1ResponsesCompactRequest, V1ResponsesRequest
 from app.core.types import JsonValue
@@ -3814,3 +3817,47 @@ def test_v1_messages_keep_json_instruction_in_input_only_in_json_mode(json_mode:
     else:
         assert forwarded["instructions"] == "Base.\nBe brief.\nReply with a JSON object."
         assert forwarded["input"] == [user_item]
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_base_equivalent_input_matches_the_old_hoist(json_mode: bool) -> None:
+    """The base-equivalent view is the ``input`` the hoist produced from the same request."""
+    image_part = {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
+    raw_input: list[JsonValue] = [
+        {"role": "developer", "content": "permissions"},
+        {"role": "developer", "content": "Answer in JSON."},
+        {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "see"}, image_part]},
+        {"type": "future_directive", "role": "developer", "directive": {}},
+        {"role": "user", "content": "hi"},
+    ]
+    text = {"format": {"type": "json_object"}} if json_mode else None
+    request = ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "", "input": raw_input, "text": text}
+    )
+
+    assert responses_payload_json_mode(request) is json_mode
+    assert base_equivalent_input(cast(list[JsonValue], request.input), json_mode=json_mode) == [
+        *([{"role": "developer", "content": "Answer in JSON."}] if json_mode else []),
+        {"type": "message", "role": "user", "content": [image_part]},
+        {"type": "future_directive", "role": "developer", "directive": {}},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+def test_base_equivalent_input_leaves_lite_input_unchanged() -> None:
+    lite_input: list[JsonValue] = [
+        {"type": "additional_tools", "role": "developer", "tools": []},
+        {"role": "developer", "content": "base"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    assert base_equivalent_input(lite_input) == lite_input
+
+
+def test_base_equivalent_wire_prefix_end_keeps_later_developer_messages_with_the_remainder() -> None:
+    developer: JsonValue = {"role": "developer", "content": "rules"}
+    wire: list[JsonValue] = [developer, {"role": "user", "content": "a"}, developer, {"role": "user", "content": "b"}]
+
+    assert base_equivalent_wire_prefix_end(wire, 0) == 0
+    assert base_equivalent_wire_prefix_end(wire, 1) == 2
+    assert base_equivalent_wire_prefix_end(wire, 2) == 4

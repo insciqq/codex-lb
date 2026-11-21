@@ -51,6 +51,9 @@ from app.core.metrics.prometheus import (
 )
 from app.core.openai.requests import (
     ResponsesRequest,
+    base_equivalent_input,
+    base_equivalent_wire_prefix_end,
+    responses_payload_json_mode,
 )
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.request_id import ensure_request_id, ensure_request_scope_id
@@ -145,6 +148,7 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _header_value_case_insensitive,
     _http_bridge_startup_keepalive_grace_seconds,
     _inject_missing_interrupted_function_call_outputs,
+    _input_context,
     _input_image_request_requires_http_upstream,
     _input_prefix_matches_stored_context,
     _is_previous_response_not_found_error,
@@ -313,6 +317,18 @@ _HTTP_BRIDGE_CONTINUITY_OWNER_ERROR_CODES = frozenset(
 )
 
 
+def _base_equivalent_payload_input(payload: ResponsesRequest) -> list[JsonValue]:
+    """``payload.input`` as the old hoist left it; continuity decisions judge this list."""
+    return base_equivalent_input(cast(list[JsonValue], payload.input), json_mode=responses_payload_json_mode(payload))
+
+
+def _wire_prefix_end(payload: ResponsesRequest, stored_count: int) -> int:
+    """Wire length of the stored prefix measured on the base-equivalent input."""
+    return base_equivalent_wire_prefix_end(
+        cast(list[JsonValue], payload.input), stored_count, json_mode=responses_payload_json_mode(payload)
+    )
+
+
 def _durable_full_resend_anchor_rejection(
     payload: ResponsesRequest,
     lookup: DurableBridgeLookup,
@@ -335,6 +351,7 @@ def _durable_full_resend_anchor_rejection(
         payload.input,
         stored_count=stored_count,
         stored_fingerprint=lookup.latest_input_full_fingerprint,
+        json_mode=responses_payload_json_mode(payload),
     ):
         return "prefix_fingerprint_mismatch"
     if not isinstance(payload.input, list):
@@ -453,12 +470,13 @@ class _VerifiedDurableFullResend:
                 payload.input,
                 stored_count=stored_count,
                 stored_fingerprint=stored_fingerprint,
+                json_mode=responses_payload_json_mode(payload),
             )
         ):
             return None
         input_items = cast(list[JsonValue], payload.input)
         replay_projection = project_responses_input_for_account_neutral_fresh_replay(
-            input_items,
+            _base_equivalent_payload_input(payload),
             stored_count=stored_count,
             # Classification only, mirroring classify_durable_full_resend:
             # inline Responses-Lite developer IDs must remain visible until
@@ -1676,7 +1694,7 @@ class _HTTPBridgeStreamingMixin:
             if anchor_rejection is not None or stored_count is None or not isinstance(payload.input, list):
                 return None, None, False, anchor_rejection or "anchor_metadata_missing"
             replay_projection = project_responses_input_for_account_neutral_fresh_replay(
-                cast(list[JsonValue], payload.input),
+                _base_equivalent_payload_input(payload),
                 stored_count=stored_count,
                 # Classification only: inline Responses-Lite developer IDs
                 # must remain visible until the exact-manifest check rejects
@@ -1704,7 +1722,7 @@ class _HTTPBridgeStreamingMixin:
             durable_full_resend_retains_required_context_cache = durable_full_resend_has_safe_fresh_context
             replay_projection = project_responses_input_for_account_neutral_fresh_replay(
                 cast(list[JsonValue], payload.input),
-                stored_count=durable_full_resend_anchor_count,
+                stored_count=_wire_prefix_end(payload, durable_full_resend_anchor_count),
             )
             if replay_projection is not None:
                 durable_full_resend_fresh_payload = _http_bridge_payload_without_previous_response_id(
@@ -1957,10 +1975,14 @@ class _HTTPBridgeStreamingMixin:
             )
         if effective_payload.previous_response_id is not None and isinstance(effective_payload.input, list):
             previous_response_input_items = cast(list[JsonValue], effective_payload.input)
-            trimmed_input_items = _trim_http_bridge_previous_response_input_items(previous_response_input_items)
+            echo_json_mode = responses_payload_json_mode(effective_payload)
+            trimmed_input_items = _trim_http_bridge_previous_response_input_items(
+                previous_response_input_items, json_mode=echo_json_mode
+            )
             if trimmed_input_items != previous_response_input_items:
-                previous_response_trimmed_input_count = len(previous_response_input_items)
-                previous_response_trimmed_input_fingerprint = _fingerprint_input_items(previous_response_input_items)
+                previous_response_trimmed_input_count, previous_response_trimmed_input_fingerprint = _input_context(
+                    previous_response_input_items, json_mode=echo_json_mode
+                )
                 effective_payload = effective_payload.model_copy(update={"input": trimmed_input_items})
         request_state, text_data = prepare_bridge_request(effective_payload)
         if proxy_injected_previous_response_id and request_state.previous_response_id is not None:
@@ -2180,7 +2202,7 @@ class _HTTPBridgeStreamingMixin:
                 return False
             if durable_full_resend_retains_required_context_cache is None:
                 eligibility_projection = project_responses_input_for_account_neutral_fresh_replay(
-                    cast(list[JsonValue], payload.input),
+                    _base_equivalent_payload_input(payload),
                     stored_count=durable_full_resend_anchor_count,
                     preserve_developer_message_ids=True,
                 )
@@ -2221,7 +2243,7 @@ class _HTTPBridgeStreamingMixin:
                     return "no_durable_lookup"
                 replay_projection = project_responses_input_for_account_neutral_fresh_replay(
                     cast(list[JsonValue], payload.input),
-                    stored_count=durable_full_resend_anchor_count,
+                    stored_count=_wire_prefix_end(payload, durable_full_resend_anchor_count),
                 )
                 if replay_projection is None:
                     return "account_scoped_input"
@@ -3029,12 +3051,15 @@ class _HTTPBridgeStreamingMixin:
                         )
                     else:
                         recovery_input = cast(list[JsonValue], recovery_payload.input)
-                        recovery_anchor_input_count = len(recovery_input)
-                        recovery_anchor_input_fingerprint = _fingerprint_input_items(recovery_input)
+                        recovery_anchor_input_count, recovery_anchor_input_fingerprint = _input_context(
+                            recovery_input, json_mode=responses_payload_json_mode(recovery_payload)
+                        )
                         recovery_payload = recovery_payload.model_copy(
                             update={
                                 "previous_response_id": durable_lookup.latest_response_id,
-                                "input": recovery_input[durable_full_resend_anchor_count:],
+                                "input": recovery_input[
+                                    _wire_prefix_end(recovery_payload, durable_full_resend_anchor_count) :
+                                ],
                             }
                         )
                         recovery_anchor_fence_response_id = durable_lookup.latest_response_id
@@ -3207,6 +3232,7 @@ class _HTTPBridgeStreamingMixin:
             incoming_input_preview,
             stored_count=stored_count_preview,
             stored_fingerprint=stored_fingerprint_preview,
+            json_mode=responses_payload_json_mode(effective_payload),
         )
         # A previous_response_id is account-scoped upstream: only the account that
         # created the response can resume it. If this session's serving account is
@@ -3360,20 +3386,28 @@ class _HTTPBridgeStreamingMixin:
         store_context_trim_applied = False
         store_context_original_count = 0
         store_context_original_fingerprint: str | None = None
+        # The stored context is measured on the base-equivalent input (as the
+        # old hoist left it); match on that list and trim the wire up to the
+        # item behind the stored prefix.
+        incoming_base_items = (
+            _base_equivalent_payload_input(effective_payload) if isinstance(incoming_input, list) else []
+        )
         if (
             has_previous_response_id
             and stored_count > 0
             and stored_fingerprint is not None
             and isinstance(incoming_input, list)
-            and len(incoming_input) > stored_count
+            and len(incoming_base_items) > stored_count
         ):
             incoming_input_list = cast(list[JsonValue], incoming_input)
-            incoming_prefix_fingerprint = _fingerprint_input_items(incoming_input_list[:stored_count])
+            incoming_prefix_fingerprint = _fingerprint_input_items(incoming_base_items[:stored_count])
             if incoming_prefix_fingerprint == stored_fingerprint:
                 store_context_trim_applied = True
-                store_context_original_count = len(incoming_input_list)
-                store_context_original_fingerprint = _fingerprint_input_items(incoming_input_list)
-                submit_payload = effective_payload.model_copy(update={"input": incoming_input_list[stored_count:]})
+                store_context_original_count = len(incoming_base_items)
+                store_context_original_fingerprint = _fingerprint_input_items(incoming_base_items)
+                submit_payload = effective_payload.model_copy(
+                    update={"input": incoming_input_list[_wire_prefix_end(effective_payload, stored_count) :]}
+                )
                 logger.info(
                     "store_context_input_trimmed request_id=%s original_items=%s trimmed_to=%s previous_response_id=%s",
                     request_id,
@@ -3386,7 +3420,7 @@ class _HTTPBridgeStreamingMixin:
                     "store_context_input_trim_skipped_prefix_mismatch request_id=%s incoming_items=%s "
                     "stored_items=%s previous_response_id=%s",
                     request_id,
-                    len(incoming_input_list),
+                    len(incoming_base_items),
                     stored_count,
                     effective_payload.previous_response_id,
                 )
@@ -3457,18 +3491,16 @@ class _HTTPBridgeStreamingMixin:
                 request_state.fresh_upstream_request_text = fresh_upstream_request_text
                 request_state.fresh_upstream_request_account_neutral = fresh_upstream_request_account_neutral
                 # The trim branch only fires when the untrimmed payload
-                # is a true full resend whose prefix exactly matches the
-                # already-stored context, so the unanchored request text
+                # is a true full resend whose base-equivalent prefix exactly
+                # matches the already-stored context, so the unanchored request text
                 # is a safe fresh-turn replay target regardless of
                 # whether the anchor came from the durable or
                 # session-level injection path. Injection-only re-prepares
                 # keep the replay-safety decision made when the anchor was
-                # injected. A trimmed prefix of developer messages alone
-                # leaves a delta (they used to be hoisted, and then no trim
-                # happened), so that trim keeps the earlier decision too.
+                # injected.
                 request_state.fresh_upstream_request_is_retry_safe = (
                     (durable_full_resend_anchor_count is None or durable_full_resend_has_safe_fresh_context)
-                    if store_context_trim_applied and _http_bridge_payload_looks_like_full_resend(effective_payload)
+                    if store_context_trim_applied
                     else previous_request_state.fresh_upstream_request_is_retry_safe
                 )
             elif client_full_resend_fresh_upstream_request_text is not None:

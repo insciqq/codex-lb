@@ -5,7 +5,7 @@ import logging
 import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Collection
 from contextlib import asynccontextmanager
-from typing import Any, Literal, Mapping, NoReturn, TypeVar, cast
+from typing import Any, Literal, Mapping, NoReturn, TypeVar
 
 import aiohttp
 import anyio
@@ -442,12 +442,18 @@ from app.modules.proxy._service.response_create import (
     _inline_top_level_input_image_urls as _inline_top_level_input_image_urls,
 )
 from app.modules.proxy._service.response_create import (
+    _input_context as _input_context,
+)
+from app.modules.proxy._service.response_create import (
     _input_image_request_requires_http_upstream,  # noqa: F401
     _responses_request_contains_input_image,  # noqa: F401
     _responses_request_uses_image_generation,  # noqa: F401
 )
 from app.modules.proxy._service.response_create import (
     _input_part_is_image as _input_part_is_image,
+)
+from app.modules.proxy._service.response_create import (
+    _input_prefix_matches_stored_context as _input_prefix_matches_stored_context,
 )
 from app.modules.proxy._service.response_create import (
     _json_size_bytes as _json_size_bytes,
@@ -2484,21 +2490,6 @@ def _is_text_content_part(payload: dict[str, JsonValue] | None) -> bool:
         return False
     part_type = part.get("type")
     return isinstance(part_type, str) and part_type in _TEXT_DONE_CONTENT_PART_TYPES
-
-
-def _input_prefix_matches_stored_context(
-    input_value: JsonValue,
-    *,
-    stored_count: int,
-    stored_fingerprint: str | None,
-) -> bool:
-    if stored_count <= 0 or stored_fingerprint is None:
-        return False
-    if not isinstance(input_value, list):
-        return False
-    if len(input_value) <= stored_count:
-        return False
-    return _fingerprint_input_items(cast(list[JsonValue], input_value)[:stored_count]) == stored_fingerprint
 
 
 def _is_missing_thread_goal_protocol_error(exc: ProxyResponseError) -> bool:

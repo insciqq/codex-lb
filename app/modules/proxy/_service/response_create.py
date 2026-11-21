@@ -40,7 +40,7 @@ from app.core.clients.proxy import (
 )
 from app.core.clock import REAL_SCHEDULER, Scheduler
 from app.core.config.settings import DEFAULT_HOME_DIR, get_settings
-from app.core.openai.requests import ResponsesRequest
+from app.core.openai.requests import ResponsesRequest, base_equivalent_input
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.payload_size import compact_json_dumps_within, utf8_length
@@ -253,6 +253,35 @@ def _fingerprint_input_items(items: Sequence[JsonValue]) -> str:
         digest.update(json.dumps(item, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("ascii"))
     digest.update(b"]")
     return digest.hexdigest()
+
+
+def _input_context(input_items: Sequence[JsonValue], *, json_mode: bool = False) -> tuple[int, str]:
+    """Return the stored-context ``(count, fingerprint)`` of an ``input`` list.
+
+    Stored context is measured on the base-equivalent input (developer messages
+    as the old hoist left them), so every continuity decision sees the history
+    it saw before developer messages stayed inline on the wire.
+    """
+    base_items = base_equivalent_input(list(input_items), json_mode=json_mode)
+    return len(base_items), _fingerprint_input_items(base_items)
+
+
+def _input_prefix_matches_stored_context(
+    input_value: JsonValue,
+    *,
+    stored_count: int,
+    stored_fingerprint: str | None,
+    json_mode: bool = False,
+) -> bool:
+    """Whether ``input`` extends a stored context, judged on the base-equivalent input."""
+    if stored_count <= 0 or stored_fingerprint is None:
+        return False
+    if not isinstance(input_value, list):
+        return False
+    base_items = base_equivalent_input(cast(list[JsonValue], input_value), json_mode=json_mode)
+    if len(base_items) <= stored_count:
+        return False
+    return _fingerprint_input_items(base_items[:stored_count]) == stored_fingerprint
 
 
 def _input_part_is_image(part: JsonValue) -> bool:

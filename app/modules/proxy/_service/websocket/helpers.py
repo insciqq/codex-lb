@@ -61,8 +61,9 @@ from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
     ResponsesRequest,
+    base_equivalent_input_positions,
     extract_input_file_ids,
-    responses_input_uses_lite_tools,
+    responses_payload_json_mode,
 )
 from app.core.types import JsonValue
 from app.core.utils.shared_future import (
@@ -363,7 +364,6 @@ from app.modules.proxy.http_bridge_forwarding import (
 )
 from app.modules.proxy.replay_safety import (
     anchor_free_replay_payload_is_account_neutral,
-    is_developer_role_message,
     responses_payload_is_account_neutral_fresh_replay,
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
@@ -805,6 +805,7 @@ def _websocket_continuity_anchor_for_payload(
         responses_payload.input,
         stored_count=stored_count,
         stored_fingerprint=continuity_state.last_completed_input_prefix_fingerprint,
+        json_mode=responses_payload_json_mode(responses_payload),
     ):
         return None
     return _WebSocketContinuityAnchor(
@@ -1425,8 +1426,9 @@ def _refresh_websocket_request_input_fingerprint_from_text(request_state: _WebSo
         request_state.input_item_count = 0
         request_state.input_full_fingerprint = None
         return
-    request_state.input_item_count = len(input_items)
-    request_state.input_full_fingerprint = _facade()._fingerprint_input_items(cast(list[JsonValue], input_items))
+    request_state.input_item_count, request_state.input_full_fingerprint = _facade()._input_context(
+        cast(list[JsonValue], input_items), json_mode=responses_payload_json_mode(payload)
+    )
 
 
 def _websocket_top_level_error_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValue] | None:
@@ -2423,7 +2425,9 @@ def _serialize_websocket_error_event(payload: dict[str, JsonValue]) -> str:
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
-def _trim_websocket_previous_response_input_items(input_items: list[JsonValue]) -> list[JsonValue]:
+def _trim_websocket_previous_response_input_items(
+    input_items: list[JsonValue], *, json_mode: bool = False
+) -> list[JsonValue]:
     first_output_index = next(
         (
             index
@@ -2435,12 +2439,13 @@ def _trim_websocket_previous_response_input_items(input_items: list[JsonValue]) 
     )
     if first_output_index is None or first_output_index == 0:
         return input_items
-    # A fresh developer control message may sit between the echoed prior
-    # output and the tool result; it stays, in order, while the echo is trimmed.
-    lite_input = responses_input_uses_lite_tools(input_items)
+    # Judge the prefix on the base-equivalent input. A developer message the
+    # old hoist removed (a fresh control between the echoed output and the
+    # tool result) stays, in order, while the echo is trimmed.
+    base_item_indices = {index for index, _ in base_equivalent_input_positions(input_items, json_mode=json_mode)}
     kept_prefix_items: list[JsonValue] = []
-    for item in input_items[:first_output_index]:
-        if not lite_input and is_developer_role_message(item):
+    for index, item in enumerate(input_items[:first_output_index]):
+        if index not in base_item_indices:
             kept_prefix_items.append(item)
         elif not _is_websocket_previous_response_output_item(item):
             return input_items

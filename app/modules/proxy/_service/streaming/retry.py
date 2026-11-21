@@ -43,7 +43,12 @@ from app.core.errors import (
 from app.core.errors import (
     synthetic_stream_failure_event as response_failed_event,
 )
-from app.core.openai.requests import ResponsesRequest, extract_input_file_ids
+from app.core.openai.requests import (
+    ResponsesRequest,
+    base_equivalent_input,
+    extract_input_file_ids,
+    responses_payload_json_mode,
+)
 from app.core.resilience.network_recovery import (
     NetworkRecoveryDecision,
     ProcessNetworkRecovery,
@@ -123,6 +128,7 @@ from app.modules.proxy.helpers import (
 from app.modules.proxy.http_continuation import http_continuation_signal
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
 from app.modules.proxy.replay_safety import (
+    project_responses_input_for_account_neutral_fresh_replay,
     project_responses_input_retaining_prior_output,
     responses_payload_has_only_encrypted_account_scoped_state,
     responses_payload_is_account_neutral_fresh_replay,
@@ -252,6 +258,7 @@ def _verified_cross_transport_fresh_replay(
         input_value,
         stored_count=continuity_state.last_completed_input_count,
         stored_fingerprint=continuity_state.last_completed_input_prefix_fingerprint,
+        json_mode=responses_payload_json_mode(payload),
     ):
         return None
     fresh_payload = payload.model_copy(update={"previous_response_id": None})
@@ -268,7 +275,15 @@ def _project_unanchored_account_neutral_replay(payload: ResponsesRequest) -> Res
     input_value = payload.input
     if not isinstance(input_value, list) or not input_value or extract_input_file_ids(input_value):
         return None
-    projection = project_responses_input_retaining_prior_output(cast(list[Any], input_value))
+    input_items = cast(list[Any], input_value)
+    # Judge the history the old hoist left in ``input``; the wire keeps its
+    # developer messages, with the same response-owned bookkeeping removed.
+    base_items = base_equivalent_input(input_items, json_mode=responses_payload_json_mode(payload))
+    projection = project_responses_input_retaining_prior_output(base_items)
+    if projection is not None and base_items != input_items:
+        projection = project_responses_input_for_account_neutral_fresh_replay(
+            input_items, stored_count=len(input_items)
+        )
     if projection is None:
         return None
     projected = payload.model_copy(update={"input": projection.input_items})

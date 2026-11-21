@@ -85,6 +85,8 @@ from app.core.openai.parsing import (
 )
 from app.core.openai.requests import (
     ResponsesRequest,
+    base_equivalent_wire_prefix_end,
+    responses_payload_json_mode,
 )
 from app.core.resilience.network_recovery import (
     NetworkRecoveryDecision,
@@ -3411,11 +3413,13 @@ class _WebSocketMixin:
         client_supplied_previous_response_id = responses_payload.previous_response_id is not None
         if responses_payload.previous_response_id is not None and isinstance(responses_payload.input, list):
             previous_response_input_items = cast(list[JsonValue], responses_payload.input)
-            trimmed_input_items = _trim_websocket_previous_response_input_items(previous_response_input_items)
+            json_mode = responses_payload_json_mode(responses_payload)
+            trimmed_input_items = _trim_websocket_previous_response_input_items(
+                previous_response_input_items, json_mode=json_mode
+            )
             if trimmed_input_items != previous_response_input_items:
-                previous_response_trimmed_input_count = len(previous_response_input_items)
-                previous_response_trimmed_input_fingerprint = _facade()._fingerprint_input_items(
-                    previous_response_input_items
+                previous_response_trimmed_input_count, previous_response_trimmed_input_fingerprint = (
+                    _facade()._input_context(previous_response_input_items, json_mode=json_mode)
                 )
                 responses_payload = responses_payload.model_copy(update={"input": trimmed_input_items})
         validate_model_access(refreshed_api_key, responses_payload.model)
@@ -3442,13 +3446,20 @@ class _WebSocketMixin:
             )
         if session_anchor is not None:
             original_input_items = cast(list[JsonValue], responses_payload.input)
-            original_input_item_count = len(original_input_items)
-            original_input_fingerprint = _facade()._fingerprint_input_items(original_input_items)
+            session_json_mode = responses_payload_json_mode(responses_payload)
+            original_input_item_count, original_input_fingerprint = _facade()._input_context(
+                original_input_items, json_mode=session_json_mode
+            )
             original_full_resend_payload = responses_payload
+            # The stored count is measured on the base-equivalent input; trim
+            # the wire up to the item behind it.
+            stored_wire_end = base_equivalent_wire_prefix_end(
+                original_input_items, session_anchor.stored_input_item_count, json_mode=session_json_mode
+            )
             responses_payload = responses_payload.model_copy(
                 update={
                     "previous_response_id": session_anchor.previous_response_id,
-                    "input": original_input_items[session_anchor.stored_input_item_count :],
+                    "input": original_input_items[stored_wire_end:],
                 }
             )
         if (

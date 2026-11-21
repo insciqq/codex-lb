@@ -69,7 +69,9 @@ from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
     ResponsesRequest,
-    responses_input_uses_lite_tools,
+    base_equivalent_input,
+    base_equivalent_input_positions,
+    responses_payload_json_mode,
 )
 from app.core.resilience.overload import local_overload_error
 from app.core.types import JsonValue
@@ -205,7 +207,6 @@ from app.modules.proxy.helpers import (
     _parse_openai_error,
 )
 from app.modules.proxy.http_continuation import inferred_http_bridge_key
-from app.modules.proxy.replay_safety import is_developer_role_message, responses_input_classifier_history_view
 from app.modules.proxy.ring_membership import (
     RING_STALE_THRESHOLD_SECONDS,
     RingMembershipService,
@@ -1141,7 +1142,9 @@ def _http_bridge_precreated_retry_failure_error(
     return 502, "upstream_unavailable", message, "server_error", None
 
 
-def _trim_http_bridge_previous_response_input_items(input_items: list[JsonValue]) -> list[JsonValue]:
+def _trim_http_bridge_previous_response_input_items(
+    input_items: list[JsonValue], *, json_mode: bool = False
+) -> list[JsonValue]:
     first_output_index = next(
         (
             index
@@ -1153,12 +1156,13 @@ def _trim_http_bridge_previous_response_input_items(input_items: list[JsonValue]
     )
     if first_output_index is None or first_output_index == 0:
         return input_items
-    # A fresh developer control message may sit between the echoed prior
-    # output and the tool result; it stays, in order, while the echo is trimmed.
-    lite_input = responses_input_uses_lite_tools(input_items)
+    # Judge the prefix on the base-equivalent input. A developer message the
+    # old hoist removed (a fresh control between the echoed output and the
+    # tool result) stays, in order, while the echo is trimmed.
+    base_item_indices = {index for index, _ in base_equivalent_input_positions(input_items, json_mode=json_mode)}
     kept_prefix_items: list[JsonValue] = []
-    for item in input_items[:first_output_index]:
-        if not lite_input and is_developer_role_message(item):
+    for index, item in enumerate(input_items[:first_output_index]):
+        if index not in base_item_indices:
             kept_prefix_items.append(item)
         elif not _is_http_bridge_previous_response_output_item(item):
             return input_items
@@ -2114,9 +2118,9 @@ def _http_bridge_payload_looks_like_full_resend(payload: ResponsesRequest) -> bo
     if isinstance(input_value, str):
         return len(input_value) >= 4096
     if isinstance(input_value, Sequence) and not isinstance(input_value, (str, bytes, bytearray)):
-        # Developer messages carry no conversation history, so a turn delta
-        # that brings fresh developer messages is still a delta.
-        history_items = responses_input_classifier_history_view(list(input_value))
+        # Judge the history the old hoist left in ``input``: a turn delta that
+        # brings fresh developer messages is still a delta.
+        history_items = base_equivalent_input(list(input_value), json_mode=responses_payload_json_mode(payload))
         if len(history_items) > 1:
             return True
         if len(history_items) == 1:

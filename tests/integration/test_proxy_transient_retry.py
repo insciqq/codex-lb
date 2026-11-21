@@ -1849,6 +1849,110 @@ async def test_stream_previsible_429_does_not_replay_unanchored_delta_owner_stat
     assert seen_account_ids == ["acc_delta_429_a"]
 
 
+_QUOTA_DEVELOPER = {
+    "type": "message",
+    "id": "msg_developer",
+    "role": "developer",
+    "content": [{"type": "input_text", "text": "<permissions instructions>sandbox</permissions instructions>"}],
+}
+_QUOTA_FIRST_USER = {
+    "type": "message",
+    "id": "msg_first_user",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "first question"}],
+}
+_QUOTA_PREVIOUS_ANSWER = {
+    "type": "message",
+    "id": "msg_previous_answer",
+    "role": "assistant",
+    "status": "completed",
+    "phase": "final_answer",
+    "content": [{"type": "output_text", "text": "previous answer"}],
+}
+_QUOTA_OWNER_REASONING = {"type": "reasoning", "id": "rs_owner", "summary": []}
+_QUOTA_NEXT_USER = {
+    "type": "message",
+    "id": "msg_next_user",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "continue"}],
+}
+
+
+def _without_id(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in item.items() if key != "id"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_items", "expected_replay_input"),
+    [
+        pytest.param(
+            [_QUOTA_DEVELOPER, _QUOTA_FIRST_USER, _QUOTA_PREVIOUS_ANSWER, _QUOTA_OWNER_REASONING, _QUOTA_NEXT_USER],
+            [
+                _without_id(_QUOTA_DEVELOPER),
+                _without_id(_QUOTA_FIRST_USER),
+                _without_id(_QUOTA_PREVIOUS_ANSWER),
+                _without_id(_QUOTA_NEXT_USER),
+            ],
+            id="developer-prefixed-full-resend-moves",
+        ),
+        pytest.param(
+            [_QUOTA_DEVELOPER, _QUOTA_PREVIOUS_ANSWER, _QUOTA_OWNER_REASONING, _QUOTA_NEXT_USER],
+            None,
+            id="developer-only-prefix-stays-owner-bound",
+        ),
+    ],
+)
+async def test_stream_previsible_429_judges_unanchored_replay_without_inline_developer_messages(
+    async_client, monkeypatch, input_items, expected_replay_input
+):
+    """Developer messages stay in ``input`` but are no conversation history.
+
+    The replay decision sees the history the old hoist into ``instructions``
+    left: a developer prefix does not stop a full resend from moving, and a
+    developer message alone ahead of the prior answer is no user turn. The
+    moved body keeps its developer messages, without their client item ids.
+    """
+    await _import_account(async_client, "acc_dev_429_a", "dev429a@example.com")
+    await _import_account(async_client, "acc_dev_429_b", "dev429b@example.com")
+
+    seen_account_ids: list[str | None] = []
+    seen_inputs: list[object] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        seen_inputs.append(payload.input)
+        if account_id == "acc_dev_429_a":
+            raise ProxyResponseError(
+                429,
+                openai_error("usage_limit_reached", "usage limit reached"),
+                failure_phase="status",
+            )
+        yield _success_sse_event("resp_dev_429_ok")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {
+        "model": "gpt-5.6-sol",
+        "prompt_cache_key": "sticky-developer-usage-limit",
+        "instructions": "hi",
+        "input": input_items,
+        "stream": True,
+    }
+    response = await async_client.post("/backend-api/codex/responses", json=payload)
+
+    if expected_replay_input is None:
+        assert response.status_code == 429
+        assert response.json().get("error", {}).get("code") == "usage_limit_reached"
+        assert seen_account_ids == ["acc_dev_429_a"]
+        return
+    assert response.status_code == 200
+    assert seen_account_ids == ["acc_dev_429_a", "acc_dev_429_b"]
+    # The owner got the body as sent; the replacement gets it projected.
+    assert _QUOTA_OWNER_REASONING in cast(list[object], seen_inputs[0])
+    assert seen_inputs[1] == expected_replay_input
+
+
 @pytest.mark.asyncio
 async def test_stream_post_refresh_quota_rejection_projects_soft_owner_replay(async_client, monkeypatch):
     """A refreshable 401 leaves a soft owner; the post-refresh quota rejection must still move."""

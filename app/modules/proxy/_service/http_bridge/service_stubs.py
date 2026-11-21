@@ -235,6 +235,10 @@ def _fingerprint_input_items(*args: Any, **kwargs: Any) -> Any:
     return _service_global("_fingerprint_input_items")(*args, **kwargs)
 
 
+def _input_context(*args: Any, **kwargs: Any) -> Any:
+    return _service_global("_input_context")(*args, **kwargs)
+
+
 def _normalize_session_id(*args: Any, **kwargs: Any) -> Any:
     return _service_global("_normalize_session_id")(*args, **kwargs)
 

@@ -57,6 +57,7 @@ from app.core.errors import openai_error
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
     ResponsesRequest,
+    responses_payload_json_mode,
 )
 from app.core.resilience.overload import is_local_overload_error_code
 from app.core.types import JsonObject, JsonValue
@@ -134,8 +135,8 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _count_external_image_urls,
     _enforce_response_create_size_limit,
     _estimated_lease_tokens_from_request_usage_budget,
-    _fingerprint_input_items,
     _inline_top_level_input_image_urls,
+    _input_context,
     _normalize_service_tier_value,
     _normalize_session_id,
     _prepare_websocket_request_state_for_account_switch,
@@ -778,16 +779,19 @@ class _HTTPBridgeRequestSubmitMixin:
     ) -> tuple[_WebSocketRequestState, str]:
         deduped_replayed_input_count: int | None = None
         deduped_replayed_input_fingerprint: str | None = None
+        json_mode = responses_payload_json_mode(payload)
         deduped_replayed_tool_call_count = 0
         if payload.previous_response_id is not None and isinstance(payload.input, list):
             replayed_input_items = cast(list[JsonValue], payload.input)
             deduped_input_items, deduped_replayed_tool_call_count = dedupe_replayed_side_effect_input_items(
                 replayed_input_items,
                 sanitize_missing_outputs=False,
+                json_mode=json_mode,
             )
             if deduped_replayed_tool_call_count > 0:
-                deduped_replayed_input_count = len(replayed_input_items)
-                deduped_replayed_input_fingerprint = _fingerprint_input_items(replayed_input_items)
+                deduped_replayed_input_count, deduped_replayed_input_fingerprint = _input_context(
+                    replayed_input_items, json_mode=json_mode
+                )
                 payload = payload.model_copy(update={"input": deduped_input_items})
                 # The caller's dump describes the un-deduped input; it must not
                 # become the forwarded frame or the budget base.
@@ -821,9 +825,9 @@ class _HTTPBridgeRequestSubmitMixin:
         payload_input = payload.input
         if isinstance(payload_input, list):
             payload_input_list = cast(list[JsonValue], payload_input)
-            input_item_count = len(payload_input_list)
+            input_item_count, context_fingerprint = _input_context(payload_input_list, json_mode=json_mode)
             if input_item_count > 0:
-                input_full_fingerprint = _fingerprint_input_items(payload_input_list)
+                input_full_fingerprint = context_fingerprint
 
         resolved_request_id = request_id or f"ws_{uuid4().hex}"
         header_request_kind = _request_kind_from_headers(headers)

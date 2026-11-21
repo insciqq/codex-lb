@@ -381,25 +381,13 @@ def _normalize_responses_input_instructions(data: JsonValue, *, keep_json_mode_i
         if role != "system":
             input_items.append(item)
             continue
-        instruction_text, preserved_content = _split_responses_instruction_item_content(item_mapping)
-        if keep_json_mentions and _mentions_json(instruction_text):
-            # JSON mode only counts a JSON mention inside input messages, not in
-            # top-level instructions. Developer messages already stayed in input
-            # above, so only a system message reaches this point: keep it where
-            # it is as a developer message, because upstream rejects the system
-            # role in input.
-            kept_item = dict(item_mapping)
-            kept_item["role"] = "developer"
-            input_items.append(kept_item)
-            changed = True
-            continue
+        # Developer messages already stayed in input above, so only a system
+        # message reaches the hoist.
+        instruction_text, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=keep_json_mentions)
         if instruction_text:
             instruction_parts.append(instruction_text)
-        if preserved_content is not None:
-            preserved_item = dict(item_mapping)
-            preserved_item["role"] = "user"
-            preserved_item["content"] = preserved_content
-            input_items.append(preserved_item)
+        if kept_item is not None:
+            input_items.append(kept_item)
         changed = True
 
     if not changed:
@@ -414,6 +402,99 @@ def _normalize_responses_input_instructions(data: JsonValue, *, keep_json_mode_i
     normalized["instructions"] = merged_instructions
     normalized["input"] = input_items
     return normalized
+
+
+def _hoist_instruction_message(
+    item_mapping: Mapping[str, JsonValue],
+    *,
+    keep_json_mentions: bool,
+) -> tuple[str, JsonValue | None]:
+    """Hoist one ``system``/``developer`` message: its instruction text, and what stays in ``input``.
+
+    This is the rule that applied to both roles before developer messages
+    stayed in ``input``.
+    """
+    instruction_text, preserved_content = _split_responses_instruction_item_content(item_mapping)
+    if keep_json_mentions and _mentions_json(instruction_text):
+        # JSON mode only counts a JSON mention inside input messages, not in
+        # top-level instructions. Keep this instruction where it is, as a
+        # developer message: upstream rejects the system role in input.
+        kept_item = dict(item_mapping)
+        kept_item["role"] = "developer"
+        return "", kept_item
+    if preserved_content is None:
+        return instruction_text, None
+    preserved_item = dict(item_mapping)
+    preserved_item["role"] = "user"
+    preserved_item["content"] = preserved_content
+    return instruction_text, preserved_item
+
+
+def base_equivalent_input_positions(
+    input_items: list[JsonValue],
+    *,
+    json_mode: bool = False,
+) -> list[tuple[int, JsonValue]]:
+    """Return ``(wire index, item)`` for the ``input`` the normalizer produced before developer messages stayed inline.
+
+    Replay and continuity decisions (delta or full resend, stored-prefix
+    matching, retained-output proofs, tool-call dedupe) must judge exactly the
+    history they judged before upstream issue 2563 was fixed, while the wire
+    keeps developer messages in place. Outside Responses Lite each developer
+    message goes through the old hoist: it leaves ``input``, except a JSON
+    mention in JSON mode (``json_mode``, set only for Responses requests whose
+    ``text.format.type`` is ``json_object``), which stays, and non-text parts,
+    which stay as a ``user`` message.
+    """
+    if responses_input_uses_lite_tools(input_items):
+        return list(enumerate(input_items))
+    positions: list[tuple[int, JsonValue]] = []
+    for index, item in enumerate(input_items):
+        item_mapping = _json_mapping_or_none(item)
+        if (
+            item_mapping is None
+            or item_mapping.get("role") != "developer"
+            or _is_preserved_non_message_directive(item_mapping)
+        ):
+            positions.append((index, item))
+            continue
+        _, kept_item = _hoist_instruction_message(item_mapping, keep_json_mentions=json_mode)
+        if kept_item is not None:
+            positions.append((index, kept_item))
+    return positions
+
+
+def base_equivalent_input(input_items: list[JsonValue], *, json_mode: bool = False) -> list[JsonValue]:
+    """The ``input`` list the normalizer produced before developer messages stayed inline."""
+    return [item for _, item in base_equivalent_input_positions(input_items, json_mode=json_mode)]
+
+
+def base_equivalent_wire_prefix_end(input_items: list[JsonValue], count: int, *, json_mode: bool = False) -> int:
+    """Map a prefix of ``count`` base-equivalent items back to a wire prefix length.
+
+    The wire prefix ends right after the wire item behind the ``count``-th
+    base-equivalent item, so developer messages inside it go with the prefix
+    and developer messages after it stay with the remainder.
+    """
+    if count <= 0:
+        return 0
+    positions = base_equivalent_input_positions(input_items, json_mode=json_mode)
+    if count > len(positions):
+        return len(input_items)
+    return positions[count - 1][0] + 1
+
+
+def responses_payload_json_mode(payload: object) -> bool:
+    """Whether ``payload`` kept JSON-mentioning instructions in ``input`` under the old hoist."""
+    if isinstance(payload, ResponsesCompactRequest):
+        return False
+    if isinstance(payload, ResponsesRequest):
+        return (
+            payload.text is not None and payload.text.format is not None and payload.text.format.type == "json_object"
+        )
+    if is_json_mapping(payload):
+        return _requests_json_object_format(payload.get("text"))
+    return False
 
 
 def _developer_message_has_content(content: JsonValue) -> bool:
@@ -1855,9 +1936,10 @@ def responses_input_contains_goal_continuation_context(input_value: JsonValue) -
 def responses_request_contains_goal_continuation_context(payload: ResponsesRequest) -> bool:
     """Return whether a normalized request carries Codex's goal restart marker."""
 
-    # ResponsesRequest normalization lifts developer/system input messages into
-    # ``instructions``. The marker can therefore disappear from ``input`` and
-    # follow pre-existing instruction text by the time affinity is classified.
+    # ResponsesRequest normalization lifts system input messages into
+    # ``instructions`` (developer messages stay in ``input``). The marker can
+    # therefore disappear from ``input`` and follow pre-existing instruction
+    # text by the time affinity is classified.
     # Keep both locations in this check or a harmless parser refactor can
     # silently break restart recovery while marker-preservation tests still pass.
     instructions = payload.instructions

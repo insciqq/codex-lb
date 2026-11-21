@@ -8,6 +8,7 @@ from typing import cast
 from app.core.openai import tool_call_safety
 from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import classify_event_type, parse_sse_event_payload
+from app.core.openai.requests import base_equivalent_input_positions
 from app.core.types import JsonValue
 from app.core.utils.sse import format_sse_event
 
@@ -393,6 +394,7 @@ def dedupe_replayed_side_effect_input_items(
     input_items: list[JsonValue],
     *,
     sanitize_missing_outputs: bool = False,
+    json_mode: bool = False,
 ) -> tuple[list[JsonValue], int]:
     call_keys: dict[int, ReplayedSideEffectToolCallKey] = {}
     call_ids: dict[int, str] = {}
@@ -422,8 +424,11 @@ def dedupe_replayed_side_effect_input_items(
     next_output_cursor_by_call_id: dict[str, int] = {}
     last_side_effect_key: ReplayedSideEffectToolCallKey | None = None
     removed_count = 0
+    # Segments are judged on the base-equivalent input: a developer message
+    # the old hoist removed from ``input`` must not split replayed history.
+    base_item_indices = {index for index, _ in base_equivalent_input_positions(input_items, json_mode=json_mode)}
     for index, item in enumerate(input_items):
-        if isinstance(item, dict) and replayed_input_segment_boundary(item):
+        if isinstance(item, dict) and index in base_item_indices and replayed_input_segment_boundary(item):
             first_call_id_by_key.clear()
             first_call_index_by_key.clear()
             last_side_effect_key = None

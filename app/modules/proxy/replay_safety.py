@@ -328,6 +328,7 @@ def responses_input_items_are_self_contained_fresh_replay(input_items: list[Json
     unsettled_call_ids_by_type: dict[str, set[str]] = {item_type: set() for item_type in _TOOL_CALL_TYPES}
     seen_call_ids: set[str] = set()
     settled_call_ids: set[str] = set()
+    lite_input = responses_input_uses_lite_tools(input_items)
     for item in input_items:
         if not isinstance(item, dict):
             return False
@@ -339,7 +340,12 @@ def responses_input_items_are_self_contained_fresh_replay(input_items: list[Json
             return False
         if item.get("id") not in (None, ""):
             return False
-        if not _internal_chat_message_metadata_is_account_neutral(item.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD)):
+        metadata = item.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD)
+        if not (
+            _developer_control_metadata_is_account_neutral(metadata)
+            if _is_hoistable_developer_message(item, lite_input=lite_input)
+            else _internal_chat_message_metadata_is_account_neutral(metadata)
+        ):
             return False
         item_type_value = item.get("type")
         item_type = item_type_value if isinstance(item_type_value, str) else None
@@ -383,96 +389,6 @@ def _internal_chat_message_metadata_is_account_neutral(value: JsonValue | None) 
     )
 
 
-_DEVELOPER_CONTROL_METADATA_FIELDS = frozenset({"turn_id", "content_item_kinds"})
-
-
-def _developer_control_metadata_is_account_neutral(value: JsonValue | None) -> bool:
-    if value is None:
-        return True
-    if not isinstance(value, dict) or not value or not set(value) <= _DEVELOPER_CONTROL_METADATA_FIELDS:
-        return False
-    if "turn_id" in value and not _is_nonblank_string(value.get("turn_id")):
-        return False
-    if "content_item_kinds" in value:
-        kinds = value["content_item_kinds"]
-        if not isinstance(kinds, list) or not kinds or not all(_is_nonblank_string(kind) for kind in kinds):
-            return False
-    return True
-
-
-def is_inline_developer_control_message(item: JsonValue) -> bool:
-    """Whether ``item`` is an account-neutral developer message with valid content.
-
-    This is the strict predicate of the proof view. Upstream never emits
-    developer messages as response output, so outside Responses Lite a
-    developer message is client context even when it carries an item id
-    (captured Codex HTTP bodies do; replay payloads strip such ids) or Codex
-    metadata naming its turn and content kinds.
-    """
-
-    if not isinstance(item, dict) or item.get("role") != "developer":
-        return False
-    item_type = item.get("type", None)
-    return (
-        item_type in (None, "message")
-        and item.get("phase") is None
-        and item.get("status") in (None, "completed")
-        and _developer_control_metadata_is_account_neutral(item.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD))
-        and _input_item_has_only_known_fields(item, None)
-        and _message_has_valid_account_neutral_content(item)
-    )
-
-
-def is_developer_role_message(item: JsonValue) -> bool:
-    """Whether ``item`` is a developer message of any shape (``type`` omitted or ``message``)."""
-
-    return isinstance(item, dict) and item.get("role") == "developer" and item.get("type", None) in (None, "message")
-
-
-def responses_input_classifier_history_view(input_items: list[JsonValue]) -> list[JsonValue]:
-    """Return ``input`` as the delta-or-full-resend classifiers judge it.
-
-    Outside Responses Lite, developer messages used to be hoisted into
-    ``instructions`` before any replay heuristic ran. They now stay in
-    ``input`` so responses chained through ``previous_response_id`` keep them,
-    but they carry no conversation history. A classifier fails safe by
-    calling an input a delta (the anchor is kept), so this view omits every
-    developer-role message, whatever its shape, exactly as the hoist did: a
-    doubtful developer item left in would make a delta look complete. Lite
-    input is returned unchanged. The wire payload is never changed.
-    """
-
-    if responses_input_uses_lite_tools(input_items):
-        return input_items
-    return [item for item in input_items if not is_developer_role_message(item)]
-
-
-def responses_input_proof_history_view(input_items: list[JsonValue]) -> list[JsonValue]:
-    """Return ``input`` as the retained-output and tool-manifest proofs judge it.
-
-    A proof fails safe by rejecting, so this view omits only developer
-    messages that pass the strict ``is_inline_developer_control_message``
-    predicate; any doubtful developer item stays visible and the proof's own
-    developer rules reject it. Lite input is returned unchanged and keeps its
-    own developer rules. The wire payload is never changed.
-    """
-
-    if responses_input_uses_lite_tools(input_items):
-        return input_items
-    return [item for item in input_items if not is_inline_developer_control_message(item)]
-
-
-def _responses_input_proof_view_with_prefix(
-    input_items: list[JsonValue],
-    stored_count: int,
-) -> tuple[list[JsonValue], int]:
-    history = responses_input_proof_history_view(input_items)
-    if history is input_items:
-        return input_items, stored_count
-    omitted_from_prefix = sum(1 for item in input_items[:stored_count] if is_inline_developer_control_message(item))
-    return history, stored_count - omitted_from_prefix
-
-
 def responses_input_suffix_retains_prior_output(
     input_items: list[JsonValue],
     *,
@@ -481,12 +397,7 @@ def responses_input_suffix_retains_prior_output(
 ) -> bool:
     """Prove that a stored input prefix is followed by prior output and new input."""
 
-    # A verified prefix of developer controls alone is still a verified prefix:
-    # check the raw count, then judge the remaining history.
-    if stored_count <= 0:
-        return False
-    input_items, stored_count = _responses_input_proof_view_with_prefix(input_items, stored_count)
-    if len(input_items) <= stored_count:
+    if stored_count <= 0 or len(input_items) <= stored_count:
         return False
     prefix_state = _direct_tool_call_prefix_state(
         input_items[:stored_count],
@@ -587,10 +498,6 @@ def project_responses_input_retaining_prior_output(
             break
     if last_assistant_index is None or last_assistant_index == 0:
         return None
-    # Developer controls alone are no user turn ahead of that output; without a
-    # durable fingerprint proving the prefix, such a history stays owner-bound.
-    if not responses_input_proof_history_view(input_items[:last_assistant_index]):
-        return None
     projection = project_responses_input_for_account_neutral_fresh_replay(
         input_items,
         stored_count=last_assistant_index,
@@ -613,10 +520,7 @@ def responses_input_suffix_matches_pending_tool_calls(
 ) -> bool:
     """Prove the suffix exactly settles the durable prior-response call manifest."""
 
-    if stored_count <= 0 or not pending_tool_calls:
-        return False
-    input_items, stored_count = _responses_input_proof_view_with_prefix(input_items, stored_count)
-    if len(input_items) <= stored_count:
+    if stored_count <= 0 or len(input_items) <= stored_count or not pending_tool_calls:
         return False
     prefix_state = _direct_tool_call_prefix_state(
         input_items[:stored_count],
@@ -1302,9 +1206,14 @@ def _contains_account_scoped_tool_state(value: JsonValue) -> bool:
 
 
 def _input_items_have_valid_account_neutral_shape(input_items: list[JsonValue]) -> bool:
+    lite_input = responses_input_uses_lite_tools(input_items)
     for item in input_items:
         if not isinstance(item, dict):
             return False
+        if _is_hoistable_developer_message(item, lite_input=lite_input):
+            if not _developer_message_content_is_account_neutral(item):
+                return False
+            continue
         item_type = item.get("type")
         if _is_one_of(item_type, {"input_file", "input_image", "input_text"}):
             if not _input_content_part_is_self_contained(item, allow_output=False):
@@ -1319,6 +1228,56 @@ def _input_items_have_valid_account_neutral_shape(input_items: list[JsonValue]) 
         if not _message_has_valid_account_neutral_content(item):
             return False
     return True
+
+
+_DEVELOPER_CONTROL_METADATA_FIELDS = frozenset({"turn_id", "content_item_kinds"})
+
+
+def _is_hoistable_developer_message(item: Mapping[str, JsonValue], *, lite_input: bool) -> bool:
+    """A developer message that stays inline only since the hoist was removed (outside Responses Lite)."""
+    return not lite_input and item.get("role") == "developer" and item.get("type", None) in (None, "message")
+
+
+def _developer_control_metadata_is_account_neutral(value: JsonValue | None) -> bool:
+    """Codex developer metadata: a nonblank ``turn_id`` and nonblank ``content_item_kinds``, nothing else."""
+    if value is None:
+        return True
+    if not isinstance(value, dict) or not value or not set(value) <= _DEVELOPER_CONTROL_METADATA_FIELDS:
+        return False
+    if "turn_id" in value and not _is_nonblank_string(value.get("turn_id")):
+        return False
+    if "content_item_kinds" in value:
+        kinds = value["content_item_kinds"]
+        if not isinstance(kinds, list) or not kinds or not all(_is_nonblank_string(kind) for kind in kinds):
+            return False
+    return True
+
+
+def _developer_message_content_is_account_neutral(item: Mapping[str, JsonValue]) -> bool:
+    """An inline developer message's content is plain instruction text or self-contained parts.
+
+    Blank text parts beside substantive ones are allowed, as the normalizer
+    keeps such a message; account-scoped references still fail.
+    """
+    if item.get("phase") is not None:
+        return False
+    content = item.get("content")
+    if isinstance(content, str):
+        return _is_nonblank_string(content)
+    if not isinstance(content, list) or not content:
+        return False
+    return all(
+        isinstance(part, dict)
+        and (
+            (
+                _is_one_of(part.get("type"), {"input_text", "text"})
+                and isinstance(part.get("text"), str)
+                and not any(key not in _ACCOUNT_NEUTRAL_CONTENT_FIELDS[cast(str, part.get("type"))] for key in part)
+            )
+            or _input_content_part_is_self_contained(part, allow_output=False)
+        )
+        for part in content
+    )
 
 
 def _message_has_valid_account_neutral_content(item: Mapping[str, JsonValue]) -> bool:

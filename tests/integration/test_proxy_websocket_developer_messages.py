@@ -354,3 +354,70 @@ def test_anchored_tool_continuation_trims_echoed_output_around_a_developer_updat
     sent_payload = json.loads(upstream.sent_text[0])
     assert sent_payload["previous_response_id"] == "resp_prev_tool_call"
     assert sent_payload["input"] == [developer_update, tool_output]
+
+
+@pytest.mark.parametrize(
+    "first_turn_input",
+    [
+        pytest.param([_message("system", "Return JSON"), _message("user", "list the planets")], id="json-mode"),
+        pytest.param(
+            [
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}],
+                },
+                _message("user", "what is shown?"),
+            ],
+            id="developer-image",
+        ),
+    ],
+)
+def test_first_turn_after_empty_prewarm_recovers_as_before(app_instance, monkeypatch, first_turn_input):
+    """Inputs the old hoist kept (a JSON-mode instruction, non-text parts) still count as history."""
+    turn = _turn(first_turn_input)
+    if first_turn_input[0]["role"] == "system":
+        turn["text"] = {"format": {"type": "json_object"}}
+
+    terminal, _, connects = _run_anchor_rejection(
+        app_instance, monkeypatch, turn=turn, prewarm=dict(_prewarm_frame(), input=[])
+    )
+
+    assert terminal["type"] == "response.completed"
+    assert connects[0] == 2
+
+
+def test_full_resend_after_developer_only_turn_is_not_anchored(app_instance, monkeypatch):
+    """A turn of developer messages alone leaves no stored history to anchor on, as when they were hoisted."""
+    upstream = _SequencedUpstreamWebSocket(
+        [], deferred_message_batches=[_response_batch("resp_ws_first"), _response_batch("resp_ws_second")]
+    )
+    _install_upstreams(monkeypatch, [upstream])
+    developer = _message("developer", "Design a table")
+    answer = {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Here is a table"}]}
+    frames = [
+        {"type": "response.create", "model": "gpt-5.6-sol", "instructions": "", "input": [developer], "stream": True},
+        {
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "instructions": "",
+            "input": [developer, answer, _message("user", "Continue")],
+            "stream": True,
+        },
+    ]
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"session_id": "thread-ws-developer-only-turn", "openai-beta": "responses_websockets=2026-02-06"},
+        ) as websocket:
+            for frame in frames:
+                websocket.send_text(json.dumps(frame))
+                assert [json.loads(websocket.receive_text())["type"] for _ in range(2)] == [
+                    "response.created",
+                    "response.completed",
+                ]
+
+    second = json.loads(upstream.sent_text[1])
+    assert "previous_response_id" not in second
+    assert second["input"] == frames[1]["input"]

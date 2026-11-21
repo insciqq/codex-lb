@@ -2175,6 +2175,42 @@ async def test_proxy_compact_pinned_owner_in_request_quota_429_replays_account_n
 
 
 @pytest.mark.asyncio
+async def test_proxy_compact_owner_429_replays_full_resend_with_identified_developer_message(async_client, monkeypatch):
+    """A client item id on a developer message does not block failover; the replacement gets no id."""
+    owner_account_id = await _import_account(
+        async_client, email="compact-dev-id-owner@example.com", raw_account_id="acc_dev_id_owner"
+    )
+    await _import_account(async_client, email="compact-dev-id-alt@example.com", raw_account_id="acc_dev_id_alt")
+    _pin_previous_response_owner(monkeypatch, owner_account_id)
+    calls: list[tuple[str | None, dict[str, object], dict[str, str]]] = []
+    monkeypatch.setattr(
+        proxy_module,
+        "core_compact_responses",
+        _recording_compact(calls, fail_accounts_with={"acc_dev_id_owner": _usage_limit_429()}),
+    )
+    developer = {"role": "developer", "content": "Return plain text", "id": "msg_rules"}
+
+    response = await async_client.post(
+        "/backend-api/codex/responses/compact",
+        json={
+            "model": "gpt-5.1",
+            "instructions": "hi",
+            "input": [developer, *_NEUTRAL_FULL_RESEND_INPUT],
+            "previous_response_id": "resp_dev_id_anchor",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert [account_id for account_id, _payload, _headers in calls] == ["acc_dev_id_owner", "acc_dev_id_alt"]
+    replay_payload = calls[1][1]
+    assert "previous_response_id" not in replay_payload
+    assert replay_payload["input"] == [
+        {"role": "developer", "content": "Return plain text"},
+        *_NEUTRAL_FULL_RESEND_INPUT,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_proxy_compact_pinned_owner_post_selection_401_stays_owner_bound(async_client, monkeypatch):
     """A repeated 401 after the forced refresh excludes the owner for a
     non-quota reason, so account-neutral replay must not activate and the
