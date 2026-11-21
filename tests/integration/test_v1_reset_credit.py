@@ -447,12 +447,12 @@ async def test_v1_reset_credit_post_account_deleted_before_redeem_claim_returns_
     consume_mock = AsyncMock()
     acquire = reset_credits_api.acquire_redeem_claim
 
-    async def acquire_after_deletion(claim_account_id: str, *args: object, **kwargs: object) -> None:
+    async def acquire_after_deletion(claim_account_id: str, holder_id: str) -> None:
         async with SessionLocal() as writer:
             repo = AccountsRepository(writer)
             assert await repo.begin_delete(claim_account_id)
             assert await repo.delete(claim_account_id, only_pending=True)
-        await acquire(claim_account_id, *args, **kwargs)
+        await acquire(claim_account_id, holder_id)
 
     monkeypatch.setattr("app.modules.proxy.api.consume_reset_credit", consume_mock)
     monkeypatch.setattr(reset_credits_api, "acquire_redeem_claim", acquire_after_deletion)
