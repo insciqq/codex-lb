@@ -2773,6 +2773,7 @@ async def test_stream_rate_limit_on_last_attempt_returns_actual_error(async_clie
                     "error": {
                         "code": "rate_limit_exceeded",
                         "message": "slow down",
+                        "resets_at": 1_700_003_600,
                     },
                 },
             }
@@ -2790,6 +2791,47 @@ async def test_stream_rate_limit_on_last_attempt_returns_actual_error(async_clie
     last_event = events[-1] if events else {}
     error = last_event.get("response", {}).get("error", {})
     assert error.get("code") != "no_accounts", "Client received generic no_accounts instead of actual error"
+    assert error.get("resets_at") == 1_700_003_600
+
+
+@pytest.mark.asyncio
+async def test_stream_rate_limit_retries_exhausted_keeps_reset_hint(async_client, monkeypatch):
+    """When every account fails with a retryable rate limit and the account
+    attempts run out, the retries-exhausted ``response.failed`` terminal must
+    keep the upstream ``resets_at`` instead of dropping it."""
+    await _import_account(async_client, "acc_rl_reset_a", "rl-reset-a@example.com")
+    await _import_account(async_client, "acc_rl_reset_b", "rl-reset-b@example.com")
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        yield _sse_event(
+            {
+                "type": "response.failed",
+                "response": {
+                    "error": {
+                        "code": "rate_limit_exceeded",
+                        "message": "slow down",
+                        "resets_at": 1_700_003_600,
+                    },
+                },
+            }
+        )
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = _extract_events(lines)
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1
+    assert sorted(account_id or "" for account_id in seen_account_ids) == ["acc_rl_reset_a", "acc_rl_reset_b"]
+    error = failed[0]["response"]["error"]
+    assert error["code"] == "rate_limit_exceeded"
+    assert error["resets_at"] == 1_700_003_600
 
 
 @pytest.mark.asyncio

@@ -161,6 +161,25 @@ _STREAM_HEALTH_RECORDED_ATTR = "_codex_lb_stream_health_recorded"
 _INVALID_ENCRYPTED_CONTENT_CODE = "invalid_encrypted_content"
 
 
+def _response_failed_event_from_upstream_error(
+    code: str,
+    error: UpstreamError,
+    *,
+    response_id: str | None,
+) -> Any:
+    """Build a terminal event without dropping the upstream reset timestamp."""
+    message = str(error.get("message") or "Upstream error")
+    resets_at = error.get("resets_at")
+    if isinstance(resets_at, bool) or not isinstance(resets_at, int | float):
+        resets_at = None
+    return response_failed_event(
+        code,
+        message,
+        response_id=response_id,
+        resets_at=resets_at,
+    )
+
+
 def _failure_is_rate_limit_or_quota_rejection(exc: BaseException) -> bool:
     """Return whether a pre-visible failure definitively rejected the selected account."""
     if isinstance(exc, _RetryableStreamError):
@@ -1326,9 +1345,9 @@ class _StreamingRetryMixin:
                         setattr(retry_exc, _POST_REFRESH_TRANSIENT_EXHAUSTED_ATTR, True)
                         raise retry_exc from exc
                     yield format_sse_event(
-                        response_failed_event(
+                        _response_failed_event_from_upstream_error(
                             exc.code,
-                            error_message,
+                            exc.error,
                             response_id=settlement.response_id or request_id,
                         )
                     )
@@ -1960,9 +1979,9 @@ class _StreamingRetryMixin:
                         raise last_transient_exc
                     if last_retryable_stream_error is not None:
                         error_message = str(last_retryable_stream_error.error.get("message") or "Upstream error")
-                        event = response_failed_event(
+                        event = _response_failed_event_from_upstream_error(
                             last_retryable_stream_error.code,
-                            error_message,
+                            last_retryable_stream_error.error,
                             response_id=request_id,
                         )
                         yield format_sse_event(event)
@@ -3936,9 +3955,9 @@ class _StreamingRetryMixin:
                 return
             if last_retryable_stream_error is not None:
                 retries_exhausted_msg = str(last_retryable_stream_error.error.get("message") or "Upstream error")
-                event = response_failed_event(
+                event = _response_failed_event_from_upstream_error(
                     last_retryable_stream_error.code,
-                    retries_exhausted_msg,
+                    last_retryable_stream_error.error,
                     response_id=request_id,
                 )
                 if last_retryable_stream_error.code in SYNTHETIC_TRANSPORT_FAILURE_CODES:
