@@ -11,9 +11,14 @@ before the first dashboard decision.
 Decision record (2026-08-06, maintainer): default-on with first-run confirmation dialog for
 both new and existing users; settings toggle; expanded field set over the minimal version.
 
+Fork decision record (fork owner): `CODEX_LB_TELEMETRY_ENABLED` defaults to `false`. The
+collector is operated by the upstream project; the fork cannot see that data and does not
+send its users' data there by default. The default reuses the existing silent environment
+opt-out path, so the module, endpoint and opt-in behaviour stay as upstream.
+
 ## Collection endpoint
 
-Self-hosted SHM (kOlapsis/shm) server operated by the maintainer at
+Self-hosted SHM (kOlapsis/shm) server operated by the upstream project's maintainer at
 `https://telemetry.tokmaxxing.com`. SHM provides Ed25519 instance signing, aggregate dashboards,
 and public README badges (`/badge/codex-lb/instances`, `/badge/codex-lb/version`).
 The SDK path is `/v1/register`, `/v1/activate`, `/v1/snapshot` (note: NOT `/api/v1/`,
@@ -157,8 +162,8 @@ Field notes:
 
 ## Consent resolution precedence
 
-persisted decision > `CODEX_LB_TELEMETRY_ENABLED` env (when set) > default
-(`undecided` ⇒ active). The env value only decides while the persisted state is `undecided`
+persisted decision > `CODEX_LB_TELEMETRY_ENABLED` env (when set; the fork defaults it to
+`false`) > default (`undecided` ⇒ active, reachable only when the setting is `None`). The env value only decides while the persisted state is `undecided`
 (headless opt-out before first boot); a saved dashboard decision always wins. The dialog is
 only shown while persisted state is `undecided` and no env value is set.
 
@@ -180,7 +185,7 @@ notice. Followers perform none of that work, avoiding duplicate snapshots and du
 ## Retention
 
 Each snapshot summarizes the previous seven days of existing local request logs. codex-lb does
-not create a second local telemetry history or queue failed transmissions. The project-operated
+not create a second local telemetry history or queue failed transmissions. The upstream-operated
 collector is `https://telemetry.tokmaxxing.com`; its server-side retention duration is not yet
 specified, so operators should assume transmitted snapshots remain stored until a published
 retention policy or explicit deletion.

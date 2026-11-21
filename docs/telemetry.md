@@ -1,13 +1,18 @@
 # Anonymous telemetry
 
-codex-lb sends an anonymous usage snapshot to the project-operated collector at
-`https://telemetry.tokmaxxing.com` when the service starts and every 24 hours. In a
-multi-replica deployment, only the elected leader builds and sends the snapshot.
+**Off by default in this fork.** The telemetry endpoint, `https://telemetry.tokmaxxing.com`, is
+a collector operated by the upstream Soju06/codex-lb project. This fork does not operate it
+and cannot see what it receives, so with no configuration a fork instance sends nothing and
+opens no connection to it.
+
+When an operator opts in, codex-lb sends an anonymous usage snapshot to that upstream
+collector when the service starts and every 24 hours. In a multi-replica deployment, only the
+elected leader builds and sends the snapshot.
 
 ## What is sent
 
-Before the first consent decision, the dashboard shows the current JSON envelope. You can also
-view it later from Settings. The signed snapshot body has three fields:
+Settings shows the exact JSON envelope the instance would send. The signed snapshot body has
+three fields:
 
 ```json
 {
@@ -39,17 +44,21 @@ request or response content, raw user-agent strings, per-account records, custom
 free-text errors. Exact schemas and privacy constraints live in the
 [telemetry OpenSpec capability](https://github.com/insciqq/codex-lb/tree/patched/openspec/specs/telemetry).
 
-## Consent and disabling
+## Consent, opting in and disabling
 
-Telemetry uses informed opt-out consent. With no override or saved decision, it is active and
-the dashboard presents a one-time dialog with the current payload. Enabling or disabling saves
-the decision, and the Settings toggle can change it later.
+In this fork `CODEX_LB_TELEMETRY_ENABLED` defaults to `false`. With no saved dashboard
+decision, an instance behaves exactly as if that value were set: telemetry is disabled, no
+snapshot or opt-out notice is sent, and the dashboard shows no consent dialog. Upstream
+releases instead default to informed opt-out consent with a one-time dialog.
 
-For a headless opt-out before the first dashboard visit, set:
+To opt in, either enable telemetry in Settings, which saves the decision, or set:
 
 ```bash
-CODEX_LB_TELEMETRY_ENABLED=false
+CODEX_LB_TELEMETRY_ENABLED=true
 ```
+
+Either way, snapshots go to the upstream project's collector, not to this fork. To keep
+telemetry off explicitly, set `CODEX_LB_TELEMETRY_ENABLED=false` or disable it in Settings.
 
 The environment value applies only while no dashboard decision has been saved; a saved
 dashboard decision always takes precedence over it. The Settings toggle shows a notice while

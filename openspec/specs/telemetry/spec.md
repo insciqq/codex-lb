@@ -1,7 +1,7 @@
 # telemetry Specification
 
 ## Purpose
-Anonymous install-base telemetry (version distribution, deployment shapes, client ecosystem, feature usage) under an informed opt-out consent model, with a normative privacy allowlist so identifying data can never be transmitted. See `context.md` for the exact outbound field lists.
+Anonymous install-base telemetry (version distribution, deployment shapes, client ecosystem, feature usage) under an informed opt-out consent model, with a normative privacy allowlist so identifying data can never be transmitted. This fork ships telemetry disabled by default, because the default endpoint is the upstream project's collector. See `context.md` for the exact outbound field lists.
 ## Requirements
 ### Requirement: Telemetry payload field allowlist
 
@@ -31,27 +31,37 @@ present in the documented schema.
 
 ### Requirement: Consent state and default activation
 
-Telemetry consent MUST be a persisted tri-state (`undecided`, `enabled`, `disabled`) defaulting to `undecided`, and while consent is `undecided` the service SHALL treat telemetry as active.
+Telemetry consent MUST be a persisted tri-state (`undecided`, `enabled`, `disabled`) defaulting to `undecided`. The `telemetry_enabled` setting (`CODEX_LB_TELEMETRY_ENABLED`) MUST default to `false`, so with no environment value an `undecided` instance MUST resolve exactly as with `CODEX_LB_TELEMETRY_ENABLED=false`: inactive, reported with `source: env`, with no telemetry network traffic, no startup notice and no consent dialog. Only while the setting holds no value at all (`None`, which no environment value produces) SHALL an `undecided` instance treat telemetry as active with `source: default`.
 
 Upgrading an existing installation MUST introduce the consent state as `undecided` (existing
-users get the same informed default-on treatment as new installs).
+users get the same treatment as new installs); a decision already persisted keeps deciding.
 
-#### Scenario: Fresh install defaults to active
+#### Scenario: Fresh install sends nothing by default
 
 - **WHEN** codex-lb starts for the first time with no persisted consent and no environment
-  override
-- **THEN** consent is `undecided` and telemetry snapshots are transmitted
+  value
+- **THEN** the consent API reports `state: disabled`, `source: env`, `active: false` and
+  `preview: null`
+- **AND** no connection to the telemetry endpoint is opened, no startup notice is logged, and
+  the dashboard shows no consent dialog
+
+#### Scenario: Operator opts in through the environment
+
+- **GIVEN** `CODEX_LB_TELEMETRY_ENABLED=true` and no persisted decision
+- **WHEN** the scheduler runs on the elected leader
+- **THEN** consent resolves to `enabled` with `source: env` and snapshots are transmitted
 
 #### Scenario: Upgrade treats existing users as undecided
 
 - **WHEN** an existing installation migrates to a version with this capability
-- **THEN** the migrated consent state is `undecided` and the one-time consent dialog is shown
-  on next dashboard entry
+- **THEN** the migrated consent state is `undecided` and resolves like a fresh install
+- **AND** an instance that already persisted `enabled` or `disabled` keeps that decision
 
 ### Requirement: One-time consent dialog with exact payload preview
 
 The dashboard MUST present a one-time consent dialog on first entry while consent is
-`undecided`, and the dialog MUST display the exact snapshot envelope the instance would
+`undecided` with `source: default`, and MUST NOT present it while an environment value
+applies (including the fork default `false`). The dialog MUST display the exact snapshot envelope the instance would
 transmit at that moment. Preview and sender MUST use one shared envelope constructor. The
 preview timestamp MUST record preview generation time as a representative current timestamp;
 the actual send MUST regenerate that value at transmission time.
@@ -65,7 +75,7 @@ field and set it to `null` when the preview was not requested and is not dialog-
 
 #### Scenario: Undecided operator sees payload preview
 
-- **WHEN** an operator opens the dashboard while consent is `undecided`
+- **WHEN** an operator opens the dashboard while consent is `undecided` with `source: default`
 - **THEN** a dialog shows the live snapshot JSON with equally prominent enable and disable
   actions
 
@@ -87,7 +97,7 @@ field and set it to `null` when the preview was not requested and is not dialog-
 
 ### Requirement: Settings toggle and environment kill switch
 
-The dashboard settings MUST expose a telemetry toggle reflecting the resolved consent state. Consent MUST resolve as `persisted decision > CODEX_LB_TELEMETRY_ENABLED > default`: a persisted dashboard decision is authoritative and MUST NOT be overridden by the environment variable. `CODEX_LB_TELEMETRY_ENABLED` MUST apply only while the persisted state is `undecided` (`false` disables all transmission, `true` enables and suppresses the consent dialog) and MUST be reported with `source: env`. The toggle MUST remain usable while the environment value is in effect so the operator can persist a decision, and the dashboard MUST show a notice that the environment value is the current fallback.
+The dashboard settings MUST expose a telemetry toggle reflecting the resolved consent state. Consent MUST resolve as `persisted decision > CODEX_LB_TELEMETRY_ENABLED > default`: a persisted dashboard decision is authoritative and MUST NOT be overridden by the environment variable. `CODEX_LB_TELEMETRY_ENABLED` MUST apply only while the persisted state is `undecided` (`false`, the default, disables all transmission; `true` enables and suppresses the consent dialog) and MUST be reported with `source: env`. The toggle MUST remain usable while the environment value is in effect so the operator can persist a decision, and the dashboard MUST show a notice that the environment value is the current fallback.
 
 #### Scenario: Headless deployment disables via environment
 
@@ -110,13 +120,13 @@ The dashboard settings MUST expose a telemetry toggle reflecting the resolved co
 
 ### Requirement: Startup notice while undecided
 
-While consent is `undecided`, the elected leader MUST emit a single startup log line stating
+While consent is `undecided` with `source: default`, the elected leader MUST emit a single startup log line stating
 that anonymous telemetry is active, where the collected-field documentation lives, and how to
 disable it. Non-leader replicas MUST NOT duplicate the notice.
 
 #### Scenario: Headless operator is informed
 
-- **WHEN** the service starts with consent `undecided`
+- **WHEN** the service starts with consent `undecided` and `source: default`
 - **THEN** exactly one log line names the telemetry documentation location and the
   `CODEX_LB_TELEMETRY_ENABLED=false` disable path
 

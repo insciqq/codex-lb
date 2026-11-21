@@ -388,8 +388,11 @@ class Settings(BaseSettings):
     # T3 → dashboard (deprecated env alias, remove next minor)
     automations_scheduler_enabled: bool = True
     # T3 (dashboard home: dashboard_settings.telemetry_consent). Headless
-    # first-boot opt-out fallback; a persisted dashboard decision always wins.
-    telemetry_enabled: bool | None = None
+    # first-boot fallback; a persisted dashboard decision always wins. The fork
+    # defaults to False: the default endpoint is the upstream project's
+    # collector, which the fork does not operate, so nothing is sent unless an
+    # operator opts in.
+    telemetry_enabled: bool | None = False
     telemetry_endpoint: str = "https://telemetry.tokmaxxing.com"
     encryption_key_file: Path = DEFAULT_ENCRYPTION_KEY_FILE
     # Startup cross-replica encryption-key consistency check against the shared

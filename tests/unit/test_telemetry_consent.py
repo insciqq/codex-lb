@@ -16,6 +16,17 @@ from app.modules.telemetry.scheduler import TELEMETRY_INTERVAL_SECONDS, Telemetr
 pytestmark = pytest.mark.unit
 
 
+def _use_unset_upstream_default(monkeypatch) -> None:
+    """Restore upstream's unset ``telemetry_enabled`` (``None``) for this test.
+
+    The fork defaults the setting to ``False`` and no environment value yields
+    ``None``, but the undecided-means-active code path stays covered here.
+    """
+    monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
+    get_settings.cache_clear()
+    monkeypatch.setattr(get_settings(), "telemetry_enabled", None)
+
+
 class _GateLeader:
     def __init__(self, *, leader: bool) -> None:
         self.leader = leader
@@ -101,6 +112,33 @@ async def test_disabled_scheduler_tick_makes_zero_sender_calls(db_setup, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_fork_default_tick_sends_nothing_and_logs_no_notice(db_setup, monkeypatch, caplog) -> None:
+    import app.modules.telemetry.scheduler as scheduler_module
+
+    del db_setup
+    monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
+    get_settings.cache_clear()
+    assert get_settings().telemetry_enabled is False
+    async with SessionLocal() as session:
+        consent = await TelemetryConsentStore(session).resolve()
+    assert (consent.state, consent.source, consent.active) == ("disabled", "env", False)
+
+    builder = Mock(side_effect=AssertionError("the fork default must not build a snapshot"))
+    monkeypatch.setattr(scheduler_module, "TelemetrySnapshotBuilder", builder)
+    sender = Mock()
+    with caplog.at_level(logging.INFO, logger="app.modules.telemetry.scheduler"):
+        await TelemetryScheduler(sender=sender)._tick(log_undecided_notice=True)
+
+    builder.assert_not_called()
+    assert sender.mock_calls == []
+    assert not [record for record in caplog.records if "Anonymous telemetry" in record.getMessage()]
+    async with SessionLocal() as session:
+        row = await session.get(DashboardSettings, 1)
+    # No identity is minted, so nothing could register with the collector.
+    assert row is None or row.telemetry_instance_id is None
+
+
+@pytest.mark.asyncio
 async def test_enabled_scheduler_snapshot_declares_enabled_consent(db_setup, monkeypatch) -> None:
     del db_setup
     monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
@@ -158,8 +196,7 @@ async def test_scheduler_sends_startup_and_interval_snapshots_with_one_undecided
     caplog,
 ) -> None:
     del db_setup
-    monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
-    get_settings.cache_clear()
+    _use_unset_upstream_default(monkeypatch)
     assert TELEMETRY_INTERVAL_SECONDS == 24 * 60 * 60
 
     sender = AsyncMock()

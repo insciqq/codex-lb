@@ -11,6 +11,17 @@ from app.core.config.settings import get_settings
 pytestmark = pytest.mark.unit
 
 
+def _use_unset_upstream_default(monkeypatch) -> None:
+    """Restore upstream's unset ``telemetry_enabled`` (``None``) for this test.
+
+    The fork defaults the setting to ``False`` and no environment value yields
+    ``None``, but the undecided-means-active code path stays covered here.
+    """
+    monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
+    get_settings.cache_clear()
+    monkeypatch.setattr(get_settings(), "telemetry_enabled", None)
+
+
 @pytest.fixture(autouse=True)
 def opt_out_sender(monkeypatch):
     sender = Mock()
@@ -26,8 +37,7 @@ async def test_consent_api_get_preview_and_put_persists_without_restart(
     monkeypatch,
     opt_out_sender,
 ) -> None:
-    monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
-    get_settings.cache_clear()
+    _use_unset_upstream_default(monkeypatch)
 
     response = await async_client.get("/api/settings/telemetry")
     assert response.status_code == 200
@@ -96,6 +106,23 @@ async def test_consent_api_preview_keeps_undecided_state_under_env_kill_switch(
 
 
 @pytest.mark.asyncio
+async def test_fork_default_reports_env_disabled_without_dialog_preview(async_client, monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
+    get_settings.cache_clear()
+    assert get_settings().telemetry_enabled is False
+
+    builder = Mock(side_effect=AssertionError("the fork default must not build a dialog preview"))
+    monkeypatch.setattr("app.modules.telemetry.api.TelemetrySnapshotBuilder", builder)
+    response = await async_client.get("/api/settings/telemetry")
+
+    assert response.status_code == 200
+    payload = response.json()
+    # source "env" with no preview keeps the dashboard consent dialog closed.
+    assert payload == {"state": "disabled", "source": "env", "active": False, "preview": None}
+    builder.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_consent_api_env_override_wins_and_suppresses_undecided_state(async_client, monkeypatch) -> None:
     monkeypatch.setenv("CODEX_LB_TELEMETRY_ENABLED", "true")
     get_settings.cache_clear()
@@ -119,7 +146,8 @@ async def test_dashboard_active_to_inactive_transitions_each_send_exactly_once(
     monkeypatch,
     opt_out_sender,
 ) -> None:
-    monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
+    # The fork defaults telemetry off; these opt-out paths need it active first.
+    monkeypatch.setenv("CODEX_LB_TELEMETRY_ENABLED", "true")
     get_settings.cache_clear()
 
     first = await async_client.put("/api/settings/telemetry", json={"enabled": False})
@@ -196,7 +224,8 @@ async def test_opt_out_background_send_does_not_block_settings_response(
     monkeypatch,
     opt_out_sender,
 ) -> None:
-    monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
+    # The fork defaults telemetry off; these opt-out paths need it active first.
+    monkeypatch.setenv("CODEX_LB_TELEMETRY_ENABLED", "true")
     get_settings.cache_clear()
     started = asyncio.Event()
     release = asyncio.Event()
@@ -228,7 +257,8 @@ async def test_opt_out_identity_failure_is_debug_only_and_preserves_disabled_sta
     opt_out_sender,
     caplog,
 ) -> None:
-    monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
+    # The fork defaults telemetry off; these opt-out paths need it active first.
+    monkeypatch.setenv("CODEX_LB_TELEMETRY_ENABLED", "true")
     get_settings.cache_clear()
 
     async def fail_identity(_store) -> None:
@@ -259,7 +289,8 @@ async def test_unexpected_opt_out_task_failure_is_debug_only_and_does_not_change
     opt_out_sender,
     caplog,
 ) -> None:
-    monkeypatch.delenv("CODEX_LB_TELEMETRY_ENABLED", raising=False)
+    # The fork defaults telemetry off; these opt-out paths need it active first.
+    monkeypatch.setenv("CODEX_LB_TELEMETRY_ENABLED", "true")
     get_settings.cache_clear()
     opt_out_sender.send_opt_out.side_effect = RuntimeError("unexpected sender failure")
 
