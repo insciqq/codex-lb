@@ -521,6 +521,29 @@ keep explicitly, so the request state marks native history:
   anchored attempt never settles once its session is gone, and it used to
   refuse every identical retry until the body changed.
 
+## Anchored local rebind
+
+A request that carries an anchor and repeats the anchored turn's input is
+trimmed: the anchor carries the stored prefix, so only the rest goes upstream.
+When upstream rejects the anchor before `response.created` and the request has
+no proof that it can go upstream without the anchor, the bridge rebinds to a
+fresh session and retries with the same anchor, because the rejection can mean
+the old session was not the anchor's owner. The retry used to rebuild its body
+from the untrimmed request and re-run the interrupted-output injection against
+the failed session. Upstream then received the stored prefix twice, once
+through the anchor and once inline, and a sibling request that completed in
+between could make the re-run injection miss an output. The retry now resends
+the dispatched request and keeps its stored context, so the next turn still
+trims against the full client input. Its anchor is the one the dispatch was
+sent with: the submit's operation lookup can advance a request to a response
+another worker or a sibling request completed, and the retry acquires its
+session, records its operation and writes its frame with that same anchor.
+
+For example, a client sends `[U1]`, then `[U1, U2]` with
+`previous_response_id` of the first response. The bridge sends `[U2]` with the
+anchor; after a rejection and a local rebind, the retry also sends `[U2]`, not
+`[U1, U2]`.
+
 ## WebSocket model rejections of unanchored bodies
 
 Upstream rejects a replayed tool call's `namespace`, so the wire text drops it

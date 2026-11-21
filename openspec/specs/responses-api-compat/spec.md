@@ -4141,7 +4141,7 @@ The service MUST track tool-call items completed by a streamed response that may
 #### Scenario: local previous-response recovery retry keeps injected outputs
 - **GIVEN** an HTTP bridge submit whose payload gained synthetic interrupted outputs and which fails before yielding with a previous-response continuity error
 - **WHEN** the local recovery path re-prepares the anchored retry request
-- **THEN** the synthetic interrupted outputs are re-injected from the failed session's pending tool-call state, so the recovered submit does not reintroduce the upstream missing-tool-output failure
+- **THEN** the retry carries the synthetic interrupted outputs the failed submit sent, so the recovered submit does not reintroduce the upstream missing-tool-output failure, even when a sibling request has since moved the session's last completed response
 
 #### Scenario: replayed apply_patch prefix is trimmed on anchored bridge follow-ups
 - **GIVEN** an HTTP bridge follow-up that anchors via `previous_response_id` and replays a prior `apply_patch_call` item (marked as response output) followed by its `apply_patch_call_output`
@@ -6632,6 +6632,34 @@ A quarantine armed for reason `retry_circuit_poisoned_anchor` MUST remain in for
 - **GIVEN** a hard-affinity bridge key whose retry circuit has one recorded `clean_close` failure
 - **WHEN** a second `clean_close` failure opens the circuit
 - **THEN** the session key is not quarantined
+
+### Requirement: HTTP bridge anchored local rebind resends the dispatched request
+
+When an HTTP bridge request that carries a `previous_response_id` (client-sent
+or proxy-injected) fails before `response.created` and the bridge rebinds
+locally with the same anchor, the retry MUST resend the request the failed
+dispatch sent: without the stored input prefix the bridge trimmed because the
+anchor carries it, with the synthetic interrupted outputs that dispatch
+carried, and with the anchor that dispatch was sent with, including one its
+operation lookup advanced to a response a sibling request completed. The
+retry's session acquisition, operation record and frame MUST use that anchor.
+The retry MUST record the failed dispatch's stored input context (the full
+client input after a stored-prefix trim), so the next request still matches
+it.
+
+#### Scenario: A trimmed anchored request is retried trimmed
+
+- **GIVEN** a bridge request whose `input` repeats the anchored turn's stored input and adds a new message
+- **AND** the bridge sends only the new message with the anchor
+- **WHEN** upstream rejects the anchor before `response.created` and the bridge rebinds locally with the same anchor
+- **THEN** the retry sends the same anchor and only the new message
+- **AND** a following request that repeats the full input and anchors on the retry's response is trimmed against it
+
+#### Scenario: The retry keeps an anchor a sibling advanced the dispatch to
+
+- **GIVEN** the first dispatch's operation lookup advanced its anchor to a response a sibling request completed
+- **WHEN** upstream rejects that anchor before `response.created` and the bridge rebinds locally
+- **THEN** the retry is sent with the sibling's response as its anchor and the same trimmed input
 
 ### Requirement: Scoped operation identity
 

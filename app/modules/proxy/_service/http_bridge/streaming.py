@@ -4172,20 +4172,17 @@ class _HTTPBridgeStreamingMixin:
                     error_message=_HTTP_BRIDGE_LOCAL_RESET_MESSAGE,
                 )
                 recovery_path = "local_previous_response_error"
-                retry_payload = effective_payload
-                # The failed session object still carries the pending
-                # tool-call state recorded for its last completed response,
-                # so re-run synthetic interrupted-output injection for the
-                # anchored recovery payload; ``effective_payload`` alone
-                # would drop the outputs injected into ``submit_payload``
-                # and reintroduce the upstream missing-tool-output failure.
-                retry_injected_input = _http_bridge_interrupted_tool_outputs_input(
-                    session,
-                    payload=retry_payload,
-                    request_id=request_id,
+                # The retry keeps the anchor, so it resends the request the
+                # first dispatch sent: trimmed of the stored prefix the anchor
+                # carries, with the interrupted tool outputs injected then, and
+                # chained to the anchor that dispatch ended on (its operation
+                # lookup can advance to a response a sibling completed). The
+                # untrimmed body would send that prefix twice, and a re-run
+                # injection misses outputs once a sibling has moved the
+                # session's last response.
+                retry_payload = submit_payload.model_copy(
+                    update={"previous_response_id": request_state.previous_response_id}
                 )
-                if retry_injected_input is not None:
-                    retry_payload = retry_payload.model_copy(update={"input": retry_injected_input})
                 if explicit_previous_response_rejection and _http_bridge_session_key_poison_quarantined(
                     self, bridge_session_key
                 ):
@@ -4345,6 +4342,12 @@ class _HTTPBridgeStreamingMixin:
                     retry_payload,
                     reservation=retry_api_key_reservation,
                 )
+                if recovery_path == "local_previous_response_error":
+                    # As for the first dispatch: the stored context is the
+                    # full client input, so the next turn still matches it.
+                    retry_request_state.input_item_count = request_state.input_item_count
+                    retry_request_state.input_full_fingerprint = request_state.input_full_fingerprint
+                    retry_request_state.input_developer_fingerprints = request_state.input_developer_fingerprints
                 if retry_previous_response_id is None:
                     # Every anchor-dropping recovery sends an anchor-free body.
                     retry_text_data = _anchor_free_replay_wire_text(retry_text_data)
