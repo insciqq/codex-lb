@@ -1362,7 +1362,9 @@ status = "pending"
 [pr.2739]
 title = "fix(usage): price gpt-6.2 astra and sol"
 state = "open"
-status = "pending"
+status = "superseded"
+by = 2653
+reason = "The bundled snapshot already prices gpt-6.2-astra and gpt-6.2-sol at these standard and priority rates and overrides the hardcoded defaults; dated names already resolve through the generic date-suffix rule."
 
 [issue.578]
 title = "[design] Reconsider budget-safe routing gate vs health-tier overlap and per-window thresholds"
@@ -1570,7 +1572,8 @@ reason = "Feature request: retry upstream model-capacity responses for Codex goa
 [issue.1946]
 title = "UI account section bug"
 state = "open"
-status = "pending"
+status = "not-fixed"
+reason = "Hidden scrollbars are a deliberate dashboard-wide convention and rows stay reachable by wheel, touch and keyboard; a visible scrollbar or sticky column is a UI design choice."
 
 [issue.1950]
 title = "bug(compact): hosted computer screenshots can still hard-fail compaction and wedge image-heavy threads"
@@ -1592,7 +1595,8 @@ reason = "The reset-confirmed warm-up after a skipped poll is being redesigned."
 [issue.1976]
 title = "bug(warmup): staggered idle slots can be unreachable for sliding reset_at"
 state = "open"
-status = "pending"
+status = "not-fixed"
+reason = "The fix needs a new cycle anchor for not-started windows, which upstream left as an owner decision, plus a cohort change that trades slot stability; the staggered warm-up is opt-in."
 
 [issue.1979]
 title = "feat(automations): add an opt-in verified weekly-window prestart preset"
@@ -1701,7 +1705,8 @@ status = "pending"
 [issue.2271]
 title = "bug: retry claims can stay locked after their owner exits"
 state = "open"
-status = "pending"
+status = "not-fixed"
+reason = "No claim-release step exists in submit-interruption cleanup: a replay claim is a compare-and-swap bump of the admission generation and an orphaned bump ages out with the circuit TTL; a release needs a new durable compare-and-swap and open claim-policy decisions."
 
 [issue.2272]
 title = "bug: bridge retries can stay blocked after cooldown ends"
