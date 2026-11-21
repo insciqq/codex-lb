@@ -2366,6 +2366,12 @@ class _HTTPBridgeStreamingMixin:
             effective_payload = _http_bridge_payload_without_previous_response_id(untrimmed_effective_payload)
             request_state, text_data = prepare_bridge_request(effective_payload)
             text_data = _anchor_free_replay_wire_text(text_data)
+            if request_state.native_codex_full_history:
+                # This body goes out without the tool-search ids its recorded
+                # portability counted; judge the body that is actually sent.
+                request_state.fresh_upstream_request_account_neutral = (
+                    _http_bridge_anchor_free_replay_is_account_neutral(effective_payload, replaces_anchored_body=True)
+                )
             request_state.enforce_openai_sdk_contract = enforce_openai_sdk_contract
             request_state.affinity_policy = affinity
             request_state.transport = _REQUEST_TRANSPORT_HTTP

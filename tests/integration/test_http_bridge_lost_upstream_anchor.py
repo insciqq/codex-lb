@@ -33,11 +33,11 @@ from unittest.mock import AsyncMock
 import anyio
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 import app.modules.proxy.service as proxy_module
 from app.core.clients.proxy_websocket import UpstreamWebSocketMessage
-from app.db.models import Account
+from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal
 from app.dependencies import get_proxy_service_for_app
 from app.modules.proxy._service import support as proxy_support
@@ -1401,3 +1401,75 @@ async def test_owner_bound_native_tool_history_stays_on_its_owner_after_a_model_
 
     assert set(fleet.account_ids) == {fleet.account_ids[0]}
     assert len(owner.sent_text) == 2
+
+
+@pytest.mark.asyncio
+async def test_retired_owner_tool_search_history_can_retry_on_another_account(async_client, app_instance, monkeypatch):
+    """After owner retirement strips tool-search ids, a model rejection may still try another account.
+
+    The paused owner is retired and the native history is rebound without the
+    tool-search ids only that owner could use, which makes the body portable.
+    Before: the portability recorded before the ids were stripped still said
+    owner-bound, so after the replacement account rejected the model a healthy
+    third account was never tried.
+    """
+    _install_bridge_settings(monkeypatch, enabled=True)
+    await _import_two_accounts(async_client)
+    await _import_account(async_client, "lost_anchor_c", "lost_anchor_c@example.com")
+    fleet = _UpstreamFleet(close_code=1000, close_after_first_completion=True)
+    _install_fleet(monkeypatch, fleet)
+    first = await async_client.post(_ROUTE, json=_body([_user("initial")]), headers=_HEADERS)
+    assert _terminal_event_type(first.text) == "response.completed"
+    await _wait_until_bridge_sessions_closed(app_instance)
+    async with SessionLocal() as db:
+        await db.execute(
+            update(Account)
+            .where(Account.chatgpt_account_id == fleet.account_ids[0])
+            .values(status=AccountStatus.PAUSED)
+        )
+        await db.commit()
+    send_text = _ConnectionScopedUpstream.send_text
+
+    async def reject_model_on_replacement(socket: _ConnectionScopedUpstream, text: str) -> None:
+        if socket is not fleet.sockets[1]:
+            await send_text(socket, text)
+            return
+        socket.sent_text.append(text)
+        await socket._put(
+            {
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "invalid_request_error",
+                    "message": "The 'gpt-5.1' model is not supported when using Codex with a ChatGPT account.",
+                },
+            }
+        )
+
+    monkeypatch.setattr(_ConnectionScopedUpstream, "send_text", reject_model_on_replacement)
+    tool_search_pair = [
+        {
+            "type": "tool_search_call",
+            "id": "tsc_1",
+            "call_id": "call_search",
+            "arguments": {"query": "docs"},
+            "execution": "client",
+            "status": "completed",
+        },
+        {
+            "type": "tool_search_output",
+            "id": "tso_1",
+            "call_id": "call_search",
+            "tools": [],
+            "execution": "client",
+            "status": "completed",
+        },
+    ]
+    response = await async_client.post(
+        _ROUTE, json=_body([_user("replacement history"), *tool_search_pair, _user("continue")]), headers=_HEADERS
+    )
+
+    assert all("id" not in item for item in fleet.frames(1)[0]["input"])
+    assert len(set(fleet.account_ids)) == 3
+    assert _terminal_event_type(response.text) == "response.completed"
