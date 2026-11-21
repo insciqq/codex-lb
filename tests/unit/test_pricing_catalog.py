@@ -13,6 +13,7 @@ from app.core.usage.pricing import (
     calculate_cost_microdollars_from_usage,
     get_pricing_for_model,
 )
+from app.modules.api_keys.service import _calculate_cost_microdollars
 
 
 @pytest.fixture(autouse=True)
@@ -227,6 +228,12 @@ def test_litellm_rates_settle_integral_and_fractional_microdollars(source_rate, 
     )["gpt-test"]
 
     assert calculate_cost_microdollars_from_usage(UsageTokens(100, 0), price, service_tier=tier) == expected
+
+
+def test_bundled_rates_settle_api_key_cost_on_exact_microdollars():
+    # The bundle once stored 1.5999999999999999 for this 1.6 rate, which
+    # settled one microdollar short of the price a refreshed catalog yields.
+    assert _calculate_cost_microdollars("gpt-6.2-astra", 300_000, 100, 250_000, "priority") == 2_012_000
 
 
 def test_supplement_only_when_base_prices_agree():
