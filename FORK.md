@@ -18,8 +18,9 @@ the successful run, not a remote ref that may have moved since:
 
 ```bash
 sha="$(gh run list --workflow CI --branch wip/merge-<name> --event push \
-  --status success -L 1 --json headSha --jq '.[0].headSha')"
-git push origin "${sha}:refs/heads/patched"
+  --status success -L 1 --json headSha --jq '.[0].headSha // empty')" &&
+  [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] &&
+  git push origin "${sha}:refs/heads/patched"
 ```
 
 ## CI
@@ -87,9 +88,11 @@ floating tags. Images are built by GitHub Actions, never locally.
 * The dashboard's update notice compares the running version with
   upstream's latest GitHub release and ignores `+fork.N`. On the 1.25.0
   line an upstream `v1.25.0` is therefore not announced, a later upstream
-  release is, and the notice links to upstream's release page. Fork
-  releases are listed on the fork's
-  [Releases page](https://github.com/insciqq/codex-lb/releases).
+  release is, and the notice links to upstream's release page.
+* A fork release is a version tag plus its GHCR image, and each version tag
+  also gets a GitHub Release with release notes: see the fork's
+  [Releases](https://github.com/insciqq/codex-lb/releases) and
+  [tags](https://github.com/insciqq/codex-lb/tags).
 * Images carry `org.opencontainers.image.revision`, `.version` and `.source`.
   The job summary prints the digest.
 * Deploy by the `sha-<full>` tag or by digest, not by the version tag, and
@@ -211,8 +214,9 @@ Rebuild instead:
 
    ```bash
    sha="$(gh run list --workflow CI --branch wip/merge-rebuild-<date> --event push \
-     --status success -L 1 --json headSha --jq '.[0].headSha')"
-   git push --force-with-lease origin "${sha}:refs/heads/patched"
+     --status success -L 1 --json headSha --jq '.[0].headSha // empty')" &&
+     [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] &&
+     git push --force-with-lease origin "${sha}:refs/heads/patched"
    ```
 
    A head is deployable only after its checks are green; the patched CI
