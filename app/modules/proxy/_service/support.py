@@ -2194,6 +2194,11 @@ def route_failure_message(exc: UpstreamProxyRouteError) -> str:
     )
 
 
+def is_selected_account_removed_response(exc: ProxyResponseError) -> bool:
+    """Whether ``exc`` is the request path's answer for a deleted account."""
+    return exc.payload.get("error", {}).get("code") == SELECTED_ACCOUNT_REMOVED_CODE
+
+
 def route_failure_response(exc: UpstreamProxyRouteError) -> ProxyResponseError:
     if is_account_gone(exc):
         return ProxyResponseError(503, openai_error(SELECTED_ACCOUNT_REMOVED_CODE, SELECTED_ACCOUNT_REMOVED_MESSAGE))

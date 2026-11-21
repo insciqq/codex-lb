@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from app.core.clients.proxy import ProxyResponseError, is_confirmed_pre_dispatch_transport_error
 from app.db.models import Account
 from app.modules.proxy._service.http_bridge.protocol import _HTTPBridgeServiceProtocol
-from app.modules.proxy._service.support import _DeferredAccountBackoffLifecycle
+from app.modules.proxy._service.support import _DeferredAccountBackoffLifecycle, is_selected_account_removed_response
 from app.modules.proxy.load_balancer import AccountLease
 
 
@@ -38,6 +38,14 @@ class _HTTPBridgePreDispatchFailover:
         deferred_account_backoff_lifecycle: _DeferredAccountBackoffLifecycle | None = None,
         defer_account_health_write: bool = False,
     ) -> bool:
+        if is_selected_account_removed_response(exc):
+            # The account was deleted after selection: nothing was sent and
+            # the account is not at fault, so move on without a backoff.
+            await service._load_balancer.release_account_lease(lease)
+            if required_account:
+                raise exc
+            self._exclude(account, exc)
+            return True
         if not is_confirmed_pre_dispatch_transport_error(exc):
             return False
         await service._load_balancer.release_account_lease(lease)
@@ -51,8 +59,11 @@ class _HTTPBridgePreDispatchFailover:
             await service._load_balancer.record_error_backoff(account)
         if required_account:
             raise exc
+        self._exclude(account, exc)
+        return True
+
+    def _exclude(self, account: Account, exc: ProxyResponseError) -> None:
         self.last_error = exc
         self.excluded_account_ids.add(account.id)
         self.preferred_account_id = None
         self.reallocate_sticky = True
-        return True
