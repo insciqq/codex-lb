@@ -536,3 +536,9 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(proxy): keep frame-less direct WebSocket drops after output account-neutral | [2081](https://github.com/Soju06/codex-lb/issues/2081) | - |
 | fix(proxy): keep frame-less bridge drops after output account-neutral | [2074](https://github.com/Soju06/codex-lb/issues/2074) | - |
 | fix(telemetry): show the undecided state in the kill-switch preview | [1844](https://github.com/Soju06/codex-lb/issues/1844) | - |
+| fix(fork): link the fork's docs from code and config | - | fork docs |
+| fix(telemetry): disable anonymous telemetry by default in the fork | - | the fork operates no telemetry collector |
+| chore(fork): make main the fork's branch | - | fork branch layout |
+| fix(fork): announce fork releases in the dashboard update notice | - | fork release channel |
+| chore(release): 1.25.0-fork.2 | - | fork release version |
+| fix(telemetry): preview without minting an identity | - | bug found in production or review |
