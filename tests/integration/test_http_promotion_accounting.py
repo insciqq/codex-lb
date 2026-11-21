@@ -240,7 +240,10 @@ async def test_current_turn_image_still_bypasses_http_bridge(async_client, promo
             {"type": "function_call", "name": "list", "call_id": "call_list", "arguments": "{}"},
             {"type": "function_call_output", "call_id": "call_list", "output": "a.txt"},
         ]
-    response = await async_client.post("/v1/responses", json={"model": "gpt-5.4", "input": history})
+    # A native Codex history, so the current-turn rule decides the bypass.
+    response = await async_client.post(
+        "/v1/responses", json={"model": "gpt-5.4", "input": history}, headers={"user-agent": _CODEX_UA}
+    )
     assert response.status_code == 200, response.text
     assert not upstreams
     assert raw_calls
@@ -257,7 +260,10 @@ async def test_external_image_url_bypasses_http_bridge_even_in_history(async_cli
         history.insert(1, output)
     else:
         history[-1] = output
-    response = await async_client.post("/v1/responses", json={"model": "gpt-5.4", "input": history})
+    # A native Codex history, so the external-URL rule decides the bypass.
+    response = await async_client.post(
+        "/v1/responses", json={"model": "gpt-5.4", "input": history}, headers={"user-agent": _CODEX_UA}
+    )
     assert response.status_code == 200, response.text
     assert not upstreams
     assert raw_calls[-1]["upstream_transport"] == "http"
