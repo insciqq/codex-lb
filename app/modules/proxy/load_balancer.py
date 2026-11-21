@@ -66,6 +66,11 @@ from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import Account, AccountStatus, AdditionalUsageHistory, StickySessionKind, UsageHistory
 from app.db.snapshot import clone_row
 from app.modules.proxy._load_balancer import quota_recovery
+from app.modules.proxy._load_balancer.continuity_owner import (
+    CONTINUITY_OWNER_POLICY_CONFLICT,
+    CONTINUITY_OWNER_UNAVAILABLE,
+    required_continuity_owner_failure,
+)
 from app.modules.proxy._load_balancer.error_rate import (
     ErrorRateWeightingPolicy,
     error_rate_weight_multiplier,
@@ -198,8 +203,6 @@ NO_ADDITIONAL_QUOTA_ELIGIBLE_ACCOUNTS = "no_additional_quota_eligible_accounts"
 _ROUTING_POLICY_NORMAL = "normal"
 _ACCOUNT_ROUTING_POLICIES = frozenset({_ROUTING_POLICY_NORMAL, ROUTING_POLICY_BURN_FIRST, ROUTING_POLICY_PRESERVE})
 _ADDITIONAL_QUOTA_ROUTING_POLICIES = _ACCOUNT_ROUTING_POLICIES | frozenset({"inherit"})
-CONTINUITY_OWNER_UNAVAILABLE = "continuity_owner_unavailable"
-CONTINUITY_OWNER_POLICY_CONFLICT = "continuity_owner_policy_conflict"
 _AMBIGUOUS_CONVERSATION_OWNER_CODE = "conversation_owner_unavailable"
 _AMBIGUOUS_CONVERSATION_OWNER_MESSAGE = "Conversation owner cannot be determined from the eligible account pool"
 
@@ -275,26 +278,6 @@ class _SelectionInputs(SelectionInputsProtocol):
         if self.sticky_mutation_authority_account_ids is None:
             return frozenset(account.id for account in self.effective_continuity_owner_candidates)
         return self.sticky_mutation_authority_account_ids
-
-
-def _required_continuity_owner_failure(
-    selection_inputs: _SelectionInputs,
-    *,
-    required_account_id: str,
-) -> tuple[str, str] | None:
-    if selection_inputs.error_code is not None:
-        return None
-    eligible_ids = {account.id for account in selection_inputs.effective_continuity_owner_candidates} | {
-        account.id for account in selection_inputs.accounts
-    }
-    if required_account_id in eligible_ids:
-        return None
-    runtime_accounts = (
-        selection_inputs.accounts if selection_inputs.runtime_accounts is None else selection_inputs.runtime_accounts
-    )
-    if required_account_id not in {account.id for account in runtime_accounts}:
-        return CONTINUITY_OWNER_UNAVAILABLE, "Required continuity owner account no longer exists"
-    return CONTINUITY_OWNER_POLICY_CONFLICT, "Required continuity owner is outside the eligible account policy"
 
 
 SelectionInputs = _SelectionInputs
@@ -732,7 +715,7 @@ class LoadBalancer:
                 )
             if required_continuity_owner:
                 assert required_account_id is not None
-                failure = _required_continuity_owner_failure(
+                failure = required_continuity_owner_failure(
                     selection_inputs,
                     required_account_id=required_account_id,
                 )
