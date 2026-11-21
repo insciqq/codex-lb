@@ -478,7 +478,9 @@ rework = "Only the logging fixes are taken; the new --log-level and --log-file s
 [pr.2508]
 title = "fix(proxy): reuse bridge sessions for inline images"
 state = "open"
-status = "pending"
+status = "superseded"
+by = 2503
+reason = "PR 2503 is the narrower fix of the same image bridge-bypass."
 
 [pr.2512]
 title = "fix(accounts): normalize business prolite plan alias"
@@ -525,7 +527,7 @@ title = "fix(metrics): publish fresh account pool gauges on scrape"
 state = "closed"
 status = "own-fix"
 issues = [2426]
-reason = "Replaced by a narrow own fix that populates the existing account-count gauge from account reads the service already makes; the scrape-time database refresh, token decryption and new availability gauge are not taken."
+reason = "Replaced by a narrow own fix that exports codex_lb_accounts_total by stored account status from account reads the service already makes; the scrape-time database refresh, token decryption and routing-availability gauge are not taken."
 
 [pr.2526]
 title = "fix(model-sources): preserve declared collaboration namespaces"
@@ -805,7 +807,7 @@ status = "pending"
 title = "fix(proxy): honor poisoned fallback keys before bridge anchor planning"
 state = "open"
 status = "own-fix"
-reason = "The fork's own fix never adds a proxy anchor to native Codex HTTP history, so a native full resend is no longer trimmed against an anchor that the fallback key had poisoned."
+reason = "The native full-history resend loop is fixed by the fork's own change, which never adds a proxy anchor to native Codex HTTP history; the PR's pre-dispatch 404 refusal of incomplete resends is not adopted."
 
 [pr.2630]
 title = "fix(shutdown): bound managed HTTP client close"
@@ -1315,7 +1317,7 @@ title = "chore(deps): bump the python-minor-patch group with 31 updates"
 state = "open"
 status = "superseded"
 by = 2690
-reason = "PR 2690 carries the same or newer versions except a few patch releases of pydantic and development tools, none of which fixes a security advisory."
+reason = "PR 2690 carries the same or newer versions except a few patch releases of pydantic and development tools and the development-only openai 3.45.0 to 3.46.0 minor update, none of which fixes a security advisory."
 
 [pr.2724]
 title = "fix(model-sources): preserve client collaboration namespace when source declares multi-agent support"
@@ -1381,7 +1383,7 @@ status = "pending"
 title = "chore(deps): bump the frontend-minor-patch group across 1 directory with 23 updates"
 state = "open"
 status = "deferred"
-reason = "A development-only frontend tooling refresh with no runtime security advisory; it needs bun.lock and bun.nix regenerated and is scheduled after the first release."
+reason = "A mixed runtime and development dependency refresh, including @tanstack/react-query and zustand used by the dashboard, with no runtime security advisory; it needs bun.lock and bun.nix regenerated and is scheduled after the first release."
 
 [pr.2738]
 title = "test(native): use a closed port for the refused fallback probes"
@@ -1702,7 +1704,8 @@ reason = "An admission-only accounting gap on the repeated-turn anchor advance, 
 [issue.2108]
 title = "bug: HTTP Responses logs omit observed upstream phase timings"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Deferred with PR 2112: filling the phase timings is observability-only and rewrites the hot relay path, so it is scheduled after the first release."
 
 [issue.2128]
 title = "bug(proxy): standalone web search fails on v1 and duplicates native Content-Type"
@@ -1881,7 +1884,8 @@ status = "pending"
 [issue.2426]
 title = "bug(metrics): populate account counts and expose availability for alerting"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "The fork exports codex_lb_accounts_total by stored account status; the routing-availability gauge the issue asks for is not added."
 
 [issue.2442]
 title = "bug(proxy): early token_expired reauth account poisons fresh Codex HTTP routing"
@@ -1899,7 +1903,8 @@ reason = "A correct generation rate needs the upstream terminal latency stored p
 [issue.2455]
 title = "bug(proxy): bridge payload bypass blocks verified quota failover"
 state = "open"
-status = "pending"
+status = "deferred"
+reason = "Failing a bridge-bypassed history over to another account on quota needs the owner-relocation design scheduled after the first release."
 
 [issue.2456]
 title = "bug(proxy): Windows route errors 1231/1232 bypass shared-client recovery"
@@ -1921,7 +1926,7 @@ status = "pending"
 title = "bug(proxy): with upstream_stream_transport=http the native egress multiplexes every account's streams onto ONE shared HTTP/2 connection — one transport failure kills all in-flight streams of all accounts, is logged with no reason/status, and is never retried"
 state = "open"
 status = "partial"
-reason = "Native egress now logs the failure cause and the close code; per-account connection pooling is a pooling-policy change scheduled after the first release."
+reason = "On the HTTP path native_egress_request_failed now logs a typed transport cause, and close codes are logged as WebSocket diagnostics; per-account connection pooling is a pooling-policy change scheduled after the first release."
 
 [issue.2492]
 title = "feat: Reset API key limit usage from dashboard without regenerating keys"
@@ -2049,7 +2054,7 @@ status = "pending"
 title = "CODEX_LB_CONVERSATION_ARCHIVE_ENABLED doesn't work with k8s / multiple instances"
 state = "open"
 status = "out-of-scope"
-reason = "Feature request: store the conversation archive in the database; the file archive works when CODEX_LB_CONVERSATION_ARCHIVE_DIR points at a writable volume."
+reason = "Feature request: store the conversation archive in the database; with CODEX_LB_CONVERSATION_ARCHIVE_DIR on a writable volume each replica persists and reads its own archive shard, while lookup across replicas stays unavailable."
 
 [issue.2601]
 title = "bug(oauth): outbound connection failures return unhandled 500 in PKCE callback and device start"
