@@ -1248,7 +1248,6 @@ async def test_responses_routes_filter_vendor_events_only_for_public_contract(as
     event_types = [event["type"] for event in events]
     if native:
         assert event_types == [
-            "codex.rate_limits",
             "response.created",
             "response.output_text.delta",
             "responsesapi.websocket_timing",
@@ -1368,7 +1367,8 @@ async def test_proxy_responses_native_string_input_with_instructions_preserves_v
         lines = [line async for line in resp.aiter_lines() if line]
 
     event_types = [event["type"] for event in _iter_sse_events(lines)]
-    assert event_types[0] == "codex.rate_limits"
+    assert "codex.rate_limits" not in event_types
+    assert event_types[0] == "response.completed"
     assert "response.created" not in event_types
     assert "response.completed" in event_types
 
@@ -1408,7 +1408,8 @@ async def test_proxy_responses_native_conversation_preserves_vendor_events(async
         lines = [line async for line in resp.aiter_lines() if line]
 
     event_types = [event["type"] for event in _iter_sse_events(lines)]
-    assert event_types[0] == "codex.rate_limits"
+    assert "codex.rate_limits" not in event_types
+    assert event_types[0] == "response.completed"
     assert "response.created" not in event_types
     assert "response.completed" in event_types
 
@@ -1448,7 +1449,8 @@ async def test_proxy_responses_native_openai_routing_headers_preserve_vendor_eve
         lines = [line async for line in resp.aiter_lines() if line]
 
     event_types = [event["type"] for event in _iter_sse_events(lines)]
-    assert event_types[0] == "codex.rate_limits"
+    assert "codex.rate_limits" not in event_types
+    assert event_types[0] == "response.completed"
     assert "response.created" not in event_types
     assert "response.completed" in event_types
 
@@ -1487,7 +1489,8 @@ async def test_proxy_responses_native_codex_shape_preserves_vendor_events(async_
         lines = [line async for line in resp.aiter_lines() if line]
 
     event_types = [event["type"] for event in _iter_sse_events(lines)]
-    assert event_types[0] == "codex.rate_limits"
+    assert "codex.rate_limits" not in event_types
+    assert event_types[0] == "response.completed"
     assert "response.created" not in event_types
     assert "response.completed" in event_types
 

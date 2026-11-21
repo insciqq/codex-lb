@@ -2049,3 +2049,17 @@ integral microdollar to binary floating-point representation error.
 - **AND** 40 input tokens including 3 cached tokens and 3 output tokens settle 3138 microdollars
 - **AND** genuinely fractional microdollar costs are truncated, not rounded up
 
+### Requirement: API-key quota privacy covers native Codex stream events
+
+When `hide_upstream_quota_from_api_keys` is enabled, API-key-authenticated
+Responses SSE and WebSocket streams MUST omit upstream `codex.rate_limits`
+events, including model-specific families. Owner requests without API-key
+authentication MUST continue to receive pooled quota events when available.
+The API key's own self-usage endpoint and limits MUST remain unchanged.
+
+#### Scenario: Hidden headers cannot be bypassed through streaming metadata
+
+- **GIVEN** upstream quotas are hidden from API keys
+- **WHEN** upstream emits a quota event on a native Codex SSE or WebSocket stream
+- **THEN** the API-key client receives neither pooled quota headers nor upstream quota events
+- **AND** normal response events remain available

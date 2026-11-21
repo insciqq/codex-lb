@@ -719,3 +719,29 @@ message (a skills list) the upstream prefix is cold anyway; for a reminder
 added mid-thread the prefix up to it is still warm on the old account, so the
 thread can lose its cache once. That is upstream `main`'s behaviour and is
 kept.
+
+## Native Codex quota display
+
+Codex turns default `codex.rate_limits` stream events into usage warnings and
+status percentages. An account-specific event could therefore overwrite the
+LB's pooled headers: for example, an account at 97% used displayed 3% left
+while the pool at 66.5% used still had 33.5% left.
+
+Downstream native Responses streams now project the default event from pooled
+quota headers. HTTP uses the response-header snapshot; WebSockets use the
+existing quota cache on each quota event. Original upstream usage ingestion
+keeps its account attribution. No upstream refresh runs on the display path.
+
+When `hide_upstream_quota_from_api_keys` is enabled, quota events are omitted
+for API-key callers, just like quota headers. Publishing pool percentages
+requires the existing visibility setting to allow them. The Codex usage API
+still describes an API key's own configured budget. Unknown or model-specific
+quota families are omitted because global pool usage does not describe them.
+If the WebSocket quota lookup fails, quota telemetry is omitted and inference
+continues; cancellation still propagates.
+
+Projection runs only on the origin instance. An owner instance serving a
+forwarded HTTP bridge request carries no quota headers of its own, so an
+empty snapshot there would delete every quota event of the forwarded turn
+before the origin could project it. The owner passes the event through
+unchanged instead.

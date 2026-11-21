@@ -1727,11 +1727,34 @@ async def test_normalize_public_responses_stream_does_not_double_emit_response_c
 
 
 @pytest.mark.asyncio
-async def test_normalize_public_responses_stream_codex_route_preserves_codex_events() -> None:
-    """`enforce_openai_sdk_contract=False` (used by /backend-api/codex/*) MUST
-    forward `codex.*` vendor events verbatim, MUST NOT backfill terminal
-    output, and MUST NOT synthesize a leading `response.created`. The Codex
-    CLI consumes the upstream stream natively."""
+async def test_normalize_public_responses_stream_forward_hop_passes_quota_event_through() -> None:
+    """An owner serving a forwarded request has no snapshot (None) and relays
+    the quota event unchanged, so the origin can project it."""
+    quota_block = 'data: {"type":"codex.rate_limits","plan_type":"pro","rate_limits":{"allowed":true}}\n\n'
+    blocks = [
+        block
+        async for block in proxy_api_module._normalize_public_responses_stream(
+            _iter_blocks(
+                quota_block,
+                (
+                    'data: {"type":"response.failed","sequence_number":0,'
+                    '"response":{"id":"resp_err","object":"response","status":"failed","output":[],'
+                    '"error":{"code":"x","message":"y"}}}\n\n'
+                ),
+            ),
+            enforce_openai_sdk_contract=False,
+            codex_rate_limit_headers=None,
+        )
+    ]
+
+    payloads = [proxy_api_module._parse_sse_payload(b) for b in blocks]
+    assert payloads[0] == proxy_api_module._parse_sse_payload(quota_block)
+    assert [p["type"] for p in payloads if p is not None] == ["codex.rate_limits", "response.failed"]
+
+
+@pytest.mark.asyncio
+async def test_normalize_public_responses_stream_codex_route_omits_unknown_quota_without_synthesis() -> None:
+    """Unknown pool quotas are omitted without changing native failures."""
     blocks = [
         block
         async for block in proxy_api_module._normalize_public_responses_stream(
@@ -1744,17 +1767,18 @@ async def test_normalize_public_responses_stream_codex_route_preserves_codex_eve
                 ),
             ),
             enforce_openai_sdk_contract=False,
+            codex_rate_limit_headers={},
         )
     ]
 
     payloads = [proxy_api_module._parse_sse_payload(b) for b in blocks]
     event_types = [p["type"] for p in payloads if p is not None]
-    # codex.rate_limits MUST be preserved
-    assert "codex.rate_limits" in event_types
+    # No aggregate is available to publish.
+    assert "codex.rate_limits" not in event_types
     # response.created MUST NOT be synthesized
     assert "response.created" not in event_types
     # Original sequence order preserved
-    assert event_types == ["codex.rate_limits", "response.failed"]
+    assert event_types == ["response.failed"]
 
 
 @pytest.mark.asyncio

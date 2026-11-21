@@ -1358,7 +1358,9 @@ string-valued event type only when it is exactly `error` or begins with
 `response.`. Other string-valued event types MUST be dropped before they reach
 the public stream. OpenAI-shaped backend requests with public contract
 enforcement enabled MUST follow the same filtering rule. Native Codex requests
-with public contract enforcement disabled MUST retain upstream vendor events.
+with public contract enforcement disabled MUST retain upstream vendor events,
+except `codex.rate_limits`, which MUST follow the pooled quota projection and
+API-key quota privacy requirements.
 
 #### Scenario: Codex-internal rate-limit event is dropped before response.created
 
@@ -1380,7 +1382,8 @@ with public contract enforcement disabled MUST retain upstream vendor events.
 #### Scenario: Codex-internal events on the Codex CLI route are preserved
 
 - **WHEN** a native `/backend-api/codex/responses` request disables public contract enforcement
-- **THEN** the response stream MUST retain `codex.rate_limits` and `responsesapi.websocket_timing` in upstream order
+- **THEN** the response stream MUST retain `responsesapi.websocket_timing` in upstream order
+- **AND** default `codex.rate_limits` events MUST contain the visible pooled quota snapshot or be omitted when no snapshot is available
 
 ### Requirement: Streamed /v1 responses terminal output is backfilled from item events
 When serving streaming `POST /v1/responses`, if the upstream's terminal `response.completed` or `response.incomplete` event carries `output` as missing or as an empty list, the service MUST reconstruct `output` from the `response.output_item.done` events emitted earlier in the same stream before yielding the terminal SSE event. The reconstructed `output` MUST preserve the `output_index` ordering and the raw item payloads. When the terminal `response.completed` / `response.incomplete` already carries a non-empty `output`, the service MUST forward it unchanged.
@@ -11787,3 +11790,47 @@ references, or an unverified input prefix.
 - **GIVEN** a suffix uses the existing three-item custom-call/developer/output exception
 - **WHEN** additional user input follows that suffix
 - **THEN** this exception remains ineligible for exact-manifest proof
+
+### Requirement: Native Codex stream quotas describe the pool
+
+Native Codex Responses SSE and WebSocket egress MUST NOT forward an account's
+raw `codex.rate_limits` payload. Default-family events MUST be rebuilt using
+the pooled downstream quota-header snapshot, including its normalized window
+durations, reset timestamps, and credits. HTTP SSE MUST use its response's
+quota-header snapshot; WebSocket egress MUST use the existing aggregate cache.
+Source-routed SSE MUST follow the same rule. The service MUST suppress quota
+events when no aggregate window is available and MUST NOT substitute a global
+aggregate for model-specific or otherwise unrepresented limit families.
+Projection MUST happen after original upstream usage ingestion and MUST NOT
+change normal response lifecycle events or account attribution. Failure to
+read quota metadata on an established WebSocket MUST suppress the quota event
+without interrupting inference; cancellation MUST still propagate. Only the
+origin instance that answers the client MUST project or suppress the event; an
+owner instance serving a forwarded HTTP bridge request MUST pass the upstream
+event through unchanged so the origin can project it.
+
+#### Scenario: A nearly exhausted account serves a pool with capacity
+
+- **GIVEN** the selected account reports 97% weekly usage and pooled downstream headers report 66.5%
+- **WHEN** native Codex receives the Responses stream
+- **THEN** its default quota event reports 66.5% weekly usage and the pooled reset timestamp
+- **AND** the event contains no account-specific plan, credits, or quota metadata
+
+#### Scenario: Unrepresented quota events cannot overwrite the pool
+
+- **WHEN** an upstream quota event belongs to a model-specific family or no pooled window is known
+- **THEN** the downstream stream omits that quota event
+- **AND** response deltas and terminal events remain deliverable
+
+#### Scenario: A quota cache read fails on an established WebSocket
+
+- **WHEN** pooled quota metadata cannot be loaded while handling a quota event
+- **THEN** the event is omitted without forwarding account-specific values
+- **AND** the next response event can still be delivered
+
+#### Scenario: An owner forward hop leaves projection to the origin
+
+- **GIVEN** an owner instance serves a request forwarded by the origin instance
+- **WHEN** upstream emits a quota event on that forwarded native stream
+- **THEN** the owner relays the upstream quota event unchanged
+- **AND** the origin projects or suppresses it for its client
