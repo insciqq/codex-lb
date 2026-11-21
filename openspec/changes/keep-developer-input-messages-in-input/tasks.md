@@ -8,11 +8,11 @@
 - [x] 1.2 Developer messages with no content left after part sanitization are dropped, on `input` and on both
   `messages` aliases.
 - [x] 1.3 One base-equivalent input view (`base_equivalent_input` in `app/core/openai/requests.py`, the old hoist rule
-  reused) drives every replay and continuity decision: the bridge full-resend classifier, stored-context
-  recording and matching, stored-prefix and prior-output trims (mapped back to wire positions), the durable and compact
-  proofs, cross-transport replay eligibility, the unanchored replay after a pre-visible quota rejection, and replayed
-  tool-call dedupe. The account-neutrality gate judges item shapes on
-  the same view and rejects account-owned references anywhere.
+  reused) drives every replay and continuity decision: the bridge full-resend classifier and native Codex history
+  check, stored-context recording and matching, stored-prefix and prior-output trims (mapped back to wire positions),
+  the durable and compact proofs, cross-transport replay eligibility, the unanchored replay after a pre-visible quota
+  rejection, and replayed tool-call dedupe. The account-neutrality gate judges item shapes on the same view and
+  rejects account-owned references anywhere.
 - [x] 1.4 The stored context records the fingerprints of the stored turn's developer messages; the bridge
   store-context and recovery trims and the WebSocket session-anchor trim send new or changed developer messages from
   the trimmed range and skip ones already sent (all of them when the set is unknown).
@@ -64,3 +64,5 @@
 - [x] 2.9 A developer message sent again carries no client item id (a JSON-kept message after a skills refresh, a
   message with an attachment after a refresh, changed text beside an attachment), and the turn after sends none again
   (HTTP bridge and WebSocket).
+- [x] 2.10 A native Codex HTTP body of developer messages alone, after the local bridge session closed, keeps the
+  thread's durable anchor (`tests/integration/test_http_bridge_developer_messages.py`).

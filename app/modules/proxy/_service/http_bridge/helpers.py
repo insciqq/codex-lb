@@ -820,14 +820,18 @@ def _http_bridge_native_codex_full_history(payload: ResponsesRequest, headers: M
 
     Codex sends its complete history on every HTTP request, however short, and
     never supplies a ``previous_response_id`` there. The client identity is
-    the route's: an explicit OpenAI SDK marker is never native.
+    the route's: an explicit OpenAI SDK marker is never native. The history is
+    judged as the old hoist left it: developer messages alone are none, so
+    such a body stays a delta.
     """
     return (
         is_native_codex_client_request(headers)
         and payload.previous_response_id is None
         and not payload.conversation
         and isinstance(payload.input, list)
-        and bool(payload.input)
+        and bool(
+            base_equivalent_input(cast(list[JsonValue], payload.input), hoist=responses_payload_base_hoist(payload))
+        )
     )
 
 

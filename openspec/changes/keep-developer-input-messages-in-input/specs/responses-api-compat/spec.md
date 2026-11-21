@@ -243,10 +243,11 @@ its developer messages inline; a fresh frame retained for replay MUST keep
 the decisions of the request it came from. The forwarded payload MUST keep
 the developer messages in place.
 
-This covers the HTTP bridge full-resend classifier and history signal,
-stored-context recording (item count and fingerprint), warm-session and
-durable stored-prefix matching with the stored-prefix trim and its
-retry-safety promotion, the durable retained-output and tool-manifest proofs,
+This covers the HTTP bridge full-resend classifier, history signal and
+native Codex history check, stored-context recording (item count and
+fingerprint), warm-session and durable stored-prefix matching with the
+stored-prefix trim and its retry-safety promotion, the durable
+retained-output and tool-manifest proofs,
 the compact account-neutral replay proof and terminal-item selection,
 cross-transport replay eligibility, the retained-output proof that lets an
 unanchored full resend leave an account after a pre-visible quota rejection
@@ -295,6 +296,11 @@ keep the request on its owner.
 #### Scenario: Developer and user delta stays anchored on a cold bridge
 - **GIVEN** a hard bridge session with a durable latest response
 - **WHEN** a client resumes with `input` of one developer message, of any shape, and one user message and no `previous_response_id`
+- **THEN** the bridge sends the request with the durable anchor
+
+#### Scenario: A native Codex body of developer messages alone stays a delta
+- **GIVEN** a native Codex HTTP bridge thread with a durable latest response and no live local session
+- **WHEN** the client sends `input` of developer messages only and no `previous_response_id`
 - **THEN** the bridge sends the request with the durable anchor
 
 #### Scenario: Developer and user delta is not replayed without its anchor

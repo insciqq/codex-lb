@@ -60,7 +60,10 @@ question about it):
 - Account neutrality: the gate judges item shapes on the base-equivalent input and still rejects account-owned
   references anywhere in the forwarded input. A developer message the hoist would have moved whole is forwarded
   without its client item id, as the hoist dropped it; any item id left on the frame the replacement account would
-  receive keeps the request on its owner.
+  receive keeps the request on its owner. A developer message with a top-level `encrypted_content` field keeps the
+  body on its owner when it would otherwise move, for example on the pre-visible quota replay of an unanchored full
+  resend: the field stays on the forwarded item, where the old hoist dropped it with the message. This is stricter
+  than before and fails safe.
 - Compact budget: developer messages now count toward the compact input budget and are trim anchors, so a compact
   request with a single very large developer message can now fail with `responses_compact_input_too_large`, where the
   same text in `instructions` was not counted.

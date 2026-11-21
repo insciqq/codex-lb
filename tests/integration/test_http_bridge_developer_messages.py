@@ -10,6 +10,7 @@ from typing import cast
 import pytest
 
 import app.modules.proxy.service as proxy_module
+from app.dependencies import get_proxy_service_for_app
 from tests.integration.test_http_responses_bridge import (  # noqa: F401  (fixture)
     _collect_sse_events,
     _FakeBridgeUpstreamWebSocket,
@@ -393,6 +394,75 @@ async def test_warm_bridge_resends_developer_messages_without_their_item_ids(
     assert any("id" in item for item in frames[0]["input"])
     assert frames[1]["input"] == [*(_without_id(item) for item in expected_developer), _A1, _U2]
     assert frames[2]["input"] == [_A1, _U3]
+
+
+_NATIVE_CODEX_HEADERS = {
+    "session_id": "dev-native-only-session",
+    "thread-id": "dev-native-only-thread",
+    "originator": "Codex Desktop",
+    "user-agent": "Codex Desktop/0.130.0 (Mac OS 26.1.0; arm64)",
+}
+
+
+async def _close_local_bridge_sessions(app_instance) -> None:
+    service = get_proxy_service_for_app(app_instance)
+    async with service._http_bridge_lock:
+        sessions = list(service._http_bridge_sessions.values())
+        service._http_bridge_sessions.clear()
+        service._http_bridge_turn_state_index.clear()
+        service._http_bridge_previous_response_index.clear()
+    for session in sessions:
+        await service._close_http_bridge_session(session)
+
+
+@pytest.mark.asyncio
+async def test_native_developer_only_turn_after_a_closed_session_keeps_the_durable_anchor(
+    async_client, app_instance, monkeypatch
+):
+    """Developer messages alone are no native Codex history; such a body stays a delta.
+
+    The old hoist left a developer-only body with an empty ``input``, which was
+    never a complete native history, so the bridge sent it with the thread's
+    durable anchor. Judging the wire list would send the developer messages
+    unanchored, without the conversation they belong to.
+    """
+    _install_bridge_settings(monkeypatch, enabled=True)
+    await _import_account(async_client, "acc_dev_native_only", "dev-native-only@example.com")
+    upstreams: list[_FakeBridgeUpstreamWebSocket] = []
+
+    async def fake_ensure_fresh_with_budget(self, account, *, force=False, timeout_seconds):
+        del self, force, timeout_seconds
+        return account
+
+    async def fake_connect_responses_websocket(
+        headers, access_token, account_id_header, *, base_url=None, session=None
+    ):
+        del headers, access_token, account_id_header, base_url, session
+        upstream = _FakeBridgeUpstreamWebSocket(f"resp_conn{len(upstreams) + 1}")
+        upstreams.append(upstream)
+        return upstream
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+    body: dict[str, object] = {"model": "gpt-5.1", "instructions": "You are Codex.", "stream": True}
+
+    first = await _collect_sse_events(
+        async_client, "/backend-api/codex/responses", json_body={**body, "input": [_U1]}, headers=_NATIVE_CODEX_HEADERS
+    )
+    assert first[-1]["type"] == "response.completed"
+    await _close_local_bridge_sessions(app_instance)
+    second = await _collect_sse_events(
+        async_client,
+        "/backend-api/codex/responses",
+        json_body={**body, "input": [_DEV_NEW]},
+        headers=_NATIVE_CODEX_HEADERS,
+    )
+
+    assert second[-1]["type"] == "response.completed"
+    assert len(upstreams) == 2
+    [frame] = [json.loads(text) for text in upstreams[1].sent_text]
+    assert frame["previous_response_id"] == "resp_conn1_1"
+    assert frame["input"] == [_DEV_NEW]
 
 
 _CODEX_BODIES = sorted(
