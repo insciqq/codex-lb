@@ -763,6 +763,7 @@ reason = "Changes a telemetry label contract that awaits a maintainer decision; 
 title = "fix(api-keys): expire elapsed samples in the /v1/usage aggregate"
 state = "open"
 status = "pending"
+rework = "Only the reset_at expiry fix is taken; the bundled pool rate limits and backend relay are a feature and are left out."
 
 [pr.2626]
 title = "fix(proxy): preserve quota reset evidence in retry health"

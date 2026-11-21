@@ -10,26 +10,26 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 
 | Status | Pull requests | Meaning |
 |---|---|---|
-| taken | 38 | ported from the upstream PR into the fork |
-| taken with changes | 2 | ported, with the fork's changes noted |
+| taken | 43 | ported from the upstream PR into the fork |
+| taken with changes | 3 | ported, with the fork's changes noted |
 | own-fix | 0 | not taken; the problem is fixed by the fork's own commits |
 | rejected | 28 | reviewed and not taken, for the reason given |
 | superseded | 45 | replaced by another PR |
 | out-of-scope | 50 | a feature or other change outside the fork's scope |
 | not-applicable | 4 | does not concern the fork (upstream release, CI, docs or translation work) |
 | merged-upstream | 0 | merged upstream; the fork gets it with upstream main |
-| pending | 64 | no decision yet |
+| pending | 58 | no decision yet |
 | total | 231 | |
 
 | Status | Issues | Meaning |
 |---|---|---|
-| fixed | 19 | fixed in the fork by a taken PR or the fork's own commits |
+| fixed | 22 | fixed in the fork by a taken PR or the fork's own commits |
 | partial | 1 | partly addressed in the fork; the reason says what is left |
 | fixed-upstream | 4 | fixed in upstream main |
 | not-fixed | 2 | reviewed and not fixed in the fork, for the reason given |
 | out-of-scope | 38 | a feature request |
 | not-applicable | 8 | does not concern the fork |
-| pending | 57 | no decision yet |
+| pending | 54 | no decision yet |
 | total | 129 | |
 
 ## Pull requests
@@ -122,7 +122,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2518](https://github.com/Soju06/codex-lb/pull/2518) | test(db): cover the SCIM/overflow merge revision's single-head convergence | closed | rejected | Test only, no defect: the single Alembic head is already enforced by the migration topology check in lint. |
 | [2519](https://github.com/Soju06/codex-lb/pull/2519) | fix(http-bridge): parse multi-line upstream websocket frames | closed | superseded | superseded by [2530](https://github.com/Soju06/codex-lb/pull/2530); Same multi-line WebSocket frame parsing fix as PR 2530. |
 | [2520](https://github.com/Soju06/codex-lb/pull/2520) | refactor(proxy): extract streaming response entrypoint | closed | rejected | A pure code move that fixes no bug. |
-| [2521](https://github.com/Soju06/codex-lb/pull/2521) | fix(model-sources): validate optional usage and preserve streamed telemetry | closed | pending | - |
+| [2521](https://github.com/Soju06/codex-lb/pull/2521) | fix(model-sources): validate optional usage and preserve streamed telemetry | closed | taken | - |
 | [2522](https://github.com/Soju06/codex-lb/pull/2522) | perf(db): request\_logs facet indexes and loose-scan probes (stacked on #2502) | closed | out-of-scope | Request-log performance indexes with new Alembic revisions, stacked on the MySQL/MariaDB backend PR 2502. |
 | [2523](https://github.com/Soju06/codex-lb/pull/2523) | fix(metrics): publish fresh account pool gauges on scrape | closed | pending | - |
 | [2526](https://github.com/Soju06/codex-lb/pull/2526) | fix(model-sources): preserve declared collaboration namespaces | closed | superseded | superseded by [2724](https://github.com/Soju06/codex-lb/pull/2724); Same change as PR 2724. |
@@ -137,7 +137,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2547](https://github.com/Soju06/codex-lb/pull/2547) | fix(usage): account for Astra ultrafast token pricing | open | pending | - |
 | [2548](https://github.com/Soju06/codex-lb/pull/2548) | fix(auth): honor configured admin session lifetime | open | rejected | Removes the deliberate 12-hour limit on remote admin dashboard sessions, a security-policy relaxation rather than a bug fix. |
 | [2549](https://github.com/Soju06/codex-lb/pull/2549) | feat(proxy): serve GET /v1/models/{model\_id} for OpenAI-compatible clients | closed | out-of-scope | A new GET /v1/models/{model_id} endpoint.; issues [2038](https://github.com/Soju06/codex-lb/issues/2038) |
-| [2550](https://github.com/Soju06/codex-lb/pull/2550) | fix(logging): redact non-Basic authorization values to end of line | closed | pending | - |
+| [2550](https://github.com/Soju06/codex-lb/pull/2550) | fix(logging): redact non-Basic authorization values to end of line | closed | taken | issues [2028](https://github.com/Soju06/codex-lb/issues/2028) |
 | [2553](https://github.com/Soju06/codex-lb/pull/2553) | feat(helm): make startup probe configurable | open | out-of-scope | New Helm values for the startup probe; the defaults are unchanged. |
 | [2555](https://github.com/Soju06/codex-lb/pull/2555) | fix(http-bridge): leave the terminal append running at its bound | closed | pending | - |
 | [2558](https://github.com/Soju06/codex-lb/pull/2558) | fix(balancer): express lease pressure in percentage points and keep relative availability ranked by persisted usage | closed | taken with changes | changes: Only the percentage-point lease term is taken; the 99% pressure ceiling and the persisted-usage fallback ranking are left out.; issues [2554](https://github.com/Soju06/codex-lb/issues/2554) |
@@ -169,7 +169,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2618](https://github.com/Soju06/codex-lb/pull/2618) | fix(http-bridge): recover from draining owner rejection | closed | rejected | Builds on the unmerged owner-wait machinery of PR 2088, and its rebind relies on a full-resend heuristic that can misclassify tool-output deltas (issue 2269). |
 | [2623](https://github.com/Soju06/codex-lb/pull/2623) | chore(deps): bump the python-minor-patch group across 1 directory with 22 updates | closed | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
 | [2624](https://github.com/Soju06/codex-lb/pull/2624) | fix(proxy): record the resolved upstream transport, not auto | closed | rejected | Changes a telemetry label contract that awaits a maintainer decision; recording auto matches the existing spec scenario. |
-| [2625](https://github.com/Soju06/codex-lb/pull/2625) | fix(api-keys): expire elapsed samples in the /v1/usage aggregate | open | pending | - |
+| [2625](https://github.com/Soju06/codex-lb/pull/2625) | fix(api-keys): expire elapsed samples in the /v1/usage aggregate | open | taken with changes | changes: Only the reset_at expiry fix is taken; the bundled pool rate limits and backend relay are a feature and are left out. |
 | [2626](https://github.com/Soju06/codex-lb/pull/2626) | fix(proxy): preserve quota reset evidence in retry health | closed | pending | - |
 | [2627](https://github.com/Soju06/codex-lb/pull/2627) | fix(proxy): recover owned HTTP sessions during transient backoff | closed | pending | - |
 | [2628](https://github.com/Soju06/codex-lb/pull/2628) | fix(proxy): honor poisoned fallback keys before bridge anchor planning | open | pending | - |
@@ -184,8 +184,8 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2639](https://github.com/Soju06/codex-lb/pull/2639) | fix(oauth): map auth-server transport failures to OAuthError | open | taken | issues [2601](https://github.com/Soju06/codex-lb/issues/2601) |
 | [2640](https://github.com/Soju06/codex-lb/pull/2640) | fix(usage): lift the 429 cooldown after an upstream-confirmed reset credit | open | taken | issues [2602](https://github.com/Soju06/codex-lb/issues/2602) |
 | [2641](https://github.com/Soju06/codex-lb/pull/2641) | docs(auth): document v1.24 Docker password recovery | open | not-applicable | Documents a password-recovery script for release v1.24.0, which lacks the admin reset-password command that current main provides. |
-| [2642](https://github.com/Soju06/codex-lb/pull/2642) | fix(oauth): follow account routes during targeted reauthentication | open | pending | - |
-| [2643](https://github.com/Soju06/codex-lb/pull/2643) | fix(accounts): honor proxy routes in probes and quota warmup | open | pending | - |
+| [2642](https://github.com/Soju06/codex-lb/pull/2642) | fix(oauth): follow account routes during targeted reauthentication | open | taken | - |
+| [2643](https://github.com/Soju06/codex-lb/pull/2643) | fix(accounts): honor proxy routes in probes and quota warmup | open | taken | - |
 | [2644](https://github.com/Soju06/codex-lb/pull/2644) | chore(docker): bump rust from 1.99.0-slim-bookworm to 1.99.1-slim-bookworm | closed | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
 | [2645](https://github.com/Soju06/codex-lb/pull/2645) | chore(deps): bump vitest from 5.0.3 to 5.0.5 in /frontend in the vitest group | closed | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
 | [2646](https://github.com/Soju06/codex-lb/pull/2646) | chore(docker): bump astral-sh/uv from 0.13.1 to 0.13.2 | closed | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
@@ -254,7 +254,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2721](https://github.com/Soju06/codex-lb/pull/2721) | chore(deps): bump msw from 2.15.0 to 3.0.4 in /frontend | open | pending | - |
 | [2722](https://github.com/Soju06/codex-lb/pull/2722) | chore(deps): bump @&#8203;hookform/resolvers from 5.9.1 to 7.0.3 in /frontend | open | pending | - |
 | [2723](https://github.com/Soju06/codex-lb/pull/2723) | chore(deps): bump the python-minor-patch group with 31 updates | open | pending | - |
-| [2724](https://github.com/Soju06/codex-lb/pull/2724) | fix(model-sources): preserve client collaboration namespace when source declares multi-agent support | open | pending | - |
+| [2724](https://github.com/Soju06/codex-lb/pull/2724) | fix(model-sources): preserve client collaboration namespace when source declares multi-agent support | open | taken | issues [2499](https://github.com/Soju06/codex-lb/issues/2499) |
 | [2725](https://github.com/Soju06/codex-lb/pull/2725) | feat(accounts): redeem all eligible reset credits in one action | open | out-of-scope | A new bulk action to redeem all eligible reset credits.; issues [2514](https://github.com/Soju06/codex-lb/issues/2514) |
 | [2726](https://github.com/Soju06/codex-lb/pull/2726) | chore(deps): bump opentelemetry-api from 1.44.0 to 1.45.2 | open | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
 | [2727](https://github.com/Soju06/codex-lb/pull/2727) | chore(deps): bump dnspython from 2.8.0 to 2.9.2 | open | superseded | superseded by [2690](https://github.com/Soju06/codex-lb/pull/2690); PR 2690 carries the same or newer versions. |
@@ -303,7 +303,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [1870](https://github.com/Soju06/codex-lb/issues/1870) | feat: add an upstream facet to dashboard request logs | open | out-of-scope | PRs [2708](https://github.com/Soju06/codex-lb/pull/2708); Feature request: an upstream facet in dashboard request logs. |
 | [1895](https://github.com/Soju06/codex-lb/issues/1895) | bug(warmup): /v1/warmup fails with 404 (compact payload) and account probe fails with 400 (max\_output\_tokens=1) — windows cannot be auto-started | open | fixed-upstream | PRs [1809](https://github.com/Soju06/codex-lb/pull/1809), [2496](https://github.com/Soju06/codex-lb/pull/2496); Fixed in upstream main: the warm-up compact route by PR 1809 and the probe's unsupported max_output_tokens field by PR 2496. |
 | [1898](https://github.com/Soju06/codex-lb/issues/1898) | fix(proxy): persist complete HTTP bridge replay transcripts | open | pending | - |
-| [1901](https://github.com/Soju06/codex-lb/issues/1901) | bug(reports): /api/reports takes \~120 s for a 7-day window (\~543k rows) while equivalent raw SQL finishes in \~2.5 s | open | pending | - |
+| [1901](https://github.com/Soju06/codex-lb/issues/1901) | bug(reports): /api/reports takes \~120 s for a 7-day window (\~543k rows) while equivalent raw SQL finishes in \~2.5 s | open | fixed | own fix |
 | [1924](https://github.com/Soju06/codex-lb/issues/1924) | bug(proxy): inline-image 429 can prevent prompt-cache failover | open | pending | - |
 | [1935](https://github.com/Soju06/codex-lb/issues/1935) | feat: retry upstream model-capacity responses for Codex goals | open | out-of-scope | Feature request: retry upstream model-capacity responses for Codex goals. |
 | [1946](https://github.com/Soju06/codex-lb/issues/1946) | UI account section bug | open | pending | - |
@@ -313,7 +313,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [1976](https://github.com/Soju06/codex-lb/issues/1976) | bug(warmup): staggered idle slots can be unreachable for sliding reset\_at | open | pending | - |
 | [1979](https://github.com/Soju06/codex-lb/issues/1979) | feat(automations): add an opt-in verified weekly-window prestart preset | open | out-of-scope | Feature request: a weekly-window prestart automation preset. |
 | [1981](https://github.com/Soju06/codex-lb/issues/1981) | bug: wedged-teardown interrupt fails with "Cannot operate on a closed database", then the process holds the SQLite write lock permanently (55 min of database-is-locked while /health stays 200) | open | pending | - |
-| [2028](https://github.com/Soju06/codex-lb/issues/2028) | fix(logging): shared log-redaction patterns leave credential tails for auth-param lists, quoted keys, and whitespace-separated tokens | open | pending | - |
+| [2028](https://github.com/Soju06/codex-lb/issues/2028) | fix(logging): shared log-redaction patterns leave credential tails for auth-param lists, quoted keys, and whitespace-separated tokens | open | fixed | fixed by PR [2550](https://github.com/Soju06/codex-lb/pull/2550); own fix |
 | [2033](https://github.com/Soju06/codex-lb/issues/2033) | proxy: a failing post-terminal health write emits a second terminal stream frame | open | fixed | fixed by PR [2319](https://github.com/Soju06/codex-lb/pull/2319); own fix |
 | [2038](https://github.com/Soju06/codex-lb/issues/2038) | Visual Studio Copilot requires GET /v1/models/{model\_id} | open | out-of-scope | PRs [2549](https://github.com/Soju06/codex-lb/pull/2549); Feature request: a GET /v1/models/{model_id} endpoint for a non-Codex client. |
 | [2064](https://github.com/Soju06/codex-lb/issues/2064) | bug(proxy): revoked access tokens repeatedly re-enter reauth routing | open | pending | - |
@@ -362,7 +362,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2471](https://github.com/Soju06/codex-lb/issues/2471) | bug(proxy): with upstream\_stream\_transport=http the native egress multiplexes every account's streams onto ONE shared HTTP/2 connection — one transport failure kills all in-flight streams of all accounts, is logged with no reason/status, and is never retried | open | pending | PRs [2701](https://github.com/Soju06/codex-lb/pull/2701) |
 | [2492](https://github.com/Soju06/codex-lb/issues/2492) | feat: Reset API key limit usage from dashboard without regenerating keys | open | out-of-scope | Feature request: reset API-key usage counters from the dashboard. |
 | [2493](https://github.com/Soju06/codex-lb/issues/2493) | bug: Beta.9 HTTP bridge can close native stream without terminal event after proxy-injected anchor rejection | open | pending | - |
-| [2499](https://github.com/Soju06/codex-lb/issues/2499) | bug(model-sources): multi-agent capability does not preserve client collaboration tools | open | pending | - |
+| [2499](https://github.com/Soju06/codex-lb/issues/2499) | bug(model-sources): multi-agent capability does not preserve client collaboration tools | open | fixed | fixed by PR [2724](https://github.com/Soju06/codex-lb/pull/2724) |
 | [2500](https://github.com/Soju06/codex-lb/issues/2500) | bug: #1968 shield-loop livelock still ships in latest stable 1.24.0; please cut a stable patch with #1969 | open | fixed-upstream | PRs [1969](https://github.com/Soju06/codex-lb/pull/1969), [1972](https://github.com/Soju06/codex-lb/pull/1972); The shield-loop livelock fix (PRs 1969 and 1972) is in upstream main; the request for a stable patch release concerns upstream releases. |
 | [2501](https://github.com/Soju06/codex-lb/issues/2501) | bug: native HTTP upstream regressed in 1.25.0-beta.7 with native upstream request failures | open | pending | - |
 | [2505](https://github.com/Soju06/codex-lb/issues/2505) | bug: shutdown cancels schedulers and the leader-lease keeper mid-DB-work (SQLite pool CancelledError, unreleased lease, unclean run-state) | open | pending | - |
@@ -436,3 +436,13 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(api-keys): keep equal deadlines and guarded misses out of the sweep | [2652](https://github.com/Soju06/codex-lb/issues/2652) | - |
 | fix(shutdown): run the final teardown steps when marking the process dead fails | - | hardening of the upstream shutdown sequence |
 | fix(metrics): populate codex\_lb\_accounts\_total from account reads | [2426](https://github.com/Soju06/codex-lb/issues/2426) | - |
+| fix(quota-planner): fail warmups that end without a completed response | - | completes the proxy-route fix of upstream PRs 2642 and 2643 |
+| fix(accounts): report a probe refresh route failure as a proxy outage | - | completes the proxy-route fix of upstream PRs 2642 and 2643 |
+| fix(oauth): answer 404 for an unknown reauthentication target | - | completes the proxy-route fix of upstream PRs 2642 and 2643 |
+| fix(codex-client): close the SOCKS request session on cancellation | - | SOCKS session leak on cancellation before response headers |
+| fix(oauth): keep the bootstrap guard for unbound reauthentication targets | - | completes the proxy-route fix of upstream PRs 2642 and 2643 |
+| fix(oauth): fail closed when the proxy binding lookup fails | - | fail-closed proxy route for OAuth binding lookup errors |
+| fix(reports): read the speed-median window once | [1901](https://github.com/Soju06/codex-lb/issues/1901) | - |
+| fix(logging): keep fail-closed authorization redaction idempotent | [2028](https://github.com/Soju06/codex-lb/issues/2028) | - |
+| fix(model-sources): treat invalid reported usage as unavailable | - | hardening of the upstream PR 2521 usage validation |
+| fix(usage): widen token totals before adding int32 columns | - | hardening of the upstream PR 2521 int32 token range |
