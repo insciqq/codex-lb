@@ -22,7 +22,9 @@ from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.requests import (
     PASSTHROUGH_MAX_DEPTH,
     ResponsesCompactRequest,
+    ResponsesReasoning,
     ResponsesRequest,
+    ResponsesTextControls,
     ResponsesTextFormat,
     validate_passthrough_depth,
     validate_tool_types,
@@ -319,6 +321,15 @@ def _deep_cases(depth: int) -> dict[str, tuple[type[BaseModel], dict[str, JsonVa
         "chat.tools": (ChatCompletionsRequest, {"model": "m", "messages": hello, "tools": [chat_tool]}, "tools"),
         "chat.input": (ChatCompletionsRequest, {"model": "m", "input": [item]}, "input"),
         "text.schema": (ResponsesTextFormat, {"type": "json_schema", "name": "n", "schema": deep}, "schema"),
+        # Extension fields (``extra="allow"``) are passthrough JSON as well.
+        "responses.extension": (ResponsesRequest, {**native, "input": "hi", "x_ext": deep}, "x_ext"),
+        "compact.extension": (ResponsesCompactRequest, {**native, "input": "hi", "x_ext": deep}, "x_ext"),
+        "v1.extension": (V1ResponsesRequest, {"model": "m", "input": "hi", "x_ext": deep}, "x_ext"),
+        "v1compact.extension": (V1ResponsesCompactRequest, {"model": "m", "input": "hi", "x_ext": deep}, "x_ext"),
+        "chat.extension": (ChatCompletionsRequest, {"model": "m", "messages": hello, "x_ext": deep}, "x_ext"),
+        "reasoning.extension": (ResponsesReasoning, {"effort": "low", "x_ext": deep}, "x_ext"),
+        "text.extension": (ResponsesTextControls, {"verbosity": "low", "x_ext": deep}, "x_ext"),
+        "text.format.extension": (ResponsesTextFormat, {"type": "json_schema", "x_ext": deep}, "x_ext"),
     }
 
 

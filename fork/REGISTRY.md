@@ -554,3 +554,4 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(egress): pool native HTTP connections per account | [2471](https://github.com/Soju06/codex-lb/issues/2471) | - |
 | fix(proxy): deliver every HTTP bridge pre-dispatch refusal to native clients | [2388](https://github.com/Soju06/codex-lb/issues/2388) | - |
 | fix(dashboard-auth): queue sign-in writes behind the SQLite writer section | [2447](https://github.com/Soju06/codex-lb/issues/2447) | - |
+| fix(api): bound the nesting of extension request fields | - | bug found in production or review |

@@ -24,6 +24,13 @@ def _deep_route_cases():
         ("/v1/chat/completions", {**v1, "messages": message}, "messages"),
         ("/v1/chat/completions", {**v1, "messages": hello, "tools": chat_tool}, "tools"),
         ("/backend-api/codex/responses/compact", {**native, "input": item}, "input"),
+        # Extension fields (``extra="allow"``), top-level and inside named objects.
+        ("/backend-api/codex/responses", {**native, "input": "hi", "x_ext": deep}, "x_ext"),
+        ("/backend-api/codex/responses", {**native, "input": "hi", "reasoning": {"x_ext": deep}}, "reasoning.x_ext"),
+        ("/v1/responses", {**v1, "input": "hi", "x_ext": deep}, "x_ext"),
+        ("/v1/responses", {**v1, "input": "hi", "text": {"x_ext": deep}}, "text.x_ext"),
+        ("/v1/chat/completions", {**v1, "messages": hello, "x_ext": deep}, "x_ext"),
+        ("/backend-api/codex/responses/compact", {**native, "input": "hi", "x_ext": deep}, "x_ext"),
     ]
 
 

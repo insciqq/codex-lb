@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import Self, cast
 
 from pydantic import (
     BaseModel,
@@ -14,9 +14,11 @@ from pydantic import (
     PrivateAttr,
     SerializeAsAny,
     SkipValidation,
+    ValidationError,
     field_validator,
     model_validator,
 )
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.tool_call_safety import is_downstream_side_effect_tool_call_item
@@ -136,6 +138,38 @@ def validate_passthrough_depth(value: object, *, limit: int = PASSTHROUGH_MAX_DE
             children: Iterable[object] = node.values() if isinstance(node, dict) else cast(list[object], node)
             next_frontier.extend([child for child in children if isinstance(child, _JSON_CONTAINER_TYPES)])
         frontier = next_frontier
+
+
+class PassthroughExtensionModel(BaseModel):
+    """Bound the nesting of extension fields (``extra="allow"``) like passthrough fields.
+
+    pydantic keeps extension values as they arrive, and pydantic-core refuses to
+    serialize them past the same nesting limit, so a too-deep extension used to
+    validate and then fail in ``model_dump`` with a 500. The check names the
+    field, so the client gets a 400 with that ``param``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate_extension_depth(self) -> Self:
+        errors: list[InitErrorDetails] = []
+        for name, value in (self.__pydantic_extra__ or {}).items():
+            try:
+                validate_passthrough_depth(value)
+            except ValueError as exc:
+                errors.append(
+                    InitErrorDetails(
+                        type=PydanticCustomError("value_error", "Value error, {error}", {"error": str(exc)}),
+                        loc=(name,),
+                        input=value,
+                    )
+                )
+        if errors:
+            # A located ValidationError keeps the field name in ``loc``; a plain
+            # ValueError from a model validator would report no field at all.
+            raise ValidationError.from_exception_data(type(self).__name__, errors)
+        return self
 
 
 def validate_tool_types(tools: list[JsonValue], *, allow_builtin_tools: bool = False) -> list[JsonValue]:
@@ -975,14 +1009,14 @@ def _json_list_or_none(value: JsonValue) -> list[JsonValue] | None:
     return value
 
 
-class ResponsesReasoning(BaseModel):
+class ResponsesReasoning(PassthroughExtensionModel):
     model_config = ConfigDict(extra="allow")
 
     effort: str | None = None
     summary: str | None = None
 
 
-class ResponsesTextFormat(BaseModel):
+class ResponsesTextFormat(PassthroughExtensionModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True, serialize_by_alias=True)
 
     type: str | None = None
@@ -997,7 +1031,7 @@ class ResponsesTextFormat(BaseModel):
         return value
 
 
-class ResponsesTextControls(BaseModel):
+class ResponsesTextControls(PassthroughExtensionModel):
     model_config = ConfigDict(extra="allow")
 
     verbosity: str | None = None
@@ -1020,7 +1054,7 @@ def _validate_input_item_discriminators(items: list[JsonValue]) -> None:
                 raise ValueError(f"input item {key} must be a string")
 
 
-class ResponsesRequest(BaseModel):
+class ResponsesRequest(PassthroughExtensionModel):
     model_config = ConfigDict(extra="allow")
     _codex_lb_client_reasoning_effort: str | None = PrivateAttr(default=None)
     # The old hoist's decisions on the raw body; copies (trimmed inputs) keep them.
@@ -1168,7 +1202,7 @@ class ResponsesRequest(BaseModel):
         return _strip_unsupported_fields(self.model_dump_for_forwarding(), strip_replayed_tool_call_namespaces=False)
 
 
-class ResponsesCompactRequest(BaseModel):
+class ResponsesCompactRequest(PassthroughExtensionModel):
     model_config = ConfigDict(extra="allow")
     _codex_lb_client_reasoning_effort: str | None = PrivateAttr(default=None)
 
