@@ -15,7 +15,7 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 > pull request，另有 8 个 pull request 所针对的问题由 fork 自己的提交修复，修复了 36 个 issue，部分修复了 14 个
 > issue。其余的被拒绝、推迟或不在范围内，每一项的理由都记录在[登记表](fork/REGISTRY.md)中。
 >
-> - 每个上游 PR 和 issue 的处理结果：[fork/REGISTRY.md](fork/REGISTRY.md)。政策：[FORK.md](FORK.md)。
+> - 每个上游 PR 和 issue 的处理结果：[fork/REGISTRY.md](fork/REGISTRY.md)。政策：[FORK.md](FORK.md)。[与其他 fork 的比较](docs/fork-comparison.md)（英文）。
 > - **致谢：** codex-lb 由 Soju06 创建，并由英文 README 中列出的[贡献者](./README.md#contributors-)共同完成，
 >   功劳归于他们。本 fork 由 [@insciqq](https://github.com/insciqq) 维护，让 codex-lb 继续兼容当前的 Codex
 >   客户端和 OpenAI 后端；上游自 2026-10-16 起没有新的提交。

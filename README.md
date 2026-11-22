@@ -19,7 +19,7 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 > 68 pull requests ported, 8 more whose problem the fork fixes with its own commits, 36 issues fixed and 14 partly
 > fixed. The rest are declined, deferred or out of scope, each with a reason in the [registry](fork/REGISTRY.md).
 >
-> - What happened to each upstream PR and issue: [fork/REGISTRY.md](fork/REGISTRY.md). Policy: [FORK.md](FORK.md).
+> - What happened to each upstream PR and issue: [fork/REGISTRY.md](fork/REGISTRY.md). Policy: [FORK.md](FORK.md). [Other forks compared](docs/fork-comparison.md).
 > - **Credit:** codex-lb was created by Soju06 and built by the [contributors](#contributors-) listed below; all
 >   credit for it is theirs. Maintained by [@insciqq](https://github.com/insciqq) to keep it working with current
 >   Codex clients and the OpenAI backend; upstream has had no new commits since 2026-10-16.

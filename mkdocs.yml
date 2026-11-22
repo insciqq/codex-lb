@@ -78,3 +78,4 @@ nav:
   - Development:
       - Rust Migration Architecture: rust-architecture.md
   - Troubleshooting: troubleshooting.md
+  - Other Forks: fork-comparison.md
