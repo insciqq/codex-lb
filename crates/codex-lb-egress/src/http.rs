@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use codex_lb_protocol::{NativeEvent, NativeRequest, NativeSseOptions};
@@ -29,44 +30,181 @@ impl std::fmt::Display for StreamIdleTimeout {
 
 impl std::error::Error for StreamIdleTimeout {}
 
+/// Idle lifetime of a pooled upstream connection inside one client.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a client no request uses is kept. Building a client loads the
+/// native root store on the command loop, so an idle account keeps its client
+/// well past its connections; an unconnected client is cheap to keep.
+const UNUSED_CLIENT_TTL: Duration = Duration::from_secs(30 * 60);
+/// Unused clients kept at most, the one being leased included. A client with
+/// a request in flight is never evicted, so the pool holds at most this many
+/// clients plus those of the requests in flight.
+const MAX_UNUSED_CLIENTS: usize = 256;
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ClientKey {
+    /// Opaque per-account key from the adapter. Each key gets its own client
+    /// and therefore its own connections, so a connection failure only fails
+    /// the streams of the account that owns it.
+    pub(crate) pool_key: Option<String>,
     pub(crate) proxy_url: Option<String>,
     pub(crate) connect_timeout_ms: Option<u64>,
     pub(crate) decode_response: bool,
 }
 
-#[derive(Default)]
+/// When a pool entry was last used, shared with the leases of its requests.
+struct Activity {
+    used: Mutex<Instant>,
+}
+
+impl Activity {
+    fn last_used(&self) -> Instant {
+        *self.used.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn touch(&self, now: Instant) {
+        let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
+        if now > *used {
+            *used = now;
+        }
+    }
+}
+
+/// Keeps a pooled client in use until the request that took it finishes.
+pub(crate) struct ClientLease {
+    activity: Arc<Activity>,
+}
+
+impl Drop for ClientLease {
+    fn drop(&mut self) {
+        self.activity.touch(Instant::now());
+    }
+}
+
+pub(crate) struct PoolEntry {
+    client: reqwest::Client,
+    activity: Arc<Activity>,
+}
+
+impl PoolEntry {
+    fn lease(&self, now: Instant) -> (reqwest::Client, ClientLease) {
+        self.activity.touch(now);
+        let lease = ClientLease {
+            activity: Arc::clone(&self.activity),
+        };
+        (self.client.clone(), lease)
+    }
+
+    /// No request holds a lease: only the pool references the activity.
+    fn unused(&self) -> bool {
+        Arc::strong_count(&self.activity) == 1
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        if !self.unused() {
+            return false;
+        }
+        let idle_for = now.saturating_duration_since(self.activity.last_used());
+        idle_for >= UNUSED_CLIENT_TTL
+    }
+}
+
 pub(crate) struct ClientPool {
-    pub(crate) clients: HashMap<ClientKey, reqwest::Client>,
+    pub(crate) clients: HashMap<ClientKey, PoolEntry>,
+    max_unused: usize,
+}
+
+impl Default for ClientPool {
+    fn default() -> Self {
+        Self::with_max_unused(MAX_UNUSED_CLIENTS)
+    }
 }
 
 impl ClientPool {
-    pub(crate) fn get(&mut self, key: &ClientKey) -> Result<reqwest::Client, reqwest::Error> {
-        if let Some(client) = self.clients.get(key) {
-            return Ok(client.clone());
+    fn with_max_unused(max_unused: usize) -> Self {
+        Self {
+            clients: HashMap::new(),
+            max_unused,
         }
-        let mut builder = reqwest::Client::builder()
-            .use_rustls_tls()
-            .http2_initial_stream_window_size(CODEX_H2_INITIAL_STREAM_WINDOW_SIZE)
-            .http2_initial_connection_window_size(CODEX_H2_INITIAL_CONNECTION_WINDOW_SIZE)
-            .http2_max_frame_size(CODEX_H2_MAX_FRAME_SIZE)
-            .http2_max_header_list_size(CODEX_H2_MAX_HEADER_LIST_SIZE)
-            .pool_idle_timeout(Duration::from_secs(120))
-            .pool_max_idle_per_host(8);
-        if !key.decode_response {
-            builder = builder.no_brotli().no_deflate().no_gzip().no_zstd();
-        }
-        if let Some(connect_timeout_ms) = key.connect_timeout_ms {
-            builder = builder.connect_timeout(Duration::from_millis(connect_timeout_ms));
-        }
-        if let Some(proxy_url) = key.proxy_url.as_deref() {
-            builder = builder.proxy(reqwest::Proxy::all(proxy_url)?);
-        }
-        let client = builder.build()?;
-        self.clients.insert(key.clone(), client.clone());
-        Ok(client)
     }
+
+    /// Return the client for `key` with a lease that keeps it pooled until
+    /// the request is done.
+    pub(crate) fn get(
+        &mut self,
+        key: &ClientKey,
+    ) -> Result<(reqwest::Client, ClientLease), reqwest::Error> {
+        self.get_at(key, Instant::now())
+    }
+
+    fn get_at(
+        &mut self,
+        key: &ClientKey,
+        now: Instant,
+    ) -> Result<(reqwest::Client, ClientLease), reqwest::Error> {
+        self.evict_unused(key, now);
+        if let Some(entry) = self.clients.get(key) {
+            return Ok(entry.lease(now));
+        }
+        let entry = PoolEntry {
+            client: build_client(key)?,
+            activity: Arc::new(Activity {
+                used: Mutex::new(now),
+            }),
+        };
+        let leased = entry.lease(now);
+        self.clients.insert(key.clone(), entry);
+        Ok(leased)
+    }
+
+    /// Drop clients that no request uses: those unused for the client TTL,
+    /// then the least recently used beyond the bound. `keep` is the client
+    /// about to be leased; it counts toward the bound once its lease ends.
+    fn evict_unused(&mut self, keep: &ClientKey, now: Instant) {
+        let stale = |key: &ClientKey, entry: &mut PoolEntry| key != keep && entry.expired(now);
+        self.clients.retain(|key, entry| !stale(key, entry));
+        let evictable = |key: &ClientKey, entry: &PoolEntry| key != keep && entry.unused();
+        let unused = self
+            .clients
+            .iter()
+            .filter(|&(key, entry)| evictable(key, entry))
+            .count();
+        let others = self.max_unused.saturating_sub(1);
+        if unused <= others {
+            return;
+        }
+        let mut candidates: Vec<(Instant, ClientKey)> = self
+            .clients
+            .iter()
+            .filter(|&(key, entry)| evictable(key, entry))
+            .map(|(key, entry)| (entry.activity.last_used(), key.clone()))
+            .collect();
+        candidates.sort_unstable_by_key(|&(used, _)| used);
+        for (_, key) in candidates.into_iter().take(unused - others) {
+            self.clients.remove(&key);
+        }
+    }
+}
+
+fn build_client(key: &ClientKey) -> Result<reqwest::Client, reqwest::Error> {
+    let mut builder = reqwest::Client::builder()
+        .use_rustls_tls()
+        .http2_initial_stream_window_size(CODEX_H2_INITIAL_STREAM_WINDOW_SIZE)
+        .http2_initial_connection_window_size(CODEX_H2_INITIAL_CONNECTION_WINDOW_SIZE)
+        .http2_max_frame_size(CODEX_H2_MAX_FRAME_SIZE)
+        .http2_max_header_list_size(CODEX_H2_MAX_HEADER_LIST_SIZE)
+        .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+        .pool_max_idle_per_host(8);
+    if !key.decode_response {
+        builder = builder.no_brotli().no_deflate().no_gzip().no_zstd();
+    }
+    if let Some(connect_timeout_ms) = key.connect_timeout_ms {
+        builder = builder.connect_timeout(Duration::from_millis(connect_timeout_ms));
+    }
+    if let Some(proxy_url) = key.proxy_url.as_deref() {
+        builder = builder.proxy(reqwest::Proxy::all(proxy_url)?);
+    }
+    builder.build()
 }
 
 pub(crate) async fn execute_request(
@@ -490,10 +628,13 @@ pub(crate) fn error_chain_has_invalid_certificate(
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use reqwest::header::{ACCEPT, ACCEPT_ENCODING};
 
     use super::{
-        ERROR_DETAIL_MAX_BYTES, bounded_join, error_detail, forwarded_headers, source_chain_detail,
+        ClientKey, ClientPool, ERROR_DETAIL_MAX_BYTES, UNUSED_CLIENT_TTL, bounded_join,
+        error_detail, forwarded_headers, source_chain_detail,
     };
 
     const SIGNED_URL_SENTINEL: &str = "https://storage.example/file?sig=opaque-sentinel";
@@ -514,6 +655,88 @@ mod tests {
         fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
             self.source.as_deref()
         }
+    }
+
+    fn install_provider() {
+        // Another test in this binary may have installed it already.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
+
+    fn account_key(pool_key: &str) -> ClientKey {
+        ClientKey {
+            pool_key: Some(pool_key.to_owned()),
+            proxy_url: None,
+            connect_timeout_ms: Some(10_000),
+            decode_response: true,
+        }
+    }
+
+    #[test]
+    fn unused_clients_are_evicted_after_the_client_ttl() {
+        install_provider();
+        let mut pool = ClientPool::default();
+        let account_a = account_key("account-a");
+        let account_b = account_key("account-b");
+        let account_c = account_key("account-c");
+        let start = Instant::now();
+
+        let in_flight = pool.get_at(&account_a, start).expect("client");
+        drop(pool.get_at(&account_b, start).expect("client"));
+        let after_idle = start + UNUSED_CLIENT_TTL + Duration::from_secs(5);
+        drop(pool.get_at(&account_c, after_idle).expect("client"));
+
+        assert!(
+            pool.clients.contains_key(&account_a),
+            "in-flight client kept"
+        );
+        assert!(
+            !pool.clients.contains_key(&account_b),
+            "idle client evicted"
+        );
+        assert!(pool.clients.contains_key(&account_c));
+
+        drop(in_flight);
+        let later = after_idle + UNUSED_CLIENT_TTL + Duration::from_secs(5);
+        drop(pool.get_at(&account_c, later).expect("client"));
+
+        assert!(
+            !pool.clients.contains_key(&account_a),
+            "released client evicted"
+        );
+        assert_eq!(pool.clients.len(), 1);
+    }
+
+    #[test]
+    fn unused_clients_beyond_the_bound_are_evicted_least_recently_used_first() {
+        install_provider();
+        let mut pool = ClientPool::with_max_unused(2);
+        let account_a = account_key("account-a");
+        let account_b = account_key("account-b");
+        let account_c = account_key("account-c");
+        let account_d = account_key("account-d");
+        let start = Instant::now();
+
+        let in_flight = pool.get_at(&account_a, start).expect("client");
+        drop(pool.get_at(&account_b, start).expect("client"));
+        let later = start + Duration::from_secs(1);
+        drop(pool.get_at(&account_c, later).expect("client"));
+        let latest = later + Duration::from_secs(1);
+        drop(pool.get_at(&account_d, latest).expect("client"));
+
+        assert!(
+            pool.clients.contains_key(&account_a),
+            "in-flight client kept"
+        );
+        assert!(
+            !pool.clients.contains_key(&account_b),
+            "oldest unused evicted"
+        );
+        assert!(pool.clients.contains_key(&account_c), "newer unused kept");
+        assert!(
+            pool.clients.contains_key(&account_d),
+            "requested client kept"
+        );
+        drop(in_flight);
     }
 
     #[test]

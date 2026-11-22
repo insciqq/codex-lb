@@ -1182,6 +1182,7 @@ class _CompactMixin:
                                     "allow_direct_egress": route is None,
                                     "route_trace": route_trace,
                                     "chatgpt_account_id": account_id,
+                                    "codex_lb_account_id": target.id,
                                     "synthesize_routing_hint": True,
                                     # ``target.id`` is the load-balancer account
                                     # id; ``account_id`` above is the wire one.

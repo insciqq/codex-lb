@@ -723,6 +723,7 @@ class QuotaWarmupService:
                     # its controlled refresh, which would otherwise skip as fresh
                     # and downgrade the observation to unknown.
                     suppress_live_usage=True,
+                    codex_lb_account_id=account.id,
                 ),
             )
         ) as events:

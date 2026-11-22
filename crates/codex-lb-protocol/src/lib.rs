@@ -12,6 +12,7 @@ pub const CAPABILITIES: &[&str] = &[
     "http2_profile_v1",
     "http_compact_collect_v1",
     "http_compact_sse_v1",
+    "http_pool_key_v1",
     "http_sse_v1",
     "http_responses_events_v1",
     "http_responses_completion_v1",
@@ -61,6 +62,11 @@ pub struct NativeRequest {
     pub timeout_ms: Option<u64>,
     pub connect_timeout_ms: Option<u64>,
     pub proxy_url: Option<String>,
+    /// Opaque key of the upstream connection pool the request uses. Requests
+    /// with different keys never share a connection; absent uses the shared
+    /// pool, which is what an older adapter gets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sse: Option<NativeSseOptions>,
 }
@@ -197,7 +203,7 @@ pub enum NativeEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{CAPABILITIES, NativeCommand, NativeEvent, PROTOCOL_VERSION};
+    use super::{CAPABILITIES, NativeCommand, NativeEvent, NativeRequest, PROTOCOL_VERSION};
 
     #[test]
     fn hello_contract_is_stable() {
@@ -224,5 +230,36 @@ mod tests {
             serde_json::to_value(event).expect("serialize server hello"),
             fixture["server_hello"],
         );
+    }
+
+    fn decode_request(value: serde_json::Value) -> NativeRequest {
+        match serde_json::from_value(value) {
+            Ok(NativeCommand::Request(request)) => request,
+            _ => panic!("expected a request command"),
+        }
+    }
+
+    #[test]
+    fn request_pool_key_is_optional_on_the_wire() {
+        let mut request = serde_json::json!({
+            "type": "request",
+            "request_id": "1:1",
+            "method": "GET",
+            "url": "https://upstream.example/v1",
+            "headers": [],
+            "body": null,
+            "timeout_ms": null,
+            "connect_timeout_ms": null,
+            "proxy_url": null,
+        });
+
+        let unkeyed = decode_request(request.clone());
+        assert_eq!(unkeyed.pool_key, None);
+        let encoded = serde_json::to_value(NativeCommand::Request(unkeyed));
+        assert!(encoded.expect("encode request").get("pool_key").is_none());
+
+        request["pool_key"] = serde_json::Value::from("opaque");
+        let keyed = decode_request(request);
+        assert_eq!(keyed.pool_key.as_deref(), Some("opaque"));
     }
 }

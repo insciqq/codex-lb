@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from sqlalchemy.exc import OperationalError
 
+from app.core.clients.native_egress import native_egress_pool_key
 from app.core.crypto import TokenEncryptor
 from app.core.upstream_proxy.types import ResolvedProxyEndpoint, ResolvedUpstreamRoute
 from app.db.models import Account, AccountStatus
@@ -57,7 +58,11 @@ async def test_routed_probe_finishes_cleanup_before_propagating_cancellation(mon
     )
     task = asyncio.create_task(
         service._send_probe_request(
-            access_token="synthetic-access", chatgpt_account_id="test-workspace", model="gpt-5.4-mini", route=route
+            account_id="acc-probe",
+            access_token="synthetic-access",
+            chatgpt_account_id="test-workspace",
+            model="gpt-5.4-mini",
+            route=route,
         )
     )
     await asyncio.wait_for(entered.wait(), timeout=5)
@@ -73,6 +78,38 @@ async def test_routed_probe_finishes_cleanup_before_propagating_cancellation(mon
 
     assert closed == [True]
     assert released == ([] if cancel_during == "request" else [True])
+
+
+async def test_routed_probe_uses_the_account_connection_pool(monkeypatch):
+    service = _build_service(_make_account())
+    calls: list[dict[str, object]] = []
+
+    async def request(*args, **kwargs):
+        del args
+        calls.append(kwargs)
+        return SimpleNamespace(status=204, aclose=AsyncMock())
+
+    client = SimpleNamespace(request=request, close=AsyncMock())
+    monkeypatch.setattr("app.modules.accounts.service.CodexClient", lambda session: client)
+    monkeypatch.setattr("app.modules.accounts.service.create_codex_session", lambda: object())
+    route = ResolvedUpstreamRoute(
+        mode="account_bound",
+        pool_id="test-pool",
+        endpoint=ResolvedProxyEndpoint(
+            id="test-endpoint", scheme="http", host="proxy.example.test", port=8080, username=None, password=None
+        ),
+    )
+
+    status = await service._send_probe_request(
+        account_id="acc-probe",
+        access_token="synthetic-access",
+        chatgpt_account_id="test-workspace",
+        model="gpt-5.4-mini",
+        route=route,
+    )
+
+    assert status == 204
+    assert [call["native_pool_key"] for call in calls] == [native_egress_pool_key("acc-probe")]
 
 
 _ACCOUNT_ID = "acc_test"
@@ -395,6 +432,7 @@ async def test_send_probe_request_uses_shared_http_client(monkeypatch):
     monkeypatch.setattr("app.modules.accounts.service.lease_http_session", lambda: _Lease())
 
     status = await service._send_probe_request(
+        account_id=_ACCOUNT_ID,
         access_token=_PROBE_TOKEN_PLAINTEXT,
         chatgpt_account_id=_CHATGPT_ACCOUNT_ID,
         model="gpt-5.5-test",

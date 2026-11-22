@@ -60,6 +60,8 @@ from app.core.clients.native_egress import (
     NativeResponsesEvent,
     NativeSseOptions,
     discover_native_egress_client,
+    native_egress_pool_key,
+    native_timeout_milliseconds,
 )
 from app.core.clients.stream_errors import StreamEventTooLargeError, StreamIdleTimeoutError
 from app.core.clients.thread_cache_identity import (
@@ -1445,6 +1447,24 @@ def _remaining_total_timeout(timeout_seconds: float | None, started_at: float, n
     if timeout_seconds is None:
         return None
     return max(0.001, timeout_seconds - max(0.0, now - started_at))
+
+
+_CONNECT_TIMEOUT_STEP_MS = 100
+
+
+def _stepped_connect_timeout(seconds: float) -> float:
+    """Round a connect timeout down to a 100 ms step, or whole milliseconds below one.
+
+    The native helper keys its client pool by connect timeout, so a timeout that
+    shrinks by the milliseconds already spent would build a new client, and open
+    a new connection, for nearly every request. The result never exceeds the
+    remaining budget, except for the protocol's 1 ms minimum, and serializes to
+    the same milliseconds the helper receives.
+    """
+    milliseconds = native_timeout_milliseconds(seconds)
+    if milliseconds >= _CONNECT_TIMEOUT_STEP_MS:
+        milliseconds -= milliseconds % _CONNECT_TIMEOUT_STEP_MS
+    return milliseconds / 1000
 
 
 def _sse_line_ending_len(buffer: bytes | bytearray, index: int) -> int | None:
@@ -3902,6 +3922,10 @@ async def _stream_responses_with_session(
     active_native_egress_client = (
         native_egress_client or discover_native_egress_client() if route is None and transport == "http" else None
     )
+    # One helper connection pool per load-balancer account, so a connection
+    # failure only fails this account's streams. The wire account id is not a
+    # substitute: several load-balancer accounts can share one.
+    native_pool_key = native_egress_pool_key(codex_lb_account_id)
     # Only the payload trace keeps the serialized text; the native egress body
     # is serialized at dispatch so no full copy outlives the send.
     payload_json = (
@@ -4000,6 +4024,8 @@ async def _stream_responses_with_session(
                     request_kwargs["native_sse"] = NativeSseOptions(
                         effective_idle_timeout, MAX_SSE_EVENT_BYTES, interpret_responses=True
                     )
+                if native_pool_key is not None:
+                    request_kwargs["native_pool_key"] = native_pool_key
                 request_with_metadata = getattr(active_codex_client, "request_with_route_metadata", None)
                 if callable(request_with_metadata):
                     result = await request_with_metadata("POST", url, route=route, **request_kwargs)
@@ -4152,6 +4178,7 @@ async def _stream_responses_with_session(
                                 if not non_streaming_http
                                 else None
                             ),
+                            pool_key=native_pool_key,
                         )
                     )
                 except NativeEgressUnavailable:
@@ -4903,6 +4930,7 @@ async def compact_responses(
     allow_direct_egress: bool = True,
     synthesize_routing_hint: bool = False,
     thread_cache_identity: ThreadCacheIdentity | None = None,
+    codex_lb_account_id: str | None = None,
 ) -> CompactResponsePayload:
     async with lease_http_session(session) as client_session:
         transport = _CompactCommandTransport(
@@ -4918,6 +4946,7 @@ async def compact_responses(
             allow_direct_egress=allow_direct_egress,
             synthesize_routing_hint=synthesize_routing_hint,
             thread_cache_identity=thread_cache_identity,
+            codex_lb_account_id=codex_lb_account_id,
         )
         return await transport.execute()
 
@@ -4936,6 +4965,7 @@ class _CompactCommandTransport:
     allow_direct_egress: bool = False
     synthesize_routing_hint: bool = False
     thread_cache_identity: ThreadCacheIdentity | None = None
+    codex_lb_account_id: str | None = None
 
     async def execute(self) -> CompactResponsePayload:
         settings = with_dashboard_overrides(get_settings())
@@ -5004,14 +5034,16 @@ class _CompactCommandTransport:
             pre_request_started_at,
             now,
         )
-        effective_connect_timeout = max(
-            0.001,
-            _remaining_total_timeout(
-                effective_connect_timeout,
-                pre_request_started_at,
-                now,
+        effective_connect_timeout = _stepped_connect_timeout(
+            max(
+                0.001,
+                _remaining_total_timeout(
+                    effective_connect_timeout,
+                    pre_request_started_at,
+                    now,
+                )
+                or effective_connect_timeout,
             )
-            or effective_connect_timeout,
         )
         timeout = aiohttp.ClientTimeout(
             total=compact_timeout_seconds,
@@ -5053,6 +5085,7 @@ class _CompactCommandTransport:
             content_type_aware=True,
             collect_compact=True,
         )
+        native_pool_key = native_egress_pool_key(self.codex_lb_account_id)
 
         @asynccontextmanager
         async def _direct_response_context() -> AsyncGenerator[aiohttp.ClientResponse | NativeEgressResponse]:
@@ -5070,6 +5103,7 @@ class _CompactCommandTransport:
                             response_head_timeout_seconds=compact_timeout_seconds,
                             proxy_url=resolve_http_proxy_from_env(url),
                             sse=sse_options,
+                            pool_key=native_pool_key,
                         )
                     )
                 except NativeEgressUnavailable:
@@ -5106,6 +5140,8 @@ class _CompactCommandTransport:
                     "buffer_response": False,
                     "native_sse": sse_options,
                 }
+                if native_pool_key is not None:
+                    request_kwargs["native_pool_key"] = native_pool_key
                 request_with_metadata = getattr(active_codex_client, "request_with_route_metadata", None)
                 if callable(request_with_metadata):
                     result = await request_with_metadata("POST", url, route=self.route, **request_kwargs)

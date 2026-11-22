@@ -1954,7 +1954,7 @@ status = "pending"
 title = "bug(proxy): with upstream_stream_transport=http the native egress multiplexes every account's streams onto ONE shared HTTP/2 connection — one transport failure kills all in-flight streams of all accounts, is logged with no reason/status, and is never retried"
 state = "open"
 status = "partial"
-reason = "On the HTTP path native_egress_request_failed now logs a typed transport cause, and close codes are logged as WebSocket diagnostics; per-account connection pooling is a pooling-policy change scheduled after the first release."
+reason = "Native HTTP connections are now pooled per account, so a transport failure only fails that account's streams; native_egress_request_failed logs a typed transport cause and WebSocket close codes are logged. Not taken: retrying a pre-headers failure on a reused connection and the WebSocket payload headroom change."
 
 [issue.2492]
 title = "feat: Reset API key limit usage from dashboard without regenerating keys"

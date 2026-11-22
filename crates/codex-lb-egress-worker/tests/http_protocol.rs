@@ -99,6 +99,7 @@ fn sse_request(
         timeout_ms: Some(2_000),
         connect_timeout_ms: Some(2_000),
         proxy_url: None,
+        pool_key: None,
         sse: Some(NativeSseOptions {
             idle_timeout_ms,
             max_event_bytes,
@@ -106,6 +107,21 @@ fn sse_request(
             collect_compact: false,
             interpret_responses: false,
         }),
+    })
+}
+
+fn pooled_get(request_id: &str, pool_key: Option<&str>, url: String) -> NativeCommand {
+    NativeCommand::Request(NativeRequest {
+        request_id: request_id.to_owned(),
+        method: "GET".to_owned(),
+        url,
+        headers: Vec::new(),
+        body: None,
+        timeout_ms: Some(2_000),
+        connect_timeout_ms: Some(2_000),
+        proxy_url: None,
+        pool_key: pool_key.map(str::to_owned),
+        sse: None,
     })
 }
 
@@ -121,6 +137,22 @@ async fn stop_helper(mut helper: Child, stdin: ChildStdin, mut lines: HelperLine
         extra.is_none(),
         "duplicate terminal after stdin EOF: {extra:?}"
     );
+}
+
+/// Read one request head, or return false once the client closes the connection.
+async fn next_request_head(stream: &mut TcpStream) -> bool {
+    let mut request = Vec::with_capacity(1024);
+    while !request.ends_with(b"\r\n\r\n") {
+        match stream.read_buf(&mut request).await {
+            Ok(0) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        assert!(
+            request.len() <= 8 * 1024,
+            "request headers exceeded test bound"
+        );
+    }
+    true
 }
 
 fn header_values(request: &str, expected_name: &str) -> Vec<String> {
@@ -175,6 +207,7 @@ async fn gzip_response_relay_crosses_native_helper_boundary() {
             timeout_ms: Some(2_000),
             connect_timeout_ms: Some(2_000),
             proxy_url: None,
+            pool_key: None,
             sse: None,
         }),
     )
@@ -283,6 +316,7 @@ async fn request_without_accept_encoding_reaches_origin_without_accept_encoding(
             timeout_ms: Some(2_000),
             connect_timeout_ms: Some(2_000),
             proxy_url: None,
+            pool_key: None,
             sse: None,
         }),
     )
@@ -553,4 +587,151 @@ async fn http_error_with_sse_options_preserves_raw_body_chunks() {
 
     server.await.expect("origin task");
     stop_helper(helper, stdin, lines).await;
+}
+
+#[tokio::test]
+async fn pool_key_gives_each_account_its_own_upstream_connections() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind origin");
+    let address = listener.local_addr().expect("origin address");
+    let (served_tx, mut served_rx) = tokio::sync::mpsc::unbounded_channel();
+    let server = tokio::spawn(async move {
+        let mut connection = 0_usize;
+        loop {
+            let (mut stream, _) = listener.accept().await.expect("accept native helper");
+            let served = served_tx.clone();
+            tokio::spawn(async move {
+                // Keep-alive responses, so a pooled connection can be reused.
+                while next_request_head(&mut stream).await {
+                    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+                    if stream.write_all(response).await.is_err() {
+                        break;
+                    }
+                    let _ = served.send(connection);
+                }
+            });
+            connection += 1;
+        }
+    });
+
+    let (helper, mut stdin, mut lines) = start_helper().await;
+    let requests = [
+        ("account-a-1", Some("account-a")),
+        ("account-a-2", Some("account-a")),
+        ("account-b-1", Some("account-b")),
+        ("shared-1", None),
+    ];
+    for (request_id, pool_key) in requests {
+        let url = format!("http://{address}/response");
+        let command = pooled_get(request_id, pool_key, url);
+        write_command(&mut stdin, &command).await;
+        loop {
+            match read_event(&mut lines, "pooled event timeout").await {
+                NativeEvent::End { request_id: ended } => {
+                    assert_eq!(ended, request_id);
+                    break;
+                }
+                NativeEvent::Error { message, .. } => {
+                    panic!("native helper request failed: {message}");
+                }
+                _ => {}
+            }
+        }
+        // Let the finished exchange return its connection to the pool.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let mut connections = Vec::new();
+    for _ in 0..requests.len() {
+        let connection = tokio::time::timeout(Duration::from_secs(2), served_rx.recv())
+            .await
+            .expect("origin served timeout")
+            .expect("origin served");
+        connections.push(connection);
+    }
+    assert_eq!(
+        connections[0], connections[1],
+        "an account reuses its own connection"
+    );
+    assert_ne!(
+        connections[2], connections[0],
+        "another account never reuses that connection"
+    );
+    assert!(
+        !connections[..3].contains(&connections[3]),
+        "unkeyed requests never reuse an account connection"
+    );
+
+    stop_helper(helper, stdin, lines).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn aborted_account_connection_leaves_another_accounts_stream_intact() {
+    // Plain-HTTP origins negotiate HTTP/1.1 here, so this pins the product
+    // path rather than HTTP/2 multiplexing: account A's connection is cut
+    // mid-body while account B's response is still in flight.
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind origin");
+    let address = listener.local_addr().expect("origin address");
+    let (finish_tx, finish_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        let mut finish_rx = Some(finish_rx);
+        loop {
+            let (mut stream, _) = listener.accept().await.expect("accept native helper");
+            let request = read_request_headers(&mut stream).await;
+            if request.starts_with("GET /a ") {
+                let head = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nx";
+                stream.write_all(head).await.expect("write aborted head");
+                drop(stream);
+                continue;
+            }
+            let finish = finish_rx.take().expect("one account b exchange");
+            tokio::spawn(async move {
+                let head = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nok";
+                stream.write_all(head).await.expect("write b head");
+                let _ = finish.await;
+                stream.write_all(b"ok").await.expect("write b tail");
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+
+    let (helper, mut stdin, mut lines) = start_helper().await;
+    let a_url = format!("http://{address}/a");
+    let b_url = format!("http://{address}/b");
+    let command = pooled_get("b-1", Some("account-b"), b_url);
+    write_command(&mut stdin, &command).await;
+    let mut finish_tx = Some(finish_tx);
+    let mut b_body = Vec::new();
+    let mut a_failed = false;
+    let mut b_ended = false;
+    while !(a_failed && b_ended) {
+        match read_event(&mut lines, "isolation event timeout").await {
+            NativeEvent::Head { request_id, .. } if request_id == "b-1" => {
+                let command = pooled_get("a-1", Some("account-a"), a_url.clone());
+                write_command(&mut stdin, &command).await;
+            }
+            NativeEvent::Chunk { request_id, data } if request_id == "b-1" => {
+                let chunk = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .expect("decode chunk");
+                b_body.extend(chunk);
+            }
+            NativeEvent::Error { request_id, .. } if request_id == "a-1" => {
+                a_failed = true;
+                if let Some(finish) = finish_tx.take() {
+                    let _ = finish.send(());
+                }
+            }
+            NativeEvent::End { request_id } if request_id == "b-1" => {
+                assert!(a_failed, "account b finished before account a failed");
+                b_ended = true;
+            }
+            NativeEvent::Error { message, .. } => panic!("native helper request failed: {message}"),
+            _ => {}
+        }
+    }
+    assert_eq!(b_body, b"okok");
+
+    stop_helper(helper, stdin, lines).await;
+    server.abort();
 }

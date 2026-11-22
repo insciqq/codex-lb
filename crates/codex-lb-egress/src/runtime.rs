@@ -88,6 +88,7 @@ pub async fn run_stdio() -> Result<(), RequestError> {
                         }
                         if request.timeout_ms == Some(0)
                             || request.connect_timeout_ms == Some(0)
+                            || request.pool_key.as_ref().is_some_and(String::is_empty)
                             || request.sse.is_some_and(|options| {
                                 options.idle_timeout_ms == 0 || options.max_event_bytes == 0
                                     || (options.collect_compact && !options.content_type_aware)
@@ -106,6 +107,7 @@ pub async fn run_stdio() -> Result<(), RequestError> {
                             continue;
                         }
                         let key = ClientKey {
+                            pool_key: request.pool_key.clone(),
                             proxy_url: request.proxy_url.clone(),
                             connect_timeout_ms: request.connect_timeout_ms,
                             decode_response: request
@@ -113,8 +115,8 @@ pub async fn run_stdio() -> Result<(), RequestError> {
                                 .iter()
                                 .any(|(name, _)| name.eq_ignore_ascii_case("accept-encoding")),
                         };
-                        let client = match clients.get(&key) {
-                            Ok(client) => client,
+                        let (client, lease) = match clients.get(&key) {
+                            Ok(leased) => leased,
                             Err(error) => {
                                 let (message, phase, retryable, tls_verification) = classify_error(&error);
                                 emit_error(
@@ -138,6 +140,8 @@ pub async fn run_stdio() -> Result<(), RequestError> {
                         let task_output = output.clone();
                         let task_active = active.clone();
                         tasks.spawn(async move {
+                            // Keeps the pooled client from eviction until this exchange ends.
+                            let _lease = lease;
                             tokio::select! {
                                 // Prefer a completed exchange, and emit its terminal outside
                                 // the cancellable future: stdout flush can yield after the
@@ -420,6 +424,7 @@ mod tests {
         install_provider();
         let mut pool = ClientPool::default();
         let key = ClientKey {
+            pool_key: None,
             proxy_url: None,
             connect_timeout_ms: Some(10_000),
             decode_response: true,
@@ -432,10 +437,38 @@ mod tests {
     }
 
     #[test]
+    fn account_pool_key_partitions_client_pool_entries() {
+        install_provider();
+        let mut pool = ClientPool::default();
+        let account_a = ClientKey {
+            pool_key: Some("account-a".to_owned()),
+            proxy_url: None,
+            connect_timeout_ms: Some(10_000),
+            decode_response: true,
+        };
+        let account_b = ClientKey {
+            pool_key: Some("account-b".to_owned()),
+            ..account_a.clone()
+        };
+        let shared = ClientKey {
+            pool_key: None,
+            ..account_a.clone()
+        };
+
+        pool.get(&account_a).expect("account a client");
+        pool.get(&account_b).expect("account b client");
+        pool.get(&shared).expect("shared client");
+        pool.get(&account_a).expect("reused account a client");
+
+        assert_eq!(pool.clients.len(), 3);
+    }
+
+    #[test]
     fn response_decode_policy_partitions_client_pool_entries() {
         install_provider();
         let mut pool = ClientPool::default();
         let decoding = ClientKey {
+            pool_key: None,
             proxy_url: None,
             connect_timeout_ms: Some(10_000),
             decode_response: true,
@@ -457,14 +490,14 @@ mod tests {
         install_provider();
         let mut pool = ClientPool::default();
         let direct = ClientKey {
+            pool_key: None,
             proxy_url: None,
             connect_timeout_ms: Some(10_000),
             decode_response: true,
         };
         let proxied = ClientKey {
             proxy_url: Some("http://127.0.0.1:18080".to_owned()),
-            connect_timeout_ms: Some(10_000),
-            decode_response: true,
+            ..direct.clone()
         };
 
         pool.get(&direct).expect("direct client");

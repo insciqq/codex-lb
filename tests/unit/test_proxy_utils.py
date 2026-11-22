@@ -42,6 +42,7 @@ import app.modules.proxy.load_balancer as load_balancer_module
 from app.core import shutdown as shutdown_state
 from app.core.auth.refresh import RefreshError
 from app.core.balancer.types import UpstreamError
+from app.core.clients.native_egress import NativeEgressRequest, native_egress_pool_key, native_timeout_milliseconds
 from app.core.clients.proxy import _build_upstream_headers, filter_inbound_headers
 from app.core.clients.proxy_websocket import (
     UPSTREAM_WEBSOCKET_LIVENESS_TIMEOUT_CODE,
@@ -5779,6 +5780,32 @@ async def test_compact_turn_state_owner_is_a_strict_selection_constraint(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_compact_passes_the_selected_account_for_its_connection_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    account = _make_account("acc_compact_pool")
+    core_compact = AsyncMock(
+        return_value=CompactResponsePayload.model_validate({"object": "response.compaction", "output": []})
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        service._load_balancer,
+        "select_account",
+        AsyncMock(return_value=AccountSelection(account=account, error_message=None)),
+    )
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(service, "_settle_compact_api_key_usage", AsyncMock())
+    monkeypatch.setattr(proxy_service, "core_compact_responses", core_compact)
+
+    payload = ResponsesCompactRequest.model_validate({"model": "gpt-5.1", "instructions": "hi", "input": []})
+    await service.compact_responses(payload, {})
+
+    assert core_compact.call_args.kwargs["codex_lb_account_id"] == account.id
+
+
+@pytest.mark.asyncio
 async def test_compact_previous_response_owner_ignores_legacy_session_header_affinity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -9808,6 +9835,204 @@ async def test_stream_responses_direct_http_prefers_native_egress(monkeypatch: p
     assert json.loads(getattr(native_request, "body")) == payload.to_payload()
 
 
+class _PoolKeySettings:
+    upstream_base_url = "https://chatgpt.com/backend-api"
+    upstream_connect_timeout_seconds = 8.0
+    stream_idle_timeout_seconds = 45.0
+    compact_request_budget_seconds = 7200.0
+    trace_channels = frozenset()
+    proxy_request_budget_seconds = 15.0
+
+
+def _patch_pool_key_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(proxy_module, "get_settings", lambda: _PoolKeySettings())
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_start", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_complete", lambda **kwargs: None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codex_lb_account_id", ["lb-account", None], ids=["load-balancer-account", "unnamed"])
+async def test_stream_responses_native_egress_uses_the_account_pool_key(
+    monkeypatch: pytest.MonkeyPatch, codex_lb_account_id: str | None
+) -> None:
+    # The wire account id is never a pool key: load-balancer accounts can share it.
+    _patch_pool_key_upstream(monkeypatch)
+    payload = ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [{"role": "user", "content": "hi"}]}
+    )
+    native_response = _NativeSseResponse([b'data: {"type":"response.completed","response":{"id":"resp_native"}}\n\n'])
+    native_client = _NativeEgressClientHarness(native_response)
+
+    events = [
+        event
+        async for event in proxy_module.stream_responses(
+            payload,
+            headers={},
+            access_token="token",
+            account_id="acc_1",
+            session=cast(proxy_module.aiohttp.ClientSession, _SseSession(_SsePostResponse([]))),
+            native_egress_client=cast(Any, native_client),
+            upstream_stream_transport_override="http",
+            codex_lb_account_id=codex_lb_account_id,
+        )
+    ]
+
+    assert len(events) == 1
+    native_request = cast(NativeEgressRequest, native_client.calls[0])
+    assert native_request.pool_key == native_egress_pool_key(codex_lb_account_id)
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_routed_http_passes_the_account_pool_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_pool_key_upstream(monkeypatch)
+    route = ResolvedUpstreamRoute(
+        mode="account_bound",
+        pool_id="pool_stream",
+        endpoint=ResolvedProxyEndpoint("ep_stream", "http", "proxy.test", 8080),
+    )
+    routed_response = _SsePostResponse([b'data: {"type":"response.completed","response":{"id":"resp_routed"}}\n\n'])
+    codex_client = SimpleNamespace(
+        request_with_route_metadata=AsyncMock(
+            return_value=SimpleNamespace(response=routed_response, route=route, fallback_used=False)
+        )
+    )
+    payload = ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [{"role": "user", "content": "hi"}]}
+    )
+
+    events = [
+        event
+        async for event in proxy_module.stream_responses(
+            payload,
+            headers={},
+            access_token="token",
+            account_id="acc_1",
+            session=cast(proxy_module.aiohttp.ClientSession, _SseSession(_SsePostResponse([]))),
+            route=route,
+            codex_client=cast(proxy_module.CodexClient, codex_client),
+            allow_direct_egress=False,
+            upstream_stream_transport_override="http",
+            codex_lb_account_id="lb-account",
+        )
+    ]
+
+    assert len(events) == 1
+    call_kwargs = codex_client.request_with_route_metadata.call_args.kwargs
+    assert call_kwargs["native_pool_key"] == native_egress_pool_key("lb-account")
+
+
+@pytest.mark.asyncio
+async def test_compact_responses_native_egress_uses_the_account_pool_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_pool_key_upstream(monkeypatch)
+    # The helper refuses before dispatch, so the request falls back to Python.
+    native_client = _NativeEgressClientHarness(proxy_module.NativeEgressUnavailable("helper disappeared"))
+    monkeypatch.setattr(proxy_module, "discover_native_egress_client", lambda: native_client)
+    payload = proxy_module.ResponsesCompactRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [{"role": "user", "content": "hi"}]}
+    )
+    session = _CompactSession(_compact_sse_response())
+
+    await proxy_module.compact_responses(
+        payload,
+        headers={},
+        access_token="token",
+        account_id="acc_1",
+        session=cast(proxy_module.aiohttp.ClientSession, session),
+        codex_lb_account_id="lb-account",
+    )
+
+    assert len(session.calls) == 1
+    native_request = cast(NativeEgressRequest, native_client.calls[0])
+    assert native_request.pool_key == native_egress_pool_key("lb-account")
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected_ms"),
+    [
+        (8.0, 8000),
+        (7.997, 7900),
+        (2.3, 2300),
+        (4.35, 4300),
+        (0.2, 200),
+        (0.1999999999, 100),
+        (0.0996, 99),
+        (0.0016, 1),
+        (0.001, 1),
+        (0.0005, 1),
+    ],
+)
+def test_stepped_connect_timeout_never_exceeds_the_budget_on_the_wire(seconds: float, expected_ms: int) -> None:
+    stepped = proxy_module._stepped_connect_timeout(seconds)
+
+    assert native_timeout_milliseconds(stepped) == expected_ms
+    assert stepped == expected_ms / 1000
+    # Only the protocol's 1 ms minimum may exceed a sub-millisecond budget.
+    assert stepped <= max(seconds, 0.001)
+
+
+@pytest.mark.asyncio
+async def test_compact_native_connect_timeout_is_stable_across_elapsed_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_pool_key_upstream(monkeypatch)
+    # Milliseconds spent before dispatch must not change the helper's pool key.
+    monkeypatch.setattr(
+        proxy_module,
+        "_remaining_total_timeout",
+        lambda timeout_seconds, started_at, now: None if timeout_seconds is None else timeout_seconds - 0.003,
+    )
+    native_client = _NativeEgressClientHarness(proxy_module.NativeEgressUnavailable("helper disappeared"))
+    monkeypatch.setattr(proxy_module, "discover_native_egress_client", lambda: native_client)
+    payload = proxy_module.ResponsesCompactRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [{"role": "user", "content": "hi"}]}
+    )
+    session = _CompactSession(_compact_sse_response())
+
+    await proxy_module.compact_responses(
+        payload,
+        headers={},
+        access_token="token",
+        account_id="acc_1",
+        session=cast(proxy_module.aiohttp.ClientSession, session),
+    )
+
+    native_request = cast(NativeEgressRequest, native_client.calls[0])
+    assert native_request.connect_timeout_seconds == 7.9
+    assert native_request.connect_timeout_seconds is not None
+    assert native_timeout_milliseconds(native_request.connect_timeout_seconds) == 7900
+
+
+@pytest.mark.asyncio
+async def test_compact_responses_routed_passes_the_account_pool_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_pool_key_upstream(monkeypatch)
+    route = ResolvedUpstreamRoute(
+        mode="account_bound",
+        pool_id="pool_compact",
+        endpoint=ResolvedProxyEndpoint("ep_compact", "http", "proxy.test", 8080),
+    )
+    codex_client = SimpleNamespace(
+        request_with_route_metadata=AsyncMock(
+            return_value=SimpleNamespace(response=_compact_sse_response(), route=route, fallback_used=False)
+        )
+    )
+    payload = proxy_module.ResponsesCompactRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [{"role": "user", "content": "hi"}]}
+    )
+
+    await proxy_module.compact_responses(
+        payload,
+        headers={},
+        access_token="token",
+        account_id="acc_1",
+        session=cast(proxy_module.aiohttp.ClientSession, object()),
+        route=route,
+        codex_client=cast(proxy_module.CodexClient, codex_client),
+        allow_direct_egress=False,
+        codex_lb_account_id="lb-account",
+    )
+
+    call_kwargs = codex_client.request_with_route_metadata.call_args.kwargs
+    assert call_kwargs["native_pool_key"] == native_egress_pool_key("lb-account")
+
+
 @pytest.mark.asyncio
 async def test_stream_responses_direct_http_falls_back_when_native_helper_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
@@ -13690,7 +13915,8 @@ async def test_compact_responses_uses_configured_timeout_and_maps_read_timeout(m
     timeout = session.calls[0]["timeout"]
     assert isinstance(timeout, proxy_module.aiohttp.ClientTimeout)
     assert timeout.total == pytest.approx(123.0, abs=0.05)
-    assert timeout.sock_connect == pytest.approx(2.0, abs=0.05)
+    # Rounded down to the 100 ms step once any time has elapsed.
+    assert timeout.sock_connect == pytest.approx(1.95, abs=0.051)
     assert timeout.sock_read == pytest.approx(123.0, abs=0.05)
     exc = _assert_proxy_response_error(exc_info.value)
     assert exc.status_code == 502
@@ -13724,7 +13950,8 @@ async def test_compact_responses_uses_real_settings_default_budget(monkeypatch):
     timeout = session.calls[0]["timeout"]
     assert isinstance(timeout, proxy_module.aiohttp.ClientTimeout)
     assert timeout.total == pytest.approx(settings.compact_request_budget_seconds, abs=0.05)
-    assert timeout.sock_connect == pytest.approx(2.0, abs=0.05)
+    # Rounded down to the 100 ms step once any time has elapsed.
+    assert timeout.sock_connect == pytest.approx(1.95, abs=0.051)
     assert timeout.sock_read == pytest.approx(settings.compact_request_budget_seconds, abs=0.05)
     dumped = result.model_dump(mode="json", exclude_none=True)
     assert dumped["object"] == "response.compaction"

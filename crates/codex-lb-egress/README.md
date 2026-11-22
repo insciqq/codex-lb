@@ -28,9 +28,13 @@ that id. Before accepting commands, each generation negotiates its protocol
 version and required capabilities with Python. WebSocket send/close commands
 also carry a command id; the helper
 acknowledges it only after the native sink accepts the frame. Concurrent HTTP
-tasks share a reqwest pool partitioned by effective proxy URL and connect
-timeout, while each WebSocket has a bounded command channel and an owning
-stream task. EOF cancels all active tasks and exits cleanly.
+tasks share reqwest clients partitioned by the request's opaque per-account
+pool key, effective proxy URL, connect timeout, and response decoding, so one
+account's connection failure never fails another account's streams. A client
+that no request uses is dropped after 30 minutes, and at most 256 unused
+clients are kept, least recently used dropped first. Each WebSocket has a
+bounded command channel and an owning stream task. EOF cancels all active
+tasks and exits cleanly.
 
 The WebSocket stack pins the OpenAI Codex 0.150.1 fork revisions of
 `tokio-tungstenite` and `tungstenite`, enables their default

@@ -30,6 +30,7 @@ import app.modules.proxy.account_cache as account_cache_module
 import app.modules.proxy.api as proxy_api_module
 import app.modules.proxy.service as proxy_module
 from app.core.auth import generate_unique_account_id
+from app.core.clients.native_egress import native_egress_pool_key
 from app.core.clients.proxy import ProxyResponseError
 from app.core.clock import RealScheduler
 from app.core.errors import openai_error
@@ -423,6 +424,46 @@ async def test_stream_serialized_usage_limit_frame_without_a_code_walks_the_pool
         exhausted_account = await session.get(Account, account_a_id)
         assert exhausted_account is not None
         assert exhausted_account.status == AccountStatus.RATE_LIMITED
+
+
+@pytest.mark.asyncio
+async def test_stream_failover_uses_the_next_accounts_own_native_pool(async_client, monkeypatch):
+    """Two seats share one upstream account id; failing over to the second seat must hand the
+    stream to that seat's connection pool, never the first seat's."""
+    workspace_id = "acc_stream_failover_pool"
+    first_id = await _import_account(async_client, workspace_id, "streamfailoverpoola@example.com")
+    second_id = await _import_account(async_client, workspace_id, "streamfailoverpoolb@example.com")
+    seen_pool_accounts: list[str | None] = []
+
+    async def fake_stream(
+        payload,
+        headers,
+        access_token,
+        account_id,
+        base_url=None,
+        raise_for_status=False,
+        codex_lb_account_id=None,
+    ):
+        del payload, headers, access_token, account_id, base_url, raise_for_status
+        seen_pool_accounts.append(codex_lb_account_id)
+        if len(seen_pool_accounts) == 1:
+            yield _sse_event({"type": "response.failed", "response": {"error": _USAGE_LIMIT_FRAME_ERRORS[0]}})
+            return
+        yield _success_sse_event("resp_stream_failover_pool_ok")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = _extract_events(lines)
+    assert len([event for event in events if event.get("type") == "response.completed"]) == 1
+    assert len(seen_pool_accounts) == 2
+    assert set(seen_pool_accounts) == {first_id, second_id}
+    pool_keys = {native_egress_pool_key(account) for account in seen_pool_accounts}
+    assert len(pool_keys) == 2
 
 
 @pytest.mark.asyncio

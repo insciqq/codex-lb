@@ -346,8 +346,8 @@ async def test_force_probe_advances_usage_freshness_without_changing_oauth_refre
         last_refresh=oauth_refreshed_at,
     )
 
-    async def _fake_probe(self, *, access_token, chatgpt_account_id, model, route=None):
-        del self, access_token, chatgpt_account_id, model, route
+    async def _fake_probe(self, *, account_id, access_token, chatgpt_account_id, model, route=None):
+        del self, account_id, access_token, chatgpt_account_id, model, route
         return 200
 
     async def _force_refresh_with_new_snapshot(self, account):

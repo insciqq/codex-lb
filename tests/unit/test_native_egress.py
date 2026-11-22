@@ -28,6 +28,7 @@ from app.core.clients.native_egress import (
     SubprocessNativeEgressClient,
     close_discovered_native_egress_client,
     discover_native_egress_client,
+    native_egress_pool_key,
 )
 from app.core.clients.stream_errors import StreamEventTooLargeError, StreamIdleTimeoutError
 
@@ -50,6 +51,7 @@ print(json.dumps({
         "http2_profile_v1",
         "http_compact_collect_v1",
         "http_compact_sse_v1",
+        "http_pool_key_v1",
         "http_sse_v1",
         "http_responses_events_v1",
         "http_responses_completion_v1",
@@ -102,6 +104,141 @@ for line in sys.stdin:
     }), flush=True)
     print(json.dumps({"type": "end", "request_id": request_id}), flush=True)
 """
+
+
+def _pool_key_echo_helper_source() -> str:
+    return """#!/usr/bin/env python3
+import base64
+import json
+import sys
+for line in sys.stdin:
+    command = json.loads(line)
+    request_id = command["request_id"]
+    if command["type"] == "cancel":
+        print(json.dumps({"type": "cancelled", "request_id": request_id}), flush=True)
+        continue
+    print(json.dumps({
+        "type": "head",
+        "request_id": request_id,
+        "status": 200,
+        "http_version": "HTTP/2.0",
+        "headers": [],
+    }), flush=True)
+    payload = json.dumps({
+        "present": "pool_key" in command,
+        "pool_key": command.get("pool_key"),
+        "timeout_ms": command["timeout_ms"],
+        "connect_timeout_ms": command["connect_timeout_ms"],
+    }).encode()
+    print(json.dumps({
+        "type": "chunk",
+        "request_id": request_id,
+        "data": base64.b64encode(payload).decode(),
+    }), flush=True)
+    print(json.dumps({"type": "end", "request_id": request_id}), flush=True)
+"""
+
+
+def test_native_egress_pool_key_is_an_opaque_per_account_digest() -> None:
+    key = native_egress_pool_key("account-a")
+
+    assert key is not None
+    assert key == native_egress_pool_key("account-a")
+    assert key != native_egress_pool_key("account-b")
+    assert "account-a" not in key
+    assert len(key) == 32
+    assert native_egress_pool_key(None) is None
+    assert native_egress_pool_key("") is None
+
+
+@pytest.mark.asyncio
+async def test_subprocess_native_egress_sends_pool_key_only_when_set(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=native_egress_module.__name__)
+    helper = tmp_path / "native-helper"
+    _write_helper(helper, _pool_key_echo_helper_source())
+    client = SubprocessNativeEgressClient(helper)
+    try:
+        keyed = await client.request(
+            NativeEgressRequest(method="GET", url="https://example.test/keyed", headers={}, pool_key="opaque")
+        )
+        keyed_command = json.loads(await keyed.read())
+        assert (keyed_command["present"], keyed_command["pool_key"]) == (True, "opaque")
+
+        unkeyed = await client.request(NativeEgressRequest(method="GET", url="https://example.test/shared", headers={}))
+        unkeyed_command = json.loads(await unkeyed.read())
+        assert (unkeyed_command["present"], unkeyed_command["pool_key"]) == (False, None)
+
+        with pytest.raises(ValueError, match="pool_key"):
+            await client.request(
+                NativeEgressRequest(method="GET", url="https://example.test/empty", headers={}, pool_key="")
+            )
+    finally:
+        await client.aclose()
+    assert not [record for record in caplog.records if "http_pool_key_v1" in record.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_helper_without_pool_key_capability_still_works_and_warns_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=native_egress_module.__name__)
+    # The previous helper's hello: every required capability, no pool-key support.
+    parent_preamble = _HELPER_PROTOCOL_PREAMBLE.replace('        "http_pool_key_v1",\n', "")
+    assert "http_pool_key_v1" not in parent_preamble
+    source = _pool_key_echo_helper_source().replace(
+        "#!/usr/bin/env python3\n", f"#!/usr/bin/env python3\n{parent_preamble}\n", 1
+    )
+    helper = tmp_path / "parent-helper"
+    helper.write_text(source, encoding="utf-8")
+    helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
+    client = SubprocessNativeEgressClient(helper)
+    try:
+        for index in range(2):
+            response = await client.request(
+                NativeEgressRequest(method="GET", url=f"https://example.test/{index}", headers={}, pool_key="opaque")
+            )
+            assert json.loads(await response.read())["pool_key"] == "opaque"
+    finally:
+        await client.aclose()
+
+    warnings = [record for record in caplog.records if "http_pool_key_v1" in record.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert "per-account connection pooling is unavailable" in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("timeout_seconds", "connect_timeout_seconds", "timeout_ms", "connect_timeout_ms"),
+    [(0.1999999999, 0.0996, 199, 99), (4.35, 0.0016, 4350, 1), (2.0, 0.0004, 2000, 1)],
+)
+async def test_subprocess_native_egress_floors_timeouts_to_whole_milliseconds(
+    tmp_path: Path,
+    timeout_seconds: float,
+    connect_timeout_seconds: float,
+    timeout_ms: int,
+    connect_timeout_ms: int,
+) -> None:
+    helper = tmp_path / "native-helper"
+    _write_helper(helper, _pool_key_echo_helper_source())
+    client = SubprocessNativeEgressClient(helper)
+    try:
+        response = await client.request(
+            NativeEgressRequest(
+                method="GET",
+                url="https://example.test/timeouts",
+                headers={},
+                timeout_seconds=timeout_seconds,
+                connect_timeout_seconds=connect_timeout_seconds,
+            )
+        )
+        command = json.loads(await response.read())
+    finally:
+        await client.aclose()
+
+    assert (command["timeout_ms"], command["connect_timeout_ms"]) == (timeout_ms, connect_timeout_ms)
 
 
 @pytest.mark.asyncio

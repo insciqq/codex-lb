@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from app.core.clients.native_egress import _NATIVE_PROTOCOL_VERSION, _REQUIRED_NATIVE_CAPABILITIES
+from app.core.clients.native_egress import (
+    _NATIVE_POOL_KEY_CAPABILITY,
+    _NATIVE_PROTOCOL_VERSION,
+    _REQUIRED_NATIVE_CAPABILITIES,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -21,7 +25,8 @@ def test_python_adapter_matches_shared_native_handshake_fixture() -> None:
         "max_protocol_version": _NATIVE_PROTOCOL_VERSION,
     }
     assert fixture["server_hello"]["protocol_version"] == _NATIVE_PROTOCOL_VERSION
-    assert set(fixture["server_hello"]["capabilities"]) == _REQUIRED_NATIVE_CAPABILITIES
+    # The pool-key capability is advertised but not required, so older helpers keep working.
+    assert set(fixture["server_hello"]["capabilities"]) == _REQUIRED_NATIVE_CAPABILITIES | {_NATIVE_POOL_KEY_CAPABILITY}
 
 
 @pytest.mark.parametrize("dockerfile_name", ["Dockerfile", "Dockerfile.distroless"])

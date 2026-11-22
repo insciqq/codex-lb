@@ -241,6 +241,7 @@ class CodexClient:
         *,
         route: ResolvedUpstreamRoute,
         native_sse: NativeSseOptions | None = None,
+        native_pool_key: str | None = None,
         **kwargs: Any,
     ) -> CodexRequestResult:
         if route is None:
@@ -272,6 +273,7 @@ class CodexClient:
                                 response_head_timeout_seconds=native_request.response_head_timeout_seconds,
                                 proxy_url=endpoint.proxy_url,
                                 sse=native_sse,
+                                pool_key=native_pool_key,
                             )
                         )
                         if buffer_response:

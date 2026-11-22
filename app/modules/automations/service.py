@@ -1221,6 +1221,7 @@ class AutomationsService:
                         account_id=_header_account_id(account.chatgpt_account_id),
                         route=route,
                         allow_direct_egress=route is None,
+                        codex_lb_account_id=account.id,
                     ),
                     timeout=_automation_compact_request_timeout_seconds(run),
                 )

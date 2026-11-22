@@ -13,6 +13,7 @@
       "http2_profile_v1",
       "http_compact_collect_v1",
       "http_compact_sse_v1",
+      "http_pool_key_v1",
       "http_sse_v1",
       "http_responses_events_v1",
       "http_responses_completion_v1",

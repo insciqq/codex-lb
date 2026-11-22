@@ -376,6 +376,7 @@ class _WarmupMixin:
                     "allow_direct_egress": route is None,
                     "route_trace": route_trace,
                     "chatgpt_account_id": account_header_id,
+                    "codex_lb_account_id": live_account.id,
                 },
             )
             if route_trace.mode is not None:

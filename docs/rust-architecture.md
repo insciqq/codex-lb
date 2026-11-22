@@ -136,6 +136,16 @@ cross-language handshake fixture. Wire changes must follow these rules:
 5. Test malformed, missing-capability, cancellation, and process-exit paths;
    success-only compatibility tests are insufficient.
 
+Native HTTP requests carry an optional opaque `pool_key`, a digest of the
+load-balancer account, so each account gets its own upstream connections and
+one connection failure cannot fail another account's streams. A helper that
+honors it advertises `http_pool_key_v1`. The adapter does not require that
+capability: an older helper still completes the handshake and serves
+requests, but it ignores the key and shares connections across accounts, so
+the adapter logs one warning per helper process saying per-account connection
+pooling is unavailable until the helper is rebuilt. See the
+[outbound client contract](https://github.com/insciqq/codex-lb/blob/main/openspec/specs/outbound-http-clients/spec.md).
+
 ## Adding a migrated slice
 
 Prefer a vertical slice with an explicit boundary over a generic utilities

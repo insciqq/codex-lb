@@ -25,6 +25,7 @@ from app.core.auth.refresh import RefreshError
 from app.core.cache.invalidation import NAMESPACE_API_KEY, get_cache_invalidation_poller
 from app.core.clients.codex import CodexClient, CodexTransportError, create_codex_session, release_codex_response
 from app.core.clients.http import lease_http_session
+from app.core.clients.native_egress import native_egress_pool_key
 from app.core.clients.proxy import _codex_response_status
 from app.core.clients.usage import (
     ConsumeRateLimitResetCreditResponse,
@@ -756,6 +757,7 @@ class AccountsService:
         probe_model = model or resolve_default_host_model()
         route = await self._resolve_account_route(probe_account, operation="account_probe")
         probe_status = await self._send_probe_request(
+            account_id=probe_account.id,
             access_token=access_token,
             chatgpt_account_id=probe_account.chatgpt_account_id,
             model=probe_model,
@@ -802,6 +804,7 @@ class AccountsService:
     async def _send_probe_request(
         self,
         *,
+        account_id: str,
         access_token: str,
         chatgpt_account_id: str | None,
         model: str,
@@ -841,7 +844,14 @@ class AccountsService:
                 response = None
                 try:
                     response = await client.request(
-                        "POST", url, route=route, headers=headers, json=body, timeout=timeout, buffer_response=False
+                        "POST",
+                        url,
+                        route=route,
+                        headers=headers,
+                        json=body,
+                        timeout=timeout,
+                        buffer_response=False,
+                        native_pool_key=native_egress_pool_key(account_id),
                     )
                     return _codex_response_status(response)
                 finally:

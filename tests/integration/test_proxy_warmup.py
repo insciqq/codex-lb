@@ -9,9 +9,11 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select, update
 
+import app.core.clients.proxy as core_proxy_module
 import app.modules.proxy.service as proxy_module
 from app.core.auth import generate_unique_account_id
 from app.core.auth.refresh import RefreshError
+from app.core.clients.native_egress import NativeEgressRequest, NativeEgressTransportError, native_egress_pool_key
 from app.core.clients.proxy import ProxyResponseError
 from app.core.config.settings import get_settings
 from app.core.errors import openai_error
@@ -1058,6 +1060,40 @@ async def test_warmup_account_rate_limit_failure_does_not_abort_summary(async_cl
             "error_message": "account limited",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_force_warmup_gives_two_seats_of_one_workspace_separate_native_pools(async_client, monkeypatch):
+    await _enable_api_key_auth(async_client)
+    workspace_id = "acc-warmup-shared-workspace"
+    first_id = await _import_account(async_client, workspace_id, "warmup-seat-a@example.com")
+    second_id = await _import_account(async_client, workspace_id, "warmup-seat-b@example.com")
+    assert first_id != second_id
+    await _add_primary_usage(first_id, used_percent=0.0, window_minutes=300)
+    await _add_primary_usage(second_id, used_percent=0.0, window_minutes=300)
+    _, key = await _create_api_key(async_client, name="warmup-seat-pools")
+    native_requests: list[NativeEgressRequest] = []
+
+    class _RecordingNativeClient:
+        async def request(self, request: NativeEgressRequest) -> object:
+            native_requests.append(request)
+            raise NativeEgressTransportError("native connect failed", failure_phase="connect")
+
+    async def _fake_ensure_fresh(self, account, *, force=False, timeout_seconds=None):
+        del self, force, timeout_seconds
+        return account
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", _fake_ensure_fresh)
+    monkeypatch.setattr(core_proxy_module, "discover_native_egress_client", lambda: _RecordingNativeClient())
+
+    response = await async_client.post("/v1/warmup/force", headers={"Authorization": f"Bearer {key}"})
+
+    assert response.status_code == 200
+    assert response.json()["total_accounts"] == 2
+    assert sorted(request.pool_key or "" for request in native_requests) == sorted(
+        [native_egress_pool_key(first_id) or "", native_egress_pool_key(second_id) or ""]
+    )
+    assert len({request.pool_key for request in native_requests}) == 2
 
 
 @pytest.mark.asyncio

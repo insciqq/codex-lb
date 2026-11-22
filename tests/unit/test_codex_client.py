@@ -320,6 +320,34 @@ async def test_routed_native_confirmed_connect_failure_uses_next_endpoint(
 
 
 @pytest.mark.asyncio
+async def test_routed_native_request_keeps_the_account_pool_key_on_every_endpoint(
+    route: ResolvedUpstreamRoute,
+) -> None:
+    native = _NativeClient(
+        request_results=[
+            NativeEgressTransportError(
+                "native connect failed",
+                failure_phase="connect",
+                retryable_same_contract=True,
+            ),
+            _Response(headers={"content-type": "application/json"}),
+        ]
+    )
+    client = CodexClient(_Session(), native_egress_client=cast(Any, native))
+
+    result = await client.request_with_route_metadata(
+        "POST",
+        "https://upstream.test",
+        route=route,
+        json={"x": 1},
+        native_pool_key="opaque",
+    )
+
+    assert result.fallback_used is True
+    assert [request.pool_key for request in native.request_calls] == ["opaque", "opaque"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("native_sse", [None, NativeSseOptions(3, 1024)])
 @pytest.mark.parametrize(
     "failure",

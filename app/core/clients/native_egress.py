@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 import logging
 import math
@@ -46,6 +47,9 @@ _REQUIRED_NATIVE_CAPABILITIES = frozenset(
         "websocket_send_ack",
     }
 )
+# Advertised by a helper that honors ``pool_key``. It is not required, so an
+# older helper still works, but it then shares connections across accounts.
+_NATIVE_POOL_KEY_CAPABILITY = "http_pool_key_v1"
 _NATIVE_EVENT_LINE_LIMIT = 24 * 1024 * 1024
 # Per-request bound between the helper reader (one task draining the helper's
 # stdout for every in-flight request) and each request's consumer. The bound
@@ -212,6 +216,36 @@ class NativeEgressRequest:
     response_head_timeout_seconds: float | None = None
     proxy_url: str | None = None
     sse: NativeSseOptions | None = None
+    # Opaque key that gives the request its own upstream connection pool in
+    # the helper; see ``native_egress_pool_key``. ``None`` uses the shared pool.
+    pool_key: str | None = None
+
+
+def native_timeout_milliseconds(seconds: float) -> int:
+    """Whole milliseconds of a native timeout, never above ``seconds``.
+
+    Rounding up would give the helper more time than the remaining budget. A
+    budget below the protocol's 1 ms minimum gets that minimum, the same clamp
+    callers already apply to an exhausted budget.
+    """
+    milliseconds = math.floor(seconds * 1000)
+    # Products such as ``4.35 * 1000`` fall just short of the whole value.
+    if (milliseconds + 1) / 1000 <= seconds:
+        milliseconds += 1
+    return max(1, milliseconds)
+
+
+def native_egress_pool_key(account_id: str | None) -> str | None:
+    """Return the helper connection-pool key for one upstream account.
+
+    The helper otherwise multiplexes every account's streams onto one HTTP/2
+    connection per upstream host, so one connection failure fails the
+    in-flight streams of every account. The key is a digest, so the account
+    identifier itself never crosses the IPC boundary.
+    """
+    if not account_id:
+        return None
+    return hashlib.sha256(b"codex-lb-native-egress-pool\0" + account_id.encode("utf-8")).hexdigest()[:32]
 
 
 @dataclass(frozen=True, slots=True)
@@ -819,6 +853,8 @@ class SubprocessNativeEgressClient:
             raise ValueError("native egress connect_timeout_seconds must be positive")
         if request.response_head_timeout_seconds is not None and request.response_head_timeout_seconds <= 0:
             raise ValueError("native egress response_head_timeout_seconds must be positive")
+        if request.pool_key is not None and not request.pool_key:
+            raise ValueError("native egress pool_key must not be empty")
         if request.sse is not None:
             if request.sse.collect_compact and request.sse.interpret_responses:
                 raise ValueError("native compact collection cannot interpret streaming Responses")
@@ -841,10 +877,10 @@ class SubprocessNativeEgressClient:
             "url": request.url,
             "headers": list(request.headers.items()),
             "timeout_ms": (
-                max(1, round(request.timeout_seconds * 1000)) if request.timeout_seconds is not None else None
+                native_timeout_milliseconds(request.timeout_seconds) if request.timeout_seconds is not None else None
             ),
             "connect_timeout_ms": (
-                max(1, round(request.connect_timeout_seconds * 1000))
+                native_timeout_milliseconds(request.connect_timeout_seconds)
                 if request.connect_timeout_seconds is not None
                 else None
             ),
@@ -861,6 +897,8 @@ class SubprocessNativeEgressClient:
                 else None
             ),
         }
+        if request.pool_key is not None:
+            request_event["pool_key"] = request.pool_key
         if request.body is None:
             request_event["body"] = None
         try:
@@ -1142,6 +1180,13 @@ class SubprocessNativeEgressClient:
         missing = sorted(_REQUIRED_NATIVE_CAPABILITIES.difference(capabilities))
         if missing:
             raise NativeEgressProtocolError(f"native helper is missing required capabilities: {', '.join(missing)}")
+        if _NATIVE_POOL_KEY_CAPABILITY not in capabilities:
+            # Once per helper process: each process completes one handshake.
+            logger.warning(
+                "native helper does not advertise %s; per-account connection pooling is unavailable "
+                "until the helper is rebuilt",
+                _NATIVE_POOL_KEY_CAPABILITY,
+            )
 
     async def _send_command(
         self,
