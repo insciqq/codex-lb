@@ -548,3 +548,4 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(fork): accept only ASCII release versions | - | fork release tooling |
 | fix(fork): move latest only by the maintainers' dispatch | - | fork release tooling |
 | fix(fork): verify the tag commit before running its code | - | fork release tooling |
+| chore(deps): bump url to 2.5.9 for RUSTSEC-2026-0592 | - | security gate |
