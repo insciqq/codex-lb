@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
+from typing import cast
 
 import pytest
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import event, select, update
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
+from app.core.crypto import TokenEncryptor
 from app.core.utils.time import naive_utc_to_epoch, to_utc_naive, utcnow
 from app.db.models import (
     Account,
@@ -19,6 +21,7 @@ from app.db.models import (
 from app.modules.proxy.account_eligibility import HARD_OWNER_UNAVAILABLE_STATUSES
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeSessionCoordinator
 from app.modules.proxy.durable_bridge_repository import DurableBridgeRepository
+from tests.unit.test_proxy_account_eligibility import _jwt
 
 pytestmark = pytest.mark.unit
 
@@ -585,6 +588,104 @@ async def test_request_path_retires_an_owner_returning_after_the_budget(
         account_id="acc-limited",
         deadline_epoch=_epoch_in(7200),
     )
+
+
+@pytest.mark.parametrize(
+    "status",
+    [AccountStatus.PAUSED, AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED],
+)
+async def test_request_path_ignores_a_leftover_reset_on_an_owner_without_a_horizon(
+    async_session_factory: Callable[[], AsyncSession],
+    coordinator: DurableBridgeSessionCoordinator,
+    status: AccountStatus,
+) -> None:
+    """A reset kept from an earlier rate limit does not bring back a paused or reauth owner.
+
+    A permanent failure on a rate-limited account changes its status and keeps
+    the stored ``reset_at``; that reset is not a recovery horizon.
+    """
+    await _add_account(async_session_factory, "acc-stuck", status, reset_at=_epoch_in(60))
+    if status == AccountStatus.REAUTH_REQUIRED:
+        # Only a known-expired token makes a reauth owner unable to serve.
+        await _set_access_token(async_session_factory, "acc-stuck", expires_at=_epoch_in(-60))
+    session_id = await _claim(coordinator, account_id="acc-stuck")
+
+    assert await _retire_now(
+        async_session_factory,
+        session_id=session_id,
+        account_id="acc-stuck",
+        deadline_epoch=_epoch_in(7200),
+    )
+
+    lookup = await _lookup(coordinator)
+    assert lookup is not None
+    assert lookup.continuity_abandoned is True
+    assert lookup.retired_account_id == "acc-stuck"
+
+
+async def _set_access_token(factory: Callable[[], AsyncSession], account_id: str, *, expires_at: int) -> None:
+    async with factory() as session:
+        await session.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(access_token_encrypted=TokenEncryptor().encrypt(_jwt(expires_at=expires_at)))
+        )
+        await session.commit()
+
+
+async def test_request_path_keeps_a_reauth_owner_whose_access_token_still_works(
+    async_session_factory: Callable[[], AsyncSession],
+    coordinator: DurableBridgeSessionCoordinator,
+) -> None:
+    """Selection still routes a reauth-warning owner until its access token expires."""
+    await _add_account(async_session_factory, "acc-reauth", AccountStatus.REAUTH_REQUIRED, reset_at=_epoch_in(60))
+    session_id = await _claim(coordinator, account_id="acc-reauth")
+    await _set_access_token(async_session_factory, "acc-reauth", expires_at=_epoch_in(3600))
+
+    assert not await _retire_now(
+        async_session_factory,
+        session_id=session_id,
+        account_id="acc-reauth",
+        deadline_epoch=_epoch_in(7200),
+    )
+
+    lookup = await _lookup(coordinator)
+    assert lookup is not None
+    assert lookup.account_id == "acc-reauth"
+    assert lookup.latest_response_id == "resp_1"
+
+
+async def test_request_path_retirement_is_fenced_to_the_checked_access_token(
+    async_session_factory: Callable[[], AsyncSession],
+    coordinator: DurableBridgeSessionCoordinator,
+) -> None:
+    """A token refreshed after the expiry check keeps the owner."""
+    await _add_account(async_session_factory, "acc-reauth", AccountStatus.REAUTH_REQUIRED)
+    session_id = await _claim(coordinator, account_id="acc-reauth")
+    await _set_access_token(async_session_factory, "acc-reauth", expires_at=_epoch_in(-60))
+    fresh_token = TokenEncryptor().encrypt(_jwt(expires_at=_epoch_in(3600)))
+    async with async_session_factory() as probe:
+        engine = cast(AsyncEngine, probe.bind)
+
+    def refresh_before_the_write(_conn, cursor, statement, _params, _context, _executemany) -> None:
+        # A concurrent re-auth stores a fresh token after the expiry check
+        # and before the retirement write.
+        if statement.lstrip().upper().startswith("UPDATE HTTP_BRIDGE_SESSIONS"):
+            cursor.execute(
+                "UPDATE accounts SET access_token_encrypted = ? WHERE id = ?",
+                (fresh_token, "acc-reauth"),
+            )
+
+    event.listen(engine.sync_engine, "before_cursor_execute", refresh_before_the_write)
+    try:
+        assert not await _retire_now(
+            async_session_factory,
+            session_id=session_id,
+            account_id="acc-reauth",
+            deadline_epoch=_epoch_in(7200),
+        )
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", refresh_before_the_write)
 
 
 async def test_request_path_never_retires_a_healthy_owner(

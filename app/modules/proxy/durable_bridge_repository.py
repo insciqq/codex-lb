@@ -34,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import clock_for, scheduler_for
+from app.core.crypto import TokenEncryptor
 from app.core.utils.time import naive_utc_to_epoch, to_utc_naive, utcnow
 from app.db.models import (
     HTTP_BRIDGE_SPOOL_FORMAT_CHUNKS_V2,
@@ -42,6 +43,7 @@ from app.db.models import (
     HTTP_BRIDGE_TERMINAL_APPEND_PHASE_PENDING,
     HTTP_BRIDGE_TERMINAL_APPEND_PHASE_SETTLED,
     Account,
+    AccountStatus,
     HttpBridgeOperationEvent,
     HttpBridgeOperationEventChunk,
     HttpBridgeOperationRecord,
@@ -53,7 +55,11 @@ from app.db.models import (
     HttpBridgeSessionState,
 )
 from app.db.session import sqlite_writer_section
-from app.modules.proxy.account_eligibility import HARD_OWNER_UNAVAILABLE_STATUSES
+from app.modules.proxy.account_eligibility import (
+    HARD_OWNER_UNAVAILABLE_STATUSES,
+    reauth_access_token_is_expired,
+    stored_access_token_expires_at,
+)
 from app.modules.proxy.continuity import (
     HTTP_BRIDGE_ACCOUNT_NEUTRAL_REPLAY_KEY_PREFIX,
     HTTP_BRIDGE_ACCOUNT_NEUTRAL_REPLAY_KIND,
@@ -104,6 +110,10 @@ _PURGE_CLOSED_BATCH_SIZE = 500
 # Marks a retirement taken on the request path rather than by the sweep.
 # The sweep writes the global timestamp form instead; both read as retired.
 _REQUEST_PATH_ABANDONMENT_SCOPE = "request_path"
+# The unavailable statuses whose ``reset_at`` is a recovery horizon. Any other
+# unavailable status can still hold a reset from an earlier rate limit (a
+# permanent failure changes the status and keeps it), which is not one.
+_RESET_BOUND_OWNER_STATUSES = (AccountStatus.RATE_LIMITED, AccountStatus.QUOTA_EXCEEDED)
 # Claim retry budget: insert races and epoch-CAS losses re-read and retry;
 # each round has a winner, so a small budget converges under any realistic
 # same-row claim contention.
@@ -3896,8 +3906,11 @@ class DurableBridgeRepository:
         is the request-path counterpart, and it asks a narrower question: can
         this owner come back before the request that is waiting on it gives up?
         ``reset_at`` is the answer for a rate or quota limit; ``paused``,
-        ``reauth_required`` and ``deactivated`` carry no horizon at all, so the
-        answer for them is always no.
+        ``reauth_required`` and ``deactivated`` carry no horizon at all, even
+        when their row still stores a reset from an earlier rate limit. A
+        ``reauth_required`` owner is kept while its stored access token is not
+        known to be expired, because selection still routes it until then; the
+        answer for the others is always no.
 
         Mirrors ``StickySessionsRepository.abandon_legacy_session_header_owner_if_unavailable``,
         including why the account row is locked first: PostgreSQL evaluates the
@@ -3915,37 +3928,63 @@ class DurableBridgeRepository:
         if not session_id or not expected_account_id:
             return False
         owner_status_lock = (
-            select(Account.status, Account.reset_at).where(Account.id == expected_account_id).with_for_update()
-        )
-        unavailable_owner = select(Account.id).where(
-            Account.id == expected_account_id,
-            Account.status.in_(HARD_OWNER_UNAVAILABLE_STATUSES),
-            or_(Account.reset_at.is_(None), Account.reset_at >= recovery_deadline_epoch),
-        )
-        statement = (
-            update(HttpBridgeSessionRecord)
-            .where(
-                HttpBridgeSessionRecord.id == session_id,
-                HttpBridgeSessionRecord.account_id == expected_account_id,
-                HttpBridgeSessionRecord.continuity_abandoned_at.is_(None),
-                HttpBridgeSessionRecord.continuity_abandonment_scope.is_(None),
-                HttpBridgeSessionRecord.account_id.in_(unavailable_owner),
-            )
-            .values(continuity_abandonment_scope=_REQUEST_PATH_ABANDONMENT_SCOPE)
-            .returning(HttpBridgeSessionRecord.id)
+            select(Account.status, Account.reset_at, Account.access_token_encrypted)
+            .where(Account.id == expected_account_id)
+            .with_for_update()
         )
         async with sqlite_writer_section():
             locked = (await self._session.execute(owner_status_lock)).one_or_none()
             if locked is None or locked[0] not in HARD_OWNER_UNAVAILABLE_STATUSES:
                 await self._session.commit()
                 return False
-            owner_reset_at = locked[1]
+            owner_status, owner_reset_at, owner_access_token = locked
+            if owner_status == AccountStatus.REAUTH_REQUIRED and not reauth_access_token_is_expired(
+                owner_status,
+                stored_access_token_expires_at(owner_access_token, TokenEncryptor()),
+                now=clock_for(self).time(),
+            ):
+                # Selection keeps routing a reauth-warning account while its
+                # stored access token is not known to be expired, so this owner
+                # can still serve the thread.
+                await self._session.commit()
+                return False
+            if owner_status not in _RESET_BOUND_OWNER_STATUSES:
+                owner_reset_at = None
             if owner_reset_at is not None and owner_reset_at < recovery_deadline_epoch:
                 # The owner is expected back inside the window the caller is
                 # willing to wait, so waiting keeps the upstream prompt cache
                 # instead of forcing a full resend onto another account.
                 await self._session.commit()
                 return False
+            # The write re-checks the account state the decision above read:
+            # its status and, for a reauth owner, the access token whose expiry
+            # was checked, so a concurrent recovery or token refresh wins.
+            unavailable_owner = select(Account.id).where(
+                Account.id == expected_account_id,
+                Account.status.in_(HARD_OWNER_UNAVAILABLE_STATUSES),
+                Account.status == owner_status,
+                or_(
+                    Account.status.not_in(_RESET_BOUND_OWNER_STATUSES),
+                    Account.reset_at.is_(None),
+                    Account.reset_at >= recovery_deadline_epoch,
+                ),
+                or_(
+                    Account.status != AccountStatus.REAUTH_REQUIRED,
+                    Account.access_token_encrypted == owner_access_token,
+                ),
+            )
+            statement = (
+                update(HttpBridgeSessionRecord)
+                .where(
+                    HttpBridgeSessionRecord.id == session_id,
+                    HttpBridgeSessionRecord.account_id == expected_account_id,
+                    HttpBridgeSessionRecord.continuity_abandoned_at.is_(None),
+                    HttpBridgeSessionRecord.continuity_abandonment_scope.is_(None),
+                    HttpBridgeSessionRecord.account_id.in_(unavailable_owner),
+                )
+                .values(continuity_abandonment_scope=_REQUEST_PATH_ABANDONMENT_SCOPE)
+                .returning(HttpBridgeSessionRecord.id)
+            )
             result = await self._session.execute(statement)
             await self._session.commit()
         return result.scalar_one_or_none() is not None

@@ -6,18 +6,37 @@ When a bridge turn fails because its continuity owner is unavailable, the proxy 
 whether that owner can return before the turn's own request budget expires, and retire it when
 it cannot. An owner whose reset horizon falls before the deadline MUST be waited for, preserving
 the upstream conversation state. An owner whose reset horizon falls after the deadline, or which
-carries no horizon at all, MUST be retired. The decision MUST be taken at most once per request,
+carries no horizon at all, MUST be retired. Only a rate-limited or quota-exceeded owner has a
+reset horizon; a `reset_at` still stored on a paused, re-authentication-blocked or deactivated
+owner MUST NOT be treated as one. A re-authentication-blocked owner whose stored access token is
+not known to be expired MUST be kept, because selection still routes it; the retirement write
+MUST be fenced to the status and access token that decision read. The decision MUST be taken at most once per request,
 MUST be serialized against a concurrent recovery of the same account, and MUST re-check the
 owner's status inside the write so a prior observation alone can never authorize it.
 
 #### Scenario: Owner with no recovery horizon
 
-- **GIVEN** a bridged thread whose owner account is paused, re-authentication-blocked, or
-  deactivated
+- **GIVEN** a bridged thread whose owner account is paused, re-authentication-blocked with an
+  expired access token, or deactivated
 - **WHEN** the turn fails because that owner is unavailable
 - **THEN** the owner is retired and the turn is served on a healthy account within the same
   request
 - **AND** no grace window has to elapse and no scheduled sweep has to run
+
+#### Scenario: A leftover reset does not keep an owner without a horizon
+
+- **GIVEN** a bridged thread whose owner became deactivated, or re-authentication-blocked with an
+  expired access token, while rate limited, so its account still stores a `reset_at` before the
+  request's deadline
+- **WHEN** the turn fails because that owner is unavailable
+- **THEN** the owner is retired as an owner with no recovery horizon
+
+#### Scenario: A re-authentication-blocked owner with a working token is kept
+
+- **GIVEN** a bridged thread whose owner is re-authentication-blocked but whose stored access
+  token expires after now
+- **WHEN** the turn fails because that owner is unavailable
+- **THEN** the owner is not retired and the thread keeps its latest response anchor
 
 #### Scenario: Owner returning inside the budget
 
