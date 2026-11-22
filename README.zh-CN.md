@@ -12,7 +12,7 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 
 > **截至 2026-11-21，[Soju06/codex-lb](https://github.com/Soju06/codex-lb) 的这个维护分支（fork）已审阅并决定了
 > 上游所有未关闭的 pull request 和 issue，**以及自 2026-10-16 起未合并即关闭的 pull request：移植了 68 个
-> pull request，另有 8 个 pull request 所针对的问题由 fork 自己的提交修复，修复了 36 个 issue，部分修复了 14 个
+> pull request，另有 8 个 pull request 所针对的问题由 fork 自己的提交修复，修复了 35 个 issue，部分修复了 16 个
 > issue。其余的被拒绝、推迟或不在范围内，每一项的理由都记录在[登记表](fork/REGISTRY.md)中。
 >
 > - 每个上游 PR 和 issue 的处理结果：[fork/REGISTRY.md](fork/REGISTRY.md)。政策：[FORK.md](FORK.md)。[与其他 fork 的比较](docs/fork-comparison.md)（英文）。
@@ -66,10 +66,10 @@ docker run -d --name codex-lb \
   --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/insciqq/codex-lb:1.25.0-fork.2
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.3
 
 # 或者使用 nix
-nix run github:insciqq/codex-lb/v1.25.0-fork.2
+nix run github:insciqq/codex-lb/v1.25.0-fork.3
 ```
 
 `uvx codex-lb` 安装的是上游的 PyPI 版本，而不是本 fork；本 fork 只发布容器镜像。

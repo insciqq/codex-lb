@@ -9,7 +9,7 @@ migrations that an image rollback cannot undo. Run the commands on this page
 from the checkout root:
 
 ```bash
-git clone --depth 1 --branch v1.25.0-fork.2 https://github.com/insciqq/codex-lb
+git clone --depth 1 --branch v1.25.0-fork.3 https://github.com/insciqq/codex-lb
 cd codex-lb
 helm dependency build deploy/helm/codex-lb/
 ```

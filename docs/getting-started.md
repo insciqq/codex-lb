@@ -11,10 +11,10 @@ docker run -d --name codex-lb \
   --stop-timeout 65 \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/insciqq/codex-lb:1.25.0-fork.2
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.3
 
 # or Nix
-nix run github:insciqq/codex-lb/v1.25.0-fork.2
+nix run github:insciqq/codex-lb/v1.25.0-fork.3
 ```
 
 `uvx codex-lb` installs upstream's PyPI release, not this fork: the fork publishes container images only.
@@ -50,7 +50,7 @@ docker run -d --name codex-lb \
   -e CODEX_LB_DASHBOARD_BOOTSTRAP_TOKEN=your-secret-token \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/insciqq/codex-lb:1.25.0-fork.2
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.3
 ```
 
 **Local access** (localhost) bypasses bootstrap entirely — no token needed.

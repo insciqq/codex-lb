@@ -16,7 +16,7 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 
 > **As of 2026-11-21, this maintained fork of [Soju06/codex-lb](https://github.com/Soju06/codex-lb) has reviewed and
 > decided every open upstream pull request and issue,** plus the pull requests closed without merge since 2026-10-16:
-> 68 pull requests ported, 8 more whose problem the fork fixes with its own commits, 36 issues fixed and 14 partly
+> 68 pull requests ported, 8 more whose problem the fork fixes with its own commits, 35 issues fixed and 16 partly
 > fixed. The rest are declined, deferred or out of scope, each with a reason in the [registry](fork/REGISTRY.md).
 >
 > - What happened to each upstream PR and issue: [fork/REGISTRY.md](fork/REGISTRY.md). Policy: [FORK.md](FORK.md). [Other forks compared](docs/fork-comparison.md).
@@ -69,10 +69,10 @@ docker run -d --name codex-lb \
   --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  ghcr.io/insciqq/codex-lb:1.25.0-fork.2
+  ghcr.io/insciqq/codex-lb:1.25.0-fork.3
 
 # or nix
-nix run github:insciqq/codex-lb/v1.25.0-fork.2
+nix run github:insciqq/codex-lb/v1.25.0-fork.3
 ```
 
 `uvx codex-lb` installs upstream's PyPI release, not this fork: the fork publishes container images only.
