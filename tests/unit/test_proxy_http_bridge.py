@@ -8986,6 +8986,79 @@ async def test_http_bridge_post_submit_cooldown_race_detaches_request(
 
 
 @pytest.mark.asyncio
+async def test_http_bridge_post_submit_cooldown_delivers_the_requests_own_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cooldown opened by this request's own terminal does not replace that terminal.
+
+    The reader claims the request when it takes its terminal and records the
+    circuit strike before it enqueues the frame, so the post-submit cooldown
+    read can see the open circuit while the queue is still empty.
+    """
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session(key_value="sid-own-terminal-cooldown")
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-own-terminal-cooldown",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        event_queue=queue,
+        transport="http",
+        previous_response_id="resp-anchor",
+    )
+    strike_recorded = asyncio.Event()
+    terminal = {
+        "type": "response.failed",
+        "response": {"error": {"code": "invalid_request_error", "message": "Unsupported parameter"}},
+    }
+
+    async def submit(target_session: Any, *, request_state: Any, **kwargs: Any) -> None:
+        del target_session, kwargs
+        # The reader took the terminal: the request left pending ownership.
+        request_state.terminal_settlement_phase = "claimed"
+        request_state.upstream_terminal_at = time.monotonic()
+
+    async def cooldown(*args: Any) -> float:
+        del args
+        if not strike_recorded.is_set():
+            strike_recorded.set()
+            return 0.0
+        return 30.0
+
+    async def deliver() -> None:
+        await strike_recorded.wait()
+        await asyncio.sleep(0)
+        queue.put_nowait(proxy_service.format_sse_event(terminal))
+        queue.put_nowait(None)
+
+    monkeypatch.setattr(service, "_submit_http_bridge_request", submit)
+    monkeypatch.setattr(service, "_http_bridge_precreated_retry_cooldown_seconds", cooldown)
+    monkeypatch.setattr(service, "_detach_http_bridge_request", AsyncMock())
+    producer = asyncio.create_task(deliver())
+    try:
+        events = [
+            event
+            async for event in service._stream_http_bridge_session_events(
+                session,
+                request_state=request_state,
+                text_data='{"type":"response.create"}',
+                queue_limit=8,
+                propagate_http_errors=False,
+                downstream_turn_state=None,
+            )
+        ]
+    finally:
+        await producer
+
+    payloads = [proxy_service.parse_sse_data_json(event) for event in events]
+    assert terminal in payloads
+    assert not any('"bridge_eventless_timeout"' in event for event in events)
+
+
+@pytest.mark.asyncio
 async def test_http_bridge_keepalive_counts_as_first_yield_before_late_response_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -4948,6 +4948,11 @@ class _HTTPBridgeStreamingMixin:
             and not request_state.verified_stale_anchor_replay
             and request_state.response_id is None
             and request_state.response_event_count == 0
+            # The reader claims a request when it takes the request's terminal
+            # and opens the circuit before it enqueues the frame, so this read
+            # can see a cooldown the request's own terminal caused. That
+            # terminal is on its way and must reach the client.
+            and request_state.terminal_settlement_phase != "claimed"
             and event_queue.empty()
         ):
             if PROMETHEUS_AVAILABLE and stream_idle_timeout_total is not None:

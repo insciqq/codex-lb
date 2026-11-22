@@ -556,3 +556,4 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(dashboard-auth): queue sign-in writes behind the SQLite writer section | [2447](https://github.com/Soju06/codex-lb/issues/2447) | - |
 | fix(api): bound the nesting of extension request fields | - | bug found in production or review |
 | fix(http-bridge): retire a paused or reauth owner despite a leftover reset | - | bug found in production or review |
+| fix(http-bridge): deliver a request's own terminal past the cooldown check | - | bug found in production or review |

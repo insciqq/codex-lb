@@ -1020,6 +1020,17 @@ and durable circuit state.
 - **AND** bounded retirement is invoked
 - **AND** submit is not attempted
 
+#### Scenario: a cooldown opened by the request's own terminal keeps that terminal
+
+- **GIVEN** a hard continuity-bound request was submitted and upstream answered
+  it with a terminal before any response event
+- **AND** the reader has taken that terminal and opened the retry circuit, but
+  has not yet enqueued the frame
+- **WHEN** the post-submit cooldown check runs
+- **THEN** the request is not detached and no synthetic eventless cooldown
+  terminal is emitted
+- **AND** the client receives the upstream terminal
+
 #### Scenario: cooldown replay bypass does not retire the session
 
 - **GIVEN** a hard-key request is in cooldown
