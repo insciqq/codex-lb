@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
+import app.db.session as session_module
 from app.core.exceptions import DashboardRateLimitError
-from app.core.rate_limiter.db_rate_limiter import DatabaseRateLimiter
+from app.core.rate_limiter.db_rate_limiter import DatabaseRateLimiter, get_rate_limit_attempt_sweeper
 from app.db.models import Base, RateLimitAttempt
+from tests.fixtures.sqlite_writer_section import record_writer_section_ownership
 
 pytestmark = pytest.mark.unit
 
@@ -187,3 +192,61 @@ async def test_record_failure_only_counts_failures(
 
         # Should NOT be blocked (only 1 failure since last success)
         await limiter.check("ip:failure-test", session)
+
+
+@dataclass(frozen=True, slots=True)
+class _FileDatabaseSettings:
+    database_url: str
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["check_and_increment", "record_failure"])
+async def test_the_window_is_measured_after_waiting_for_the_writer_section(
+    async_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    """Attempts that expire while the write waits for the section no longer count."""
+    monkeypatch.setattr(
+        session_module, "_settings", _FileDatabaseSettings(database_url=f"sqlite+aiosqlite:///{tmp_path / 'x.db'}")
+    )
+    monkeypatch.setattr(session_module, "_sqlite_writer_lock", None)
+    limiter = DatabaseRateLimiter(max_attempts=8, window_seconds=60, type="password")
+    almost_expired = datetime.now(UTC) - timedelta(seconds=59)
+    async with async_session_factory() as session:
+        session.add_all(
+            [RateLimitAttempt(key="ip:queued", type="password", attempted_at=almost_expired) for _ in range(8)]
+        )
+        await session.commit()
+
+    holding = asyncio.Event()
+
+    async def hold_the_section() -> None:
+        async with session_module.sqlite_writer_section():
+            holding.set()
+            await asyncio.sleep(1.1)
+
+    holder = asyncio.create_task(hold_the_section())
+    await holding.wait()
+    async with async_session_factory() as session:
+        await getattr(limiter, operation)("ip:queued", session)
+    await holder
+
+
+@pytest.mark.asyncio
+async def test_the_retention_sweep_runs_inside_the_writer_section(
+    async_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        session_module, "_settings", _FileDatabaseSettings(database_url=f"sqlite+aiosqlite:///{tmp_path / 'x.db'}")
+    )
+    monkeypatch.setattr(session_module, "_sqlite_writer_lock", None)
+    async with async_session_factory() as session:
+        engine = cast(AsyncEngine, session.bind)
+        with record_writer_section_ownership(engine.sync_engine) as recorded:
+            await get_rate_limit_attempt_sweeper().cleanup(session)
+
+    assert recorded.held_for("DELETE FROM rate_limit_attempts") == [True]

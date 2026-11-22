@@ -25,14 +25,14 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | Status | Issues | Meaning |
 |---|---|---|
 | fixed | 35 | fixed in the fork by a taken PR or the fork's own commits |
-| partial | 15 | partly addressed in the fork; the reason says what is left |
+| partial | 16 | partly addressed in the fork; the reason says what is left |
 | fixed-upstream | 5 | fixed in upstream main |
 | not-fixed | 15 | reviewed and not fixed in the fork, for the reason given |
 | out-of-scope | 37 | a feature request |
 | not-applicable | 8 | does not concern the fork |
 | deferred | 15 | decided, scheduled after the first release |
 | pending | 0 | no decision yet |
-| total | 130 | |
+| total | 131 | |
 
 ## Pull requests
 
@@ -358,6 +358,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2426](https://github.com/Soju06/codex-lb/issues/2426) | bug(metrics): populate account counts and expose availability for alerting | open | partial | own fix; PRs [2523](https://github.com/Soju06/codex-lb/pull/2523); The fork exports codex_lb_accounts_total by stored account status; the routing-availability gauge the issue asks for is not added. |
 | [2442](https://github.com/Soju06/codex-lb/issues/2442) | bug(proxy): early token\_expired reauth account poisons fresh Codex HTTP routing | open | deferred | Blocking an account on a refused access token must not retire accounts whose refresh token still works. |
 | [2443](https://github.com/Soju06/codex-lb/issues/2443) | bug(metrics): dashboard/report TPS uses post-settlement latency and reasoning-inclusive TTFT | open | not-fixed | PRs [2444](https://github.com/Soju06/codex-lb/pull/2444); A correct generation rate needs the upstream terminal latency stored per request, which is a schema change; the fork keeps the upstream schema. |
+| [2447](https://github.com/Soju06/codex-lb/issues/2447) | SQLite database is locked during login/OAuth under concurrent streaming load | closed | partial | own fix; Sign-in rate-limit, last-login, TOTP and OIDC flow writes queue behind the SQLite writer section; the identity-resolution writes of an OIDC or trusted-header sign-in and the credential writes after the accounts write intent do not yet. |
 | [2455](https://github.com/Soju06/codex-lb/issues/2455) | bug(proxy): bridge payload bypass blocks verified quota failover | open | deferred | Failing a bridge-bypassed history over to another account on quota needs the owner-relocation design scheduled after the first release. |
 | [2456](https://github.com/Soju06/codex-lb/issues/2456) | bug(proxy): Windows route errors 1231/1232 bypass shared-client recovery | open | fixed | fixed by PR [2457](https://github.com/Soju06/codex-lb/pull/2457) |
 | [2465](https://github.com/Soju06/codex-lb/issues/2465) | bug: beta.9 sticky bridge lineages wedge permanently; image+tools path sends invalid parallel\_tool\_calls | open | partial | partly fixed by PR [2530](https://github.com/Soju06/codex-lb/pull/2530), [2531](https://github.com/Soju06/codex-lb/pull/2531); own fix; Multi-line WebSocket JSON from upstream is parsed (PR 2530), so upstream errors no longer end as eventless bridge timeouts; the Responses-Lite parallel_tool_calls rejection on the image-plus-tools path is not addressed yet. |
@@ -552,3 +553,4 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | fix(proxy): fail fast for a hard owner outside the key's accounts | - | bug found in production or review |
 | fix(egress): pool native HTTP connections per account | [2471](https://github.com/Soju06/codex-lb/issues/2471) | - |
 | fix(proxy): deliver every HTTP bridge pre-dispatch refusal to native clients | [2388](https://github.com/Soju06/codex-lb/issues/2388) | - |
+| fix(dashboard-auth): queue sign-in writes behind the SQLite writer section | [2447](https://github.com/Soju06/codex-lb/issues/2447) | - |

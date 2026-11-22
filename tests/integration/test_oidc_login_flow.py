@@ -59,6 +59,11 @@ from tests.fixtures.fake_idp import (
     json_response,
     provider_config_document,
 )
+from tests.fixtures.sqlite_writer_section import (
+    app_sync_engines,
+    record_writer_section_ownership,
+    section_writer_holding_the_slot,
+)
 from tests.integration.route_inventory import iter_routes
 
 pytestmark = pytest.mark.integration
@@ -577,6 +582,38 @@ async def test_an_identity_provider_error_is_not_reflected(async_client: AsyncCl
     assert refused.headers["location"] == OIDC_FAILURE_PATH
     assert "access_denied" not in refused.text and "said no" not in refused.text
     assert all("said no" not in (row.details or "") for row in await _rows("login_failed"))
+
+
+@pytest.mark.asyncio
+async def test_the_flow_writes_wait_for_the_sqlite_writer_section(
+    async_client: AsyncClient, idp: FakeIdp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _configure_provider()
+
+    # The start spends its budget, purges expired flows and stores the new one;
+    # the callback spends two budgets and consumes the flow. Each write queues
+    # behind the section instead of failing with "database is locked" once the
+    # busy timeout runs out.
+    async with section_writer_holding_the_slot(monkeypatch, hold_seconds=1.0):
+        parameters = await _start(async_client)
+    async with section_writer_holding_the_slot(monkeypatch, hold_seconds=1.0):
+        refused = await _callback(async_client, state=parameters["state"], code=None, extra={"error": "access_denied"})
+
+    assert refused.headers["location"] == OIDC_FAILURE_PATH
+    async with SessionLocal() as session:
+        assert (await session.execute(select(DashboardOidcLoginFlow))).scalars().all() == []
+
+    # Each flow write runs while the request itself holds the section.
+    flows = "dashboard_oidc_login_flows"
+    with record_writer_section_ownership(*app_sync_engines()) as started:
+        parameters = await _start(async_client)
+    assert started.held_for(f"DELETE FROM {flows} WHERE {flows}.expires_at") == [True]
+    assert started.held_for(f"INSERT INTO {flows}") == [True]
+    assert started.held_for("INSERT INTO rate_limit_attempts") == [True]
+    with record_writer_section_ownership(*app_sync_engines()) as called_back:
+        await _callback(async_client, state=parameters["state"], code=None, extra={"error": "access_denied"})
+    assert called_back.held_for(f"DELETE FROM {flows} WHERE {flows}.state_hash") == [True]
+    assert called_back.held_for("INSERT INTO rate_limit_attempts") == [True, True, True]
 
 
 # --- 5. every failure looks the same, and carries nothing ---

@@ -1929,6 +1929,12 @@ status = "not-fixed"
 prs = [2444]
 reason = "A correct generation rate needs the upstream terminal latency stored per request, which is a schema change; the fork keeps the upstream schema."
 
+[issue.2447]
+title = "SQLite database is locked during login/OAuth under concurrent streaming load"
+state = "closed"
+status = "partial"
+reason = "Sign-in rate-limit, last-login, TOTP and OIDC flow writes queue behind the SQLite writer section; the identity-resolution writes of an OIDC or trusted-header sign-in and the credential writes after the accounts write intent do not yet."
+
 [issue.2455]
 title = "bug(proxy): bridge payload bypass blocks verified quota failover"
 state = "open"

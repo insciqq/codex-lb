@@ -5,6 +5,11 @@ from sqlalchemy import delete
 
 from app.db.models import RateLimitAttempt
 from app.db.session import get_background_session
+from tests.fixtures.sqlite_writer_section import (
+    app_sync_engines,
+    record_writer_section_ownership,
+    section_writer_holding_the_slot,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -759,3 +764,28 @@ async def test_roles_without_all_scope_dashboard_read_are_refused_by_the_session
         assert refused.status_code == 403, (path, refused.text)
         assert refused.json()["error"]["code"] == "permission_required"
         assert refused.json()["error"]["param"] == "dashboard:read"
+
+
+@pytest.mark.asyncio
+async def test_password_login_waits_for_the_sqlite_writer_section(async_client, monkeypatch):
+    await _clear_password_rate_limit_attempts()
+    setup = await async_client.post("/api/dashboard-auth/password/setup", json={"password": "password123"})
+    assert setup.status_code == 200
+    await async_client.post("/api/dashboard-auth/logout", json={})
+
+    # The sign-in spends the rate-limit budget, clears it and stamps
+    # last_login_at; each write queues behind the section instead of failing
+    # with "database is locked" once the busy timeout runs out.
+    async with section_writer_holding_the_slot(monkeypatch, hold_seconds=1.0):
+        login = await async_client.post("/api/dashboard-auth/password/login", json={"password": "password123"})
+
+    assert login.status_code == 200
+    assert login.json()["authenticated"] is True
+
+    # Each of those writes runs while the sign-in itself holds the section.
+    with record_writer_section_ownership(*app_sync_engines()) as recorded:
+        login = await async_client.post("/api/dashboard-auth/password/login", json={"password": "password123"})
+    assert login.status_code == 200
+    assert recorded.held_for("INSERT INTO rate_limit_attempts") == [True, True]
+    assert recorded.held_for("DELETE FROM rate_limit_attempts") == [True]
+    assert recorded.held_for("UPDATE dashboard_users SET updated_at=CURRENT_TIMESTAMP, last_login_at") == [True]

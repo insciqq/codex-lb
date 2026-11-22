@@ -11,6 +11,11 @@ from app.core.config.settings_cache import get_settings_cache
 from app.db.models import COMPAT_ADMIN_USERNAME, DashboardSettings, DashboardUser
 from app.db.session import SessionLocal
 from app.modules.dashboard_auth.service import DASHBOARD_SESSION_COOKIE, get_dashboard_session_store
+from tests.fixtures.sqlite_writer_section import (
+    app_sync_engines,
+    record_writer_section_ownership,
+    skip_unless_file_backed_sqlite,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -687,3 +692,34 @@ async def test_totp_policy_without_secret_requires_enrollment_before_dashboard_a
     assert verify.status_code == 200
     assert verify.json()["totpEnrollmentRequired"] is False
     assert (await async_client.get("/api/settings")).status_code == 200
+
+
+async def test_totp_verify_advances_the_replay_counter_inside_the_writer_section(async_client, monkeypatch):
+    """The replay-counter write of a TOTP sign-in queues behind the SQLite writer section."""
+    skip_unless_file_backed_sqlite()
+    current_epoch = {"value": 1_700_000_000}
+
+    import app.core.auth.totp as totp_module
+    import app.modules.dashboard_auth.service as dashboard_auth_service_module
+
+    monkeypatch.setattr(totp_module, "time", lambda: current_epoch["value"])
+    monkeypatch.setattr(dashboard_auth_service_module, "time", lambda: current_epoch["value"])
+
+    assert (
+        await async_client.post("/api/dashboard-auth/password/setup", json={"password": "password123"})
+    ).status_code == 200
+    secret = (await async_client.post("/api/dashboard-auth/totp/setup/start", json={})).json()["secret"]
+    confirm = await async_client.post(
+        "/api/dashboard-auth/totp/setup/confirm",
+        json={"secret": secret, "code": pyotp.TOTP(secret).at(current_epoch["value"])},
+    )
+    assert confirm.status_code == 200
+    current_epoch["value"] += 30
+
+    with record_writer_section_ownership(*app_sync_engines()) as recorded:
+        verified = await async_client.post(
+            "/api/dashboard-auth/totp/verify", json={"code": pyotp.TOTP(secret).at(current_epoch["value"])}
+        )
+
+    assert verified.status_code == 200, verified.text
+    assert recorded.held_containing("totp_last_verified_step=?") == [True]

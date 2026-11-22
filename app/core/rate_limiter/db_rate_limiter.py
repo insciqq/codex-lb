@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import DashboardRateLimitError
 from app.db.models import RateLimitAttempt
+from app.db.session import sqlite_writer_section
 
 #: How long a recorded attempt is kept before the periodic sweep deletes it.
 #: Every limiter in the product counts over a window of at most a minute, so an
@@ -74,40 +75,43 @@ class DatabaseRateLimiter:
         safe across processes sharing the same database file.
         """
         dialect_name = session.get_bind().dialect.name
-        if dialect_name == "postgresql":
-            lock_key = f"{self.type}:{key}"
-            await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": lock_key})
-
-        now = datetime.now(UTC)
-        window_start = now - timedelta(seconds=self.window_seconds)
         key_column = RateLimitAttempt.__table__.c.key
         type_column = RateLimitAttempt.__table__.c.type
         attempted_at_column = RateLimitAttempt.__table__.c.attempted_at
 
-        raw_result = await session.execute(
-            insert(RateLimitAttempt)
-            .from_select(
-                [key_column.name, type_column.name, attempted_at_column.name],
-                select(
-                    literal(key, type_=key_column.type),
-                    literal(self.type, type_=type_column.type),
-                    literal(now, type_=attempted_at_column.type),
-                ).where(
-                    select(func.count())
-                    .select_from(RateLimitAttempt)
-                    .where(
-                        RateLimitAttempt.key == key,
-                        RateLimitAttempt.type == self.type,
-                        RateLimitAttempt.attempted_at >= window_start,
-                    )
-                    .scalar_subquery()
-                    < self.max_attempts
-                ),
+        async with sqlite_writer_section():
+            if dialect_name == "postgresql":
+                lock_key = f"{self.type}:{key}"
+                await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": lock_key})
+            # Sampled once the write is serialized, so the time spent waiting
+            # for the writer section or the advisory lock does not shift the
+            # window back over attempts that have already expired.
+            now = datetime.now(UTC)
+            window_start = now - timedelta(seconds=self.window_seconds)
+            raw_result = await session.execute(
+                insert(RateLimitAttempt)
+                .from_select(
+                    [key_column.name, type_column.name, attempted_at_column.name],
+                    select(
+                        literal(key, type_=key_column.type),
+                        literal(self.type, type_=type_column.type),
+                        literal(now, type_=attempted_at_column.type),
+                    ).where(
+                        select(func.count())
+                        .select_from(RateLimitAttempt)
+                        .where(
+                            RateLimitAttempt.key == key,
+                            RateLimitAttempt.type == self.type,
+                            RateLimitAttempt.attempted_at >= window_start,
+                        )
+                        .scalar_subquery()
+                        < self.max_attempts
+                    ),
+                )
+                .returning(attempted_at_column)
             )
-            .returning(attempted_at_column)
-        )
-        inserted = raw_result.scalar_one_or_none() is not None
-        await session.commit()
+            inserted = raw_result.scalar_one_or_none() is not None
+            await session.commit()
 
         if not inserted:
             oldest_attempt = await session.scalar(
@@ -136,27 +140,28 @@ class DatabaseRateLimiter:
         re-counts attempts; if the post-insert total exceeds
         ``max_attempts`` raises ``DashboardRateLimitError``.
         """
-        now = datetime.now(UTC)
         lock_key = f"{self.type}:{key}"
 
         dialect_name = session.get_bind().dialect.name
-        if dialect_name == "postgresql":
-            await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": lock_key})
+        async with sqlite_writer_section():
+            if dialect_name == "postgresql":
+                await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": lock_key})
 
-        session.add(RateLimitAttempt(key=key, type=self.type, attempted_at=now))
-        await session.flush()
+            now = datetime.now(UTC)
+            window_start = now - timedelta(seconds=self.window_seconds)
+            session.add(RateLimitAttempt(key=key, type=self.type, attempted_at=now))
+            await session.flush()
 
-        window_start = now - timedelta(seconds=self.window_seconds)
-        count = await session.scalar(
-            select(func.count())
-            .select_from(RateLimitAttempt)
-            .where(
-                RateLimitAttempt.key == key,
-                RateLimitAttempt.type == self.type,
-                RateLimitAttempt.attempted_at >= window_start,
+            count = await session.scalar(
+                select(func.count())
+                .select_from(RateLimitAttempt)
+                .where(
+                    RateLimitAttempt.key == key,
+                    RateLimitAttempt.type == self.type,
+                    RateLimitAttempt.attempted_at >= window_start,
+                )
             )
-        )
-        await session.commit()
+            await session.commit()
 
         if (count or 0) > self.max_attempts:
             oldest_attempt = await session.scalar(
@@ -179,13 +184,14 @@ class DatabaseRateLimiter:
 
     async def clear_for_key(self, key: str, session: AsyncSession) -> None:
         """Delete all attempts for (key, type) — used to reset counter on successful auth."""
-        await session.execute(
-            delete(RateLimitAttempt).where(
-                RateLimitAttempt.key == key,
-                RateLimitAttempt.type == self.type,
+        async with sqlite_writer_section():
+            await session.execute(
+                delete(RateLimitAttempt).where(
+                    RateLimitAttempt.key == key,
+                    RateLimitAttempt.type == self.type,
+                )
             )
-        )
-        await session.commit()
+            await session.commit()
 
     async def cleanup(
         self, session: AsyncSession, older_than_seconds: int = RATE_LIMIT_ATTEMPT_RETENTION_SECONDS
@@ -198,8 +204,9 @@ class DatabaseRateLimiter:
         """
 
         cutoff = datetime.now(UTC) - timedelta(seconds=older_than_seconds)
-        await session.execute(delete(RateLimitAttempt).where(RateLimitAttempt.attempted_at < cutoff))
-        await session.commit()
+        async with sqlite_writer_section():
+            await session.execute(delete(RateLimitAttempt).where(RateLimitAttempt.attempted_at < cutoff))
+            await session.commit()
 
 
 #: ``cleanup`` sweeps by age across every ``type``, so the periodic pass needs

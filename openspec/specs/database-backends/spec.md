@@ -212,6 +212,26 @@ advisory-lock behavior.
 - **WHEN** an account status transition is persisted
 - **THEN** the write executes inside the shared SQLite writer section
 
+### Requirement: SQLite dashboard sign-in writes share the local writer section
+
+On a file-backed SQLite database, the dashboard sign-in write transactions SHALL
+run inside the shared SQLite writer section, from their first write statement to
+their commit or rollback. This covers the dashboard rate-limit attempt writes
+(record, clear and the retention sweep), the last-login stamp, the TOTP replay
+counter advance, and the OIDC flow writes (create, consume and the expired-flow
+purge). These writes MUST NOT be entered while the same session already holds an
+uncommitted write transaction.
+
+PostgreSQL sign-in writes SHALL keep their existing transaction and
+advisory-lock behavior.
+
+#### Scenario: A sign-in queues behind the in-process writers
+
+- **GIVEN** the deployment uses a file-backed SQLite database
+- **AND** in-process writers hold the writer section and the writer slot for longer than the busy timeout
+- **WHEN** a password sign-in or an OIDC start or callback writes to the database
+- **THEN** the write waits for the writer section and succeeds instead of failing with `database is locked`
+
 ### Requirement: Telemetry write transactions relax commit durability on PostgreSQL
 
 A write transaction is classified as a **telemetry write** when it only appends observability rows whose loss on a database-server crash changes nothing about accounting semantics: request-log inserts (`request_logs`) and usage-history appends (`usage_history`, `additional_usage_history`). API-key usage-reservation accounting is explicitly NOT telemetry (see the reservation-durability requirement below).

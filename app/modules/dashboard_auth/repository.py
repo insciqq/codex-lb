@@ -28,6 +28,7 @@ from app.db.models import (
     DashboardUserRoleSource,
     DashboardUserStatus,
 )
+from app.db.session import sqlite_writer_section
 from app.modules.dashboard_roles.repository import DashboardRolesRepository
 from app.modules.dashboard_users.repository import (
     DashboardUserCounts,
@@ -399,23 +400,24 @@ class DashboardAuthRepository:
         the break-glass guard takes its write-intent lock.
         """
 
-        result = await self._session.execute(
-            update(DashboardUser)
-            .where(DashboardUser.id == user_id)
-            .where(
-                or_(
-                    DashboardUser.totp_last_verified_step.is_(None),
-                    DashboardUser.totp_last_verified_step < step,
+        async with sqlite_writer_section():
+            result = await self._session.execute(
+                update(DashboardUser)
+                .where(DashboardUser.id == user_id)
+                .where(
+                    or_(
+                        DashboardUser.totp_last_verified_step.is_(None),
+                        DashboardUser.totp_last_verified_step < step,
+                    )
                 )
+                .values(totp_last_verified_step=step)
+                .returning(DashboardUser.id)
             )
-            .values(totp_last_verified_step=step)
-            .returning(DashboardUser.id)
-        )
-        if result.scalar_one_or_none() is None:
-            await self._session.rollback()
-            return False
-        await self._session.commit()
-        return True
+            if result.scalar_one_or_none() is None:
+                await self._session.rollback()
+                return False
+            await self._session.commit()
+            return True
 
     async def bump_session_generation(self, user_id: str) -> int:
         user = await self._write_user(user_id, lambda _user: None, bump_generation=True)
@@ -446,7 +448,8 @@ class DashboardAuthRepository:
         )
 
     async def touch_last_login(self, user_id: str) -> None:
-        await self._session.execute(
-            update(DashboardUser).where(DashboardUser.id == user_id).values(last_login_at=utcnow())
-        )
-        await self._session.commit()
+        async with sqlite_writer_section():
+            await self._session.execute(
+                update(DashboardUser).where(DashboardUser.id == user_id).values(last_login_at=utcnow())
+            )
+            await self._session.commit()
