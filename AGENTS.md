@@ -67,7 +67,7 @@ in [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md). The sections
 an AI assistant most often needs are:
 
 - [Merge gates](.github/CONTRIBUTING.md#merge-gates) — CI green +
-  actionable CodeRabbit findings addressed + `mergeable=CLEAN` +
+  actionable CodeRabbit findings addressed + `mergeStateStatus=CLEAN` +
   OpenSpec change folder for behavior changes + `Fixes #N` /
   `Closes #N` for issue cover + the six simplicity rules
   (PRINCIPLES.md P1-P6; see
@@ -81,7 +81,7 @@ an AI assistant most often needs are:
 
 An assistant preparing a merge MUST verify the gates against the
 actual GitHub state (status check rollup, current-head CodeRabbit review
-threads, `mergeable` field) rather than asserting them from local history.
+threads, `mergeStateStatus` field) rather than asserting them from local history.
 Local `uv run pytest` / `uv run ruff` / `codex review --base origin/main`
 are encouraged but not substitutes for the cloud gates.
 

@@ -25,6 +25,7 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 >   Codex clients and the OpenAI backend; upstream has had no new commits since 2026-10-16.
 > - **Scope:** bug fixes, security, compatibility with current Codex clients and the OpenAI backend, and
 >   dependency updates. New features are on hold until the fork has settled with a few stable releases.
+>   Issues and pull requests within this scope are welcome here ([how they land](FORK.md#pull-requests-to-this-fork)).
 > - **Releases:** version tags with images at `ghcr.io/insciqq/codex-lb`; `latest` points to the newest release.
 >   Release notes are on [Releases](https://github.com/insciqq/codex-lb/releases); `CHANGELOG.md` is upstream's.
 > - **Coming from upstream:** see [Migrating from upstream](#migrating-from-upstream).

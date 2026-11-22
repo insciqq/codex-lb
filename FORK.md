@@ -1,9 +1,10 @@
 # Fork policy
 
 This fork tracks [Soju06/codex-lb](https://github.com/Soju06/codex-lb) and
-applies selected upstream pull requests that upstream has not merged. Until the
-fork has settled with a few stable releases it adds no functionality of its
-own; feature work may be considered after that.
+applies selected upstream pull requests that upstream has not merged, its own
+fixes and fixes contributed here ([Pull requests to this fork](#pull-requests-to-this-fork)).
+Until the fork has settled with a few stable releases it adds no new
+functionality; feature work may be considered after that.
 
 ## Branches
 
@@ -17,13 +18,19 @@ In this document `upstream/main` is the `upstream` remote's branch, Soju06/codex
 `main`; the fork's `main` is always called that.
 
 Work branches stay local. When a `wip/merge-*` head is green, the fork's `main` is
-fast-forwarded to exactly the SHA that CI tested. Take the literal SHA from
-the successful run, not a remote ref that may have moved since:
+fast-forwarded to exactly the SHA that CI tested. Record the candidate SHA
+before pushing it, and promote it only when a successful push run exists for
+that branch and that SHA, not a remote ref that may have moved since:
 
 ```bash
-sha="$(gh run list --workflow CI --branch wip/merge-<name> --event push \
-  --status success -L 1 --json headSha --jq '.[0].headSha // empty')" &&
-  [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] &&
+branch="wip/merge-<name>"
+candidate="$(git rev-parse --verify "HEAD^{commit}")" &&
+  git push origin "${candidate}:refs/heads/${branch}"
+# when CI is green:
+sha="$(gh run list --repo insciqq/codex-lb --workflow CI --event push \
+  --branch "${branch}" --commit "${candidate}" --status success \
+  -L 1 --json headSha --jq '.[0].headSha // empty')" &&
+  [[ "${sha}" =~ ^[0-9a-f]{40}$ && "${sha}" == "${candidate}" ]] &&
   git push origin "${sha}:refs/heads/main"
 ```
 
@@ -190,11 +197,75 @@ settings that it is public before relying on anonymous pulls.
   stable releases.
 * Own fixes for bugs observed in production, with `Upstream-PR: none` and
   `Upstream-Issue` when an upstream report exists.
-* No functionality from other forks and, for now, no fork-specific features.
-* One fork commit per upstream PR, keeping the PR author as the commit
-  author. Squash the PR's commits when it has several.
+* Issues and pull requests opened in this fork by anyone, including people
+  who work on other forks, within the same scope
+  ([Pull requests to this fork](#pull-requests-to-this-fork)). A bug fix
+  first written in another fork is welcome when the contributor has the
+  right to submit it under the MIT license and its original author is
+  credited, for example with `Co-authored-by`.
+* No features for now, whether from upstream, from other forks or of the
+  fork's own.
+* One fork commit per upstream or fork pull request, keeping the PR author
+  as the commit author. Squash the PR's commits when it has several.
 * No new Alembic revisions: the database schema stays identical to upstream,
   so switching between upstream and the fork is an image swap.
+
+## Pull requests to this fork
+
+Open issues and pull requests here, in insciqq/codex-lb, not upstream.
+Features are on hold, so propose them in
+[Discussions](https://github.com/insciqq/codex-lb/discussions) rather than as
+a pull request. Report an undisclosed vulnerability privately first, through
+a [security advisory](https://github.com/insciqq/codex-lb/security/advisories/new)
+([SECURITY.md](.github/SECURITY.md)), not in a public issue or pull request.
+
+* Target `main`. CI runs on the pull request: the common checks (OpenSpec
+  validation, the fork registry and the aggregate checks) always run, and
+  the changed paths select the rest; when the changed-files lookup fails,
+  every area runs. A first-time contributor's run waits for a maintainer's
+  approval.
+* The review bar is the one for upstream pull requests the fork takes: fix
+  the root cause, not a symptom; keep prompt-cache affinity intact; add tests
+  that fail without the fix; add an OpenSpec change when observable behaviour
+  changes; no new Alembic revisions.
+* A pull request is not merged with GitHub's merge button. The fork's `main`
+  moves only by fast-forward to a SHA with a green full CI run, and a pull
+  request run does not count ([CI](#ci)). A squash merge would put a new,
+  untested commit on `main`, and the `main` ruleset rejects merge commits and
+  non-fast-forward pushes.
+
+A maintainer lands an accepted pull request like this:
+
+1. Take its change as one commit on top of the fork's `main`, keeping the
+   contributor as the commit author and any `Co-authored-by` lines. The
+   subject follows Conventional Commits, without a `(#<n>)` suffix.
+2. End the message with the [trailers](#commit-trailers):
+   * A change that ports an identifiable upstream PR, for example one its
+     author resubmits here, records that PR in `Upstream-PR` and its head in
+     `Upstream-PR-Head`, like any upstream pick, so the registry and the
+     rebuild's drop signal track it.
+   * A change that originates in the fork takes `Upstream-PR: none`, and
+     `Fork-Only` with the reason when it names no upstream issue, for
+     example `production-fix` for a bug fix.
+   * Either kind adds `Upstream-Issue` with every upstream issue it fully or
+     partly fixes.
+
+   `Upstream-PR` and `Upstream-Issue` take upstream numbers only; name the
+   fork's pull request or issue in the body as plain text, for example
+   "fork pull request 12", without `#`.
+3. The trailers now decide every upstream PR and issue they name, so align
+   its entry in `fork/decisions.toml`: a taken PR stores `pending` (or
+   `merged-upstream`) without `by` and without a `reason` left from an
+   earlier rejection or deferral; a fully fixed issue stores `pending`
+   without its stale `reason`; a partly fixed issue stores `partial` with
+   what remains. Then run `python3 scripts/fork_registry.py render`. If
+   `fork/decisions.toml` or `fork/REGISTRY.md` changed, `git add` both and
+   `git commit --amend --no-edit`, which keeps the author. Run
+   `python3 scripts/fork_registry.py check` on the clean commit.
+4. Only then record the candidate SHA, push it as `wip/merge-<name>` and,
+   when CI is green, fast-forward the fork's `main` to the SHA that CI
+   tested ([Branches](#branches)).
+5. Close the pull request with a link to the commit on `main`.
 
 ## Commit trailers
 
@@ -206,7 +277,7 @@ and rebuilds do not add cross-reference events to upstream threads.
 | `Upstream-PR` | Upstream PR number, or `none` |
 | `Upstream-PR-Head` | Upstream PR head SHA at pick time |
 | `Upstream-Issue` | Upstream issue numbers, comma-separated |
-| `Fork-Only` | Reason for a commit without an upstream PR or issue: fork tooling, CI, spec fixes, or an own bug fix found in production or review (`production-fix`) |
+| `Fork-Only` | Reason for a commit without an upstream PR or issue: fork tooling, CI, spec fixes, or a bug fix, own or contributed, found in production or review (`production-fix`) |
 
 `Upstream-PR: none` requires `Upstream-Issue` or `Fork-Only`.
 
@@ -263,23 +334,69 @@ it and `sync` keeps it. A taken PR or a trailer-fixed issue cannot be deferred.
 ## Rebuilding on a new upstream
 
 Upstream squash-merges, so a plain rebase does not recognise merged patches.
+Nothing else lands on the fork's `main` while a rebuild is in progress: the
+maintainer doing the rebuild holds all landings until step 6 is done.
 Rebuild instead:
 
-1. `git fetch origin upstream` and run the report against the current fork `main`.
-2. `git tag rebuild/<date>-<short> origin/main` and push the tag.
-3. `git switch -C rebuild-<date> upstream/main`, then cherry-pick the patches
-   without a `merged upstream` signal, in report order.
-4. Push the rebuilt head for CI, `git push origin rebuild-<date>:refs/heads/wip/merge-rebuild-<date>`,
-   and wait until it is green. A push to the fork's `main` runs no CI.
-5. Move the fork's `main` to the SHA that run tested, not to a ref that may have
-   moved:
+1. Fetch, pin the fork head and the upstream base, and run the report on
+   exactly those commits:
 
    ```bash
-   sha="$(gh run list --workflow CI --branch wip/merge-rebuild-<date> --event push \
-     --status success -L 1 --json headSha --jq '.[0].headSha // empty')" &&
-     [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] &&
-     git push --force-with-lease origin "${sha}:refs/heads/main"
+   git fetch --multiple origin upstream &&
+     old_sha="$(git rev-parse --verify 'origin/main^{commit}')" &&
+     upstream_base="$(git rev-parse --verify 'upstream/main^{commit}')" &&
+     python3 scripts/fork_patches.py --base "${upstream_base}" --head "${old_sha}"
    ```
+
+2. `git tag rebuild/<date>-<short> "${old_sha}"` and push the tag.
+3. `git switch -C rebuild-<date> "${upstream_base}"`, then cherry-pick the
+   patches in report order. Leave out a patch with a `merged upstream`
+   signal only when its upstream merge commit
+   (`gh pr view <n> -R Soju06/codex-lb --json mergeCommit --jq .mergeCommit.oid`)
+   is in the pinned base,
+   `git merge-base --is-ancestor <merge commit> "${upstream_base}"`;
+   otherwise keep the pick, or start over against a newer base.
+
+   Before leaving such a pick out, compare what upstream merged with the
+   pick, its commit body and its `rework` note in `fork/decisions.toml`: a
+   pick taken with changes can carry fork adjustments the upstream merge
+   lacks. Carry every adjustment that is still needed, with its regression
+   test, onto the rebuild branch as its own commit with `Upstream-PR: none`
+   and `Fork-Only: <reason>`.
+4. Reconcile the registry as described in
+   [Decisions registry](#decisions-registry): set `[registry].base` to
+   `${upstream_base}`, run `python3 scripts/fork_registry.py sync` and
+   `render`, commit `fork/decisions.toml` and `fork/REGISTRY.md` on the
+   rebuild branch (`Upstream-PR: none`, `Fork-Only: fork tooling`), and run
+   `python3 scripts/fork_registry.py check` on that commit.
+5. Record the rebuilt head and push it for CI, then wait until it is green.
+   A push to the fork's `main` runs no CI.
+
+   ```bash
+   branch="wip/merge-rebuild-<date>"
+   candidate="$(git rev-parse --verify "rebuild-<date>^{commit}")" &&
+     git push origin "${candidate}:refs/heads/${branch}"
+   ```
+
+6. Move the fork's `main` to the SHA that run tested, leased on the pinned
+   `old_sha`, so a commit that reached `main` meanwhile is not dropped.
+
+   The `main history` ruleset rejects non-fast-forward pushes and has no
+   bypass actors, so before this push the owner disables it in the
+   repository's ruleset settings, and enables it again right after. The tag
+   from step 2 keeps the previous head reachable.
+
+   ```bash
+   sha="$(gh run list --repo insciqq/codex-lb --workflow CI --event push \
+     --branch "${branch}" --commit "${candidate}" --status success \
+     -L 1 --json headSha --jq '.[0].headSha // empty')" &&
+     [[ "${sha}" =~ ^[0-9a-f]{40}$ && "${sha}" == "${candidate}" ]] &&
+     git push --force-with-lease="refs/heads/main:${old_sha}" origin "${sha}:refs/heads/main"
+   ```
+
+   When the lease is rejected, `main` moved despite the hold: stop, run
+   `git fetch origin` and start over from step 1 with a new tag and a new
+   `wip/merge-rebuild-*` branch.
 
    A head is deployable only after its checks are green; the main CI
    guard turns red otherwise.

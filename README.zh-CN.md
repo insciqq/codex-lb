@@ -20,7 +20,8 @@ python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy code
 >   功劳归于他们。本 fork 由 [@insciqq](https://github.com/insciqq) 维护，让 codex-lb 继续兼容当前的 Codex
 >   客户端和 OpenAI 后端；上游自 2026-10-16 起没有新的提交。
 > - **范围：** 缺陷修复、安全、对当前 Codex 客户端与 OpenAI 后端的兼容性，以及依赖更新。在 fork 经过几个稳定
->   版本之前不添加新功能。
+>   版本之前不添加新功能。欢迎在本仓库提交此范围内的 issue 和 pull request
+>   （[处理方式](FORK.md#pull-requests-to-this-fork)）。
 > - **版本：** 以版本标签发布，镜像为 `ghcr.io/insciqq/codex-lb`；`latest` 指向最新版本。发布说明见
 >   [Releases](https://github.com/insciqq/codex-lb/releases)；`CHANGELOG.md` 是上游的。
 > - **从上游迁移：** 见英文 README 的 [Migrating from upstream](./README.md#migrating-from-upstream)。

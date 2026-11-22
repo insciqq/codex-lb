@@ -12,7 +12,7 @@ Fill in the sections below. Delete sections that don't apply.
 <!-- Check the box that matches your PR. Commit titles must follow Conventional Commits. -->
 
 - [ ] `fix:` — bug fix (no behavior change beyond the bug)
-- [ ] `feat:` — new user-facing feature or capability
+- [ ] `feat:` — new user-facing feature or capability (on hold in this fork, see FORK.md)
 - [ ] `refactor:` — internal refactor (no behavior change, no API change)
 - [ ] `docs:` — documentation only
 - [ ] `chore:` / `ci:` / `build:` — tooling, CI, packaging
@@ -86,4 +86,4 @@ Required: unit tests for new logic, integration tests for new endpoints.
 - [ ] Ran `uv run pre-commit run local-ci --hook-stage manual --all-files` or the relevant `make <target>` subset locally.
 - [ ] If touching specs: `openspec validate --specs` passes and `/opsx:verify` is clean.
 - [ ] Simplicity gates reviewed: the six simplicity rules (PRINCIPLES.md P1-P6).
-- [ ] CHANGELOG is **not** edited by hand (release-please handles it).
+- [ ] CHANGELOG is **not** edited by hand (it is upstream's).
