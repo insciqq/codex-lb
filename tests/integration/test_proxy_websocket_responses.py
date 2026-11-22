@@ -553,6 +553,98 @@ def test_responses_websocket_route_drain_preserves_terminal_ownership_and_reject
     assert persisted_log.output_tokens == 2
 
 
+def test_responses_websocket_hard_owner_outside_api_key_scope_fails_fast(app_instance, monkeypatch):
+    """A native Codex session whose raw hard ``CODEX_SESSION`` row names an
+    account the API key is not assigned to cannot be served for that key, so
+    the turn fails with ``hard_affinity_saturated`` after one selection instead
+    of sleeping on the owner-recovery wait until the connect budget is spent."""
+    from app.modules.proxy._service import support as proxy_support
+    from app.modules.proxy.sticky_repository import StickySessionsRepository
+
+    raw_session = "ws-owner-outside-key-scope"
+    api_key: ApiKeyData | None = None
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings(proxy_request_budget_seconds=10.0)
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(_authorization: str | None, *, request: object | None = None):
+        del request
+        return api_key
+
+    connect_attempts: list[str] = []
+
+    async def fail_connect_attempt(self, account, headers, **kwargs):
+        del self, headers, kwargs
+        connect_attempts.append(account.id)
+        raise AssertionError("an out-of-scope hard owner must fail before any upstream connect")
+
+    selection_errors: list[str | None] = []
+    original_select_account = proxy_module.LoadBalancer.select_account
+
+    async def recording_select_account(self, *args, **kwargs):
+        selection = await original_select_account(self, *args, **kwargs)
+        selection_errors.append(selection.error_code)
+        return selection
+
+    async def prepare_rows() -> ApiKeyData:
+        async with SessionLocal() as session:
+            for account_id in ("acct_ws_scope_owner", "acct_ws_scope_assigned"):
+                session.add(
+                    Account(
+                        id=account_id,
+                        chatgpt_account_id=account_id,
+                        email=f"{account_id}@example.com",
+                        plan_type="plus",
+                        access_token_encrypted=b"access",
+                        refresh_token_encrypted=b"refresh",
+                        id_token_encrypted=b"id",
+                        last_refresh=proxy_module.utcnow(),
+                        status=AccountStatus.ACTIVE,
+                    )
+                )
+            await session.commit()
+            await StickySessionsRepository(session).upsert(
+                raw_session, "acct_ws_scope_owner", kind=proxy_module.StickySessionKind.CODEX_SESSION
+            )
+            await session.commit()
+        async with SessionLocal() as session:
+            service = ApiKeysService(ApiKeysRepository(session))
+            created_key = await service.create_key(
+                ApiKeyCreateData(
+                    name="websocket scope moved",
+                    allowed_models=None,
+                    assigned_account_ids=["acct_ws_scope_assigned"],
+                )
+            )
+            return await service.get_key_by_id(created_key.id)
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module, "get_settings", lambda: _websocket_settings(proxy_request_budget_seconds=10.0))
+    monkeypatch.setattr(proxy_support, "_HARD_AFFINITY_RECOVERY_SLEEP_SECONDS", 0.05)
+    monkeypatch.setattr(proxy_module.ProxyService, "_try_open_websocket_connect_attempt", fail_connect_attempt)
+    monkeypatch.setattr(proxy_module.LoadBalancer, "select_account", recording_select_account)
+
+    with TestClient(app_instance) as client:
+        assert client.portal is not None
+        api_key = client.portal.call(prepare_rows)
+        with client.websocket_connect("/backend-api/codex/responses", headers={"session_id": raw_session}) as websocket:
+            websocket.send_text(
+                json.dumps({"type": "response.create", "model": "gpt-5.6-sol", "input": "continue", "stream": True})
+            )
+            event = json.loads(websocket.receive_text())
+
+    assert event.get("status") != "waiting_for_account_capacity"
+    assert "hard_affinity_saturated" in json.dumps(event)
+    assert selection_errors == ["hard_affinity_saturated"]
+    assert connect_attempts == []
+
+
 def test_responses_websocket_route_drain_interrupts_blocked_idle_receive(
     app_instance,
     monkeypatch,

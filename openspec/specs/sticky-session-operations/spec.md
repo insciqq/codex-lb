@@ -1685,3 +1685,59 @@ their error backoff, so the caller can select a healthy sibling instead.
 
 - **WHEN** a required owner is selected through transient backoff fallback
 - **THEN** its error counter and last-error timestamp remain intact until an existing recovery or outcome rule changes them
+
+### Requirement: A hard owner outside the caller's account scope fails fast
+
+When account selection fails with `hard_affinity_saturated` and the resolved
+hard `CODEX_SESSION` owner lies outside the account scope the caller selects
+with, such as an API key's assigned accounts, the selector MUST report that saturation as caused by the caller, exactly as
+when the caller excluded the owner. The scope drops the owner from the pool
+before ownership narrows selection to it and does not change while the request
+waits, so no re-selection can serve the turn. A caller with no account scope
+MUST NOT be affected, and an owner inside the scope that is only briefly
+unavailable MUST keep its short owner-recovery wait.
+
+On that report the SSE retry path, the direct WebSocket surface and the HTTP
+responses session bridge (session creation and reconnect) MUST fail the
+request closed on the first saturated selection with the unchanged
+`hard_affinity_saturated` error instead of waiting until the request budget is
+spent. When the bridge request was forwarded to an owner replica, the owner's
+error response MUST carry that report across the hop in the internal
+`x-codex-bridge-hard-affinity-owner-excluded` header, and the error the
+origin rebuilds from that response MUST keep the report. A bridge request
+that waited on another request's session creation, for the same session key
+or only for session capacity, MUST NOT inherit that creation's caller-caused
+saturation, because the cause can be the creating request's own exclusions;
+it MUST run its own admission and selection once the creation has failed. Selection
+decisions MUST NOT change: the sticky row is neither rebound nor deleted, no
+other account is served for the resolved hard owner, and no upstream
+connection is opened.
+
+#### Scenario: API key reassigned away from the session's hard owner
+
+- **GIVEN** a native Codex session whose hard `CODEX_SESSION` row names account A
+- **AND** an API key whose assigned accounts include B but not A
+- **WHEN** a request with that key and session reaches `/backend-api/codex/responses` over HTTP/SSE, the HTTP bridge or a WebSocket
+- **THEN** it fails with `hard_affinity_saturated` after one selection, without an account-capacity wait
+- **AND** the sticky row still names A and no upstream connection is opened
+
+#### Scenario: Forwarded bridge turn reports the futile wait to the origin
+
+- **GIVEN** the same session and key, with the bridge session owned by another replica
+- **WHEN** the origin forwards the turn and the owner's selection reports the owner outside the key's scope
+- **THEN** the owner answers with `hard_affinity_saturated` and the internal owner-excluded header
+- **AND** the origin rebuilds an error that keeps the report and does not wait on it
+
+#### Scenario: Same-key waiter does not inherit the creator's exclusion
+
+- **GIVEN** a request creating the bridge session for a key whose selection reports the hard owner as excluded by that request
+- **AND** an anchored request for the same key waiting on that creation
+- **WHEN** the creation fails with `hard_affinity_saturated`
+- **THEN** the waiting request runs its own creation instead of failing with the creator's error
+
+#### Scenario: Owner inside the scope keeps its recovery wait
+
+- **GIVEN** the same session and a key whose assigned accounts include A
+- **AND** A is temporarily unselectable through a status or health transition
+- **WHEN** selection fails with `hard_affinity_saturated`
+- **THEN** the failure is not reported as caused by the caller and the short owner-recovery wait still applies

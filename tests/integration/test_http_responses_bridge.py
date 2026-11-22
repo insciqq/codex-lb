@@ -19463,6 +19463,170 @@ async def test_backend_responses_http_bridge_fails_a_self_excluded_hard_owner_re
     )
 
 
+@pytest.mark.asyncio
+async def test_backend_responses_http_bridge_fails_fast_for_a_hard_owner_outside_the_api_key_scope(
+    async_client,
+    monkeypatch,
+):
+    """A native Codex session whose raw hard ``CODEX_SESSION`` row names an
+    account the API key is no longer assigned to can never be served for that
+    key: the key's scope drops the owner before ownership narrows selection to
+    it, and a hard row never spills. The bridge fails the request at once
+    instead of sleeping on the owner-recovery wait until its request budget is
+    spent, and neither account is connected."""
+    legacy_session_key = "sid-http-bridge-owner-outside-key-scope"
+    _install_proxy_settings(
+        monkeypatch,
+        app_settings=_make_app_settings(enabled=True).model_copy(
+            update={"http_responses_session_bridge_request_budget_seconds": 15.0}
+        ),
+        dashboard_settings=_make_dashboard_settings(),
+    )
+    monkeypatch.setattr(proxy_support, "_HARD_AFFINITY_RECOVERY_SLEEP_SECONDS", 0.05)
+    enable = await async_client.put("/api/settings", json={"apiKeyAuthEnabled": True})
+    assert enable.status_code == 200
+    owner_id = await _import_account(async_client, "acc_scope_bridge_owner", "scope-bridge-owner@example.com")
+    assigned_id = await _import_account(async_client, "acc_scope_bridge_assigned", "scope-bridge-assigned@example.com")
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "bridge-scope-moved", "assignedAccountIds": [assigned_id]},
+    )
+    assert created.status_code == 200
+    key = created.json()["key"]
+    async with SessionLocal() as session:
+        await StickySessionsRepository(session).upsert(
+            legacy_session_key, owner_id, kind=proxy_module.StickySessionKind.CODEX_SESSION
+        )
+        await session.commit()
+
+    selection_errors: list[str | None] = []
+    original_select_account = proxy_module.LoadBalancer.select_account
+
+    async def recording_select_account(self, *args, **kwargs):
+        selection = await original_select_account(self, *args, **kwargs)
+        selection_errors.append(selection.error_code)
+        return selection
+
+    connect_account_ids: list[str | None] = []
+
+    async def fail_connect(headers, access_token, account_id_header, *, base_url=None, session=None):
+        del headers, access_token, base_url, session
+        connect_account_ids.append(account_id_header)
+        raise AssertionError("an out-of-scope hard owner must fail before any upstream connect")
+
+    async def fail_legacy_stream(*args, **kwargs):
+        raise AssertionError("legacy core_stream_responses path must not be used when HTTP bridge is enabled")
+        if False:
+            yield ""
+
+    monkeypatch.setattr(proxy_module.LoadBalancer, "select_account", recording_select_account)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fail_connect)
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fail_legacy_stream)
+
+    started_at = time.monotonic()
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        json={"model": "gpt-5.1", "instructions": "", "input": "owner outside key scope", "stream": True},
+        headers={"Authorization": f"Bearer {key}", "session_id": legacy_session_key},
+    )
+    elapsed_seconds = time.monotonic() - started_at
+
+    assert selection_errors == ["hard_affinity_saturated"], (
+        f"{len(selection_errors)} selections in {elapsed_seconds:.2f}s"
+    )
+    assert elapsed_seconds < 5.0
+    assert connect_account_ids == []
+    body = response.text
+    assert "hard_affinity_saturated" in body
+    assert "waiting_for_account_capacity" not in body
+    async with SessionLocal() as session:
+        owner_lookup = await StickySessionsRepository(session).get_account_id_and_abandonment(
+            legacy_session_key, kind=proxy_module.StickySessionKind.CODEX_SESSION
+        )
+    assert owner_lookup.account_id == owner_id
+
+
+@pytest.mark.asyncio
+async def test_forwarded_hard_owner_outside_the_api_key_scope_marks_the_owner_error(
+    async_client,
+    monkeypatch,
+):
+    """The owner half of a ring deployment fails a forwarded turn whose hard
+    owner is outside the API key's accounts at once, and says so: the origin
+    rebuilds the error from the status and the body, and a
+    ``hard_affinity_saturated`` body cannot tell it that waiting is futile."""
+    from app.modules.proxy import api as proxy_api_module
+    from app.modules.proxy.http_bridge_forwarding import (
+        HTTP_BRIDGE_HARD_AFFINITY_OWNER_EXCLUDED_HEADER,
+        HTTPBridgeForwardContext,
+        build_owner_forward_headers,
+    )
+
+    session_key = "sid-forwarded-owner-outside-key-scope"
+    _install_proxy_settings(
+        monkeypatch,
+        app_settings=_make_app_settings(enabled=True).model_copy(
+            update={"http_responses_session_bridge_request_budget_seconds": 15.0}
+        ),
+        dashboard_settings=_make_dashboard_settings(),
+    )
+    owner_settings = proxy_module.get_settings()
+    monkeypatch.setattr(proxy_api_module, "get_settings", lambda: owner_settings)
+    monkeypatch.setattr(proxy_support, "_HARD_AFFINITY_RECOVERY_SLEEP_SECONDS", 0.05)
+    enable = await async_client.put("/api/settings", json={"apiKeyAuthEnabled": True})
+    assert enable.status_code == 200
+    owner_id = await _import_account(async_client, "acc_forward_scope_owner", "forward-scope-owner@example.com")
+    assigned_id = await _import_account(
+        async_client, "acc_forward_scope_assigned", "forward-scope-assigned@example.com"
+    )
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "forward-scope-moved", "assignedAccountIds": [assigned_id]},
+    )
+    assert created.status_code == 200
+    key = created.json()["key"]
+    async with SessionLocal() as session:
+        await StickySessionsRepository(session).upsert(
+            session_key, owner_id, kind=proxy_module.StickySessionKind.CODEX_SESSION
+        )
+        await session.commit()
+
+    async def fail_connect(headers, access_token, account_id_header, *, base_url=None, session=None):
+        raise AssertionError("an out-of-scope hard owner must fail before any upstream connect")
+
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fail_connect)
+
+    payload = proxy_module.ResponsesRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "", "input": "owner outside key scope", "stream": True}
+    )
+    forward_headers = build_owner_forward_headers(
+        headers={"Authorization": f"Bearer {key}", "session_id": session_key, "user-agent": "codex_exec/0.153.4"},
+        payload=payload,
+        context=HTTPBridgeForwardContext(
+            origin_instance="instance-b",
+            target_instance="instance-a",
+            codex_session_affinity=True,
+            downstream_turn_state=None,
+            original_request_unanchored=True,
+            original_affinity_kind="session_header",
+            original_affinity_key=session_key,
+        ),
+    )
+
+    started_at = time.monotonic()
+    response = await async_client.post(
+        "/internal/bridge/responses",
+        json=payload.model_dump_for_forwarding(),
+        headers=forward_headers,
+    )
+    elapsed_seconds = time.monotonic() - started_at
+
+    assert elapsed_seconds < 5.0
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "hard_affinity_saturated"
+    assert response.headers.get(HTTP_BRIDGE_HARD_AFFINITY_OWNER_EXCLUDED_HEADER) == "1"
+
+
 class _AcceptedOutputItemCapacityErrorUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
     """Upstream accepts the turn, emits an output item, then fails with a
     capacity error. Once any model output exists the turn is not replay-safe."""

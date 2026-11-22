@@ -3560,14 +3560,23 @@ def _http_bridge_previous_response_owner_unavailable_error() -> ProxyResponseErr
     )
 
 
+def _http_bridge_selection_failure_error(selection: Any) -> ProxyResponseError:
+    """The bridge's error for a failed selection, keeping its caller-caused report."""
+    status_code, error_payload = selection_failure_response(selection)
+    return ProxyResponseError(
+        status_code,
+        error_payload,
+        hard_affinity_owner_excluded=bool(getattr(selection, "hard_affinity_owner_excluded", False)),
+    )
+
+
 def _http_bridge_reconnect_selection_failure(
     selection: Any,
     required_preferred_account_id: str | None,
 ) -> ProxyResponseError:
     if required_preferred_account_id is not None:
         return _http_bridge_previous_response_owner_unavailable_error()
-    status_code, error_payload = selection_failure_response(selection)
-    return ProxyResponseError(status_code, error_payload)
+    return _http_bridge_selection_failure_error(selection)
 
 
 def _http_bridge_reconnect_connect_failure(

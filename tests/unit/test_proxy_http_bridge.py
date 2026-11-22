@@ -24114,6 +24114,153 @@ async def test_close_all_http_bridge_sessions_fails_capacity_waiters_instead_of_
 
 
 @pytest.mark.asyncio
+async def test_capacity_waiter_does_not_inherit_another_sessions_hard_owner_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh session that waits only for bridge capacity on an unrelated
+    creation must not fail with that creation's ``hard_affinity_saturated``
+    when its hard owner was excluded by that request or outside its API key's
+    accounts. The freed slot lets the waiter run its own creation."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    existing_key = proxy_service._HTTPBridgeSessionKey("session_header", "sid-capacity-existing", None)
+    existing = proxy_service._HTTPBridgeSession(
+        key=existing_key,
+        headers={},
+        affinity=proxy_service._AffinityPolicy(
+            key="sid-capacity-existing",
+            kind=proxy_service.StickySessionKind.CODEX_SESSION,
+        ),
+        request_model="gpt-5.4",
+        account=cast(Any, SimpleNamespace(id="acc-existing", status=AccountStatus.ACTIVE)),
+        upstream=cast(UpstreamWebSocket, SimpleNamespace(close=AsyncMock())),
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        pending_requests=deque(),
+        pending_lock=anyio.Lock(),
+        response_create_gate=asyncio.Semaphore(1),
+        queued_request_count=1,
+        last_used_at=1.0,
+        idle_ttl_seconds=120.0,
+        codex_session=True,
+        prewarm_lock=anyio.Lock(),
+    )
+    service._http_bridge_sessions[existing_key] = existing
+    inflight_key = proxy_service._HTTPBridgeSessionKey("session_header", "sid-capacity-owner-excluded", None)
+    inflight_future: asyncio.Future[proxy_service._HTTPBridgeSession] = asyncio.get_running_loop().create_future()
+    service._http_bridge_inflight_sessions[inflight_key] = inflight_future
+
+    monkeypatch.setattr(service, "_prune_http_bridge_sessions_locked", Mock(return_value=[]))
+    monkeypatch.setattr(service, "_http_bridge_pending_count", AsyncMock(return_value=1))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(proxy_service, "_http_bridge_should_wait_for_registration", AsyncMock(return_value=False))
+    monkeypatch.setattr(proxy_service, "_http_bridge_owner_instance", AsyncMock(return_value="instance-a"))
+    monkeypatch.setattr(
+        proxy_service,
+        "_active_http_bridge_instance_ring",
+        AsyncMock(return_value=("instance-a", ("instance-a",))),
+    )
+    own_creation = RuntimeError("the waiter ran its own creation")
+    create_http_bridge_session = AsyncMock(side_effect=own_creation)
+    monkeypatch.setattr(service, "_create_http_bridge_session", create_http_bridge_session)
+    monkeypatch.setattr(service, "_claim_durable_http_bridge_session", AsyncMock())
+    monkeypatch.setattr(service, "_close_http_bridge_session", AsyncMock())
+
+    waiter = asyncio.create_task(
+        service._get_or_create_http_bridge_session(
+            proxy_service._HTTPBridgeSessionKey("session_header", "sid-capacity-request", None),
+            headers={"x-codex-session-id": "sid-capacity-request"},
+            affinity=proxy_service._AffinityPolicy(
+                key="sid-capacity-request",
+                kind=proxy_service.StickySessionKind.CODEX_SESSION,
+            ),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=2,
+        )
+    )
+    await asyncio.sleep(0)
+    create_http_bridge_session.assert_not_awaited()
+
+    await service._fail_http_bridge_inflight_session_creation(
+        inflight_key,
+        inflight_future,
+        ProxyResponseError(
+            503,
+            openai_error("hard_affinity_saturated", "Hard affinity owner account is unavailable"),
+            hard_affinity_owner_excluded=True,
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await asyncio.wait_for(waiter, timeout=1.0)
+
+    assert exc_info.value is own_creation
+    create_http_bridge_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_same_key_anchored_waiter_does_not_inherit_creators_hard_owner_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn-state-anchored request waiting on another creation for the same
+    key must not fail with that creation's ``hard_affinity_saturated`` when
+    the creator's hard owner was excluded by the creator's own request: the
+    flag may not apply to the waiter, so it runs its own creation."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    key = proxy_service._HTTPBridgeSessionKey("turn_state_header", "sid-same-key-owner-excluded", None)
+    inflight_future: asyncio.Future[proxy_service._HTTPBridgeSession] = asyncio.get_running_loop().create_future()
+    service._http_bridge_inflight_sessions[key] = inflight_future
+
+    monkeypatch.setattr(service, "_prune_http_bridge_sessions_locked", Mock(return_value=[]))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(proxy_service, "_http_bridge_should_wait_for_registration", AsyncMock(return_value=False))
+    monkeypatch.setattr(proxy_service, "_http_bridge_owner_instance", AsyncMock(return_value="instance-a"))
+    monkeypatch.setattr(
+        proxy_service,
+        "_active_http_bridge_instance_ring",
+        AsyncMock(return_value=("instance-a", ("instance-a",))),
+    )
+    own_creation = RuntimeError("the waiter ran its own creation")
+    create_http_bridge_session = AsyncMock(side_effect=own_creation)
+    monkeypatch.setattr(service, "_create_http_bridge_session", create_http_bridge_session)
+    monkeypatch.setattr(service, "_claim_durable_http_bridge_session", AsyncMock())
+    monkeypatch.setattr(service, "_close_http_bridge_session", AsyncMock())
+
+    waiter = asyncio.create_task(
+        service._get_or_create_http_bridge_session(
+            key,
+            headers={"x-codex-turn-state": "sid-same-key-owner-excluded"},
+            affinity=proxy_service._AffinityPolicy(
+                key="sid-same-key-owner-excluded",
+                kind=proxy_service.StickySessionKind.CODEX_SESSION,
+            ),
+            api_key=None,
+            request_model="gpt-5.4",
+            idle_ttl_seconds=120.0,
+            max_sessions=8,
+        )
+    )
+    await asyncio.sleep(0)
+    create_http_bridge_session.assert_not_awaited()
+
+    await service._fail_http_bridge_inflight_session_creation(
+        key,
+        inflight_future,
+        ProxyResponseError(
+            503,
+            openai_error("hard_affinity_saturated", "Hard affinity owner account is unavailable"),
+            hard_affinity_owner_excluded=True,
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await asyncio.wait_for(waiter, timeout=1.0)
+
+    assert exc_info.value is own_creation
+    create_http_bridge_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_get_or_create_http_bridge_session_capacity_wait_times_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -508,16 +508,18 @@ def _account_selection_recovery_sleep_seconds(selection: AccountSelection) -> fl
 
     ``hard_affinity_owner_excluded`` is the selector's proof that the hard
     ``CODEX_SESSION`` owner it resolved is one of the caller's own
-    ``exclude_account_ids``. The owner cannot become selectable while that
-    exclusion holds and a hard row never spills to another account, so the
-    short owner-recovery window earns nothing here: every re-selection would
-    report the same ``hard_affinity_saturated`` until the request budget is
-    spent (7200s on the HTTP bridge), long after the client gave up. Fail
-    closed at once instead -- the same fail-closed the bridge already applies
-    when the request excludes the account its hard session is bound to
-    (``_require_http_bridge_bound_account_not_excluded``) -- and let the
-    client's own retry reach the owner with no exclusion. A genuinely
-    unavailable owner the caller did NOT exclude keeps its recovery wait.
+    ``exclude_account_ids`` or lies outside the caller's account scope (an
+    API key's assigned accounts). The owner cannot become selectable while
+    that exclusion or scope holds and a hard row never spills to another
+    account, so the short owner-recovery window earns nothing here: every
+    re-selection would report the same ``hard_affinity_saturated`` until the
+    request budget is spent (7200s on the HTTP bridge), long after the client
+    gave up. Fail closed at once instead -- the same fail-closed the bridge
+    already applies when the request excludes the account its hard session is
+    bound to (``_require_http_bridge_bound_account_not_excluded``) -- and let
+    the client's own retry reach the owner with no exclusion. A genuinely
+    unavailable owner inside the caller's scope that it did NOT exclude keeps
+    its recovery wait.
     """
     if selection.hard_affinity_owner_excluded:
         return None

@@ -789,6 +789,91 @@ async def test_codex_goal_restart_cannot_retire_owner_outside_api_key_scope(
 
 
 @pytest.mark.asyncio
+async def test_hard_session_owner_outside_api_key_scope_fails_fast_without_recovery_wait(
+    async_client,
+    monkeypatch,
+):
+    """A healthy hard ``CODEX_SESSION`` owner that the key's assigned accounts no
+    longer include can never be selected for this key, so the stream fails with
+    ``hard_affinity_saturated`` at once instead of sleeping on the owner-recovery
+    wait until the request budget is spent. The owner mapping is kept."""
+    from sqlalchemy import select
+
+    from app.db.models import StickySession
+    from app.modules.proxy._service.streaming import retry as retry_module
+    from app.modules.proxy.sticky_repository import StickySessionsRepository
+
+    settings_response = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert settings_response.status_code == 200
+    owner_id = await _import_account(async_client, "acc_scope_hard_owner", "scope-hard-owner@example.com")
+    assigned_id = await _import_account(async_client, "acc_scope_assigned", "scope-assigned@example.com")
+    raw_session = "scope-moved-session"
+    async with SessionLocal() as session:
+        await StickySessionsRepository(session).upsert(raw_session, owner_id, kind=StickySessionKind.CODEX_SESSION)
+        await session.commit()
+    async with SessionLocal() as session:
+        created_key = await ApiKeysService(ApiKeysRepository(session)).create_key(
+            ApiKeyCreateData(
+                name="scope moved off the hard owner",
+                allowed_models=None,
+                assigned_account_ids=[assigned_id],
+            )
+        )
+
+    _install_proxy_settings_cache(monkeypatch, sticky_threads_enabled=False)
+
+    original_recovery = retry_module._account_selection_recovery_sleep_seconds
+    recovery_decisions: list[tuple[str | None, float | None]] = []
+
+    def recording_recovery(selection):
+        decision = original_recovery(selection)
+        recovery_decisions.append((selection.error_code, decision))
+        return decision
+
+    monkeypatch.setattr(retry_module, "_account_selection_recovery_sleep_seconds", recording_recovery)
+
+    async def fail_stream(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("an out-of-scope hard owner must fail before upstream dispatch")
+        if False:
+            yield ""
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fail_stream)
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        headers={"Authorization": f"Bearer {created_key.key}", "session_id": raw_session},
+        json={"model": "gpt-5.1", "instructions": "", "input": "continue", "stream": True},
+    )
+
+    assert response.status_code == 200
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    assert not [event for event in events if event.get("status") == "waiting_for_account_capacity"]
+    failed_event = next(event for event in events if event.get("type") == "response.failed")
+    assert failed_event["response"]["error"]["code"] == "hard_affinity_saturated"
+    assert recovery_decisions == [("hard_affinity_saturated", None)]
+    async with SessionLocal() as session:
+        raw_row = await session.scalar(
+            select(StickySession).where(
+                StickySession.key == raw_session,
+                StickySession.kind == StickySessionKind.CODEX_SESSION,
+            )
+        )
+    assert raw_row is not None
+    assert raw_row.account_id == owner_id
+
+
+@pytest.mark.asyncio
 async def test_proxy_sticky_switches_when_pinned_rate_limited(async_client, monkeypatch):
     await _set_routing_settings(async_client, sticky_threads_enabled=True)
     encryptor = TokenEncryptor()

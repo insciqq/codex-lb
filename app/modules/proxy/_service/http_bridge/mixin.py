@@ -102,6 +102,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_reconnect_turn_state,
     _http_bridge_request_budget_seconds,
     _http_bridge_request_needs_unanchored_handoff,
+    _http_bridge_selection_failure_error,
     _http_bridge_session_account_active,
     _http_bridge_session_allows_api_key,
     _http_bridge_session_generation_count,
@@ -1390,8 +1391,10 @@ class _HTTPBridgeMixin(
                         inflight_count=len(self._http_bridge_inflight_sessions),
                     )
                     raise timeout_error from exc
-                except ProxyResponseError:
-                    raise
+                except ProxyResponseError as exc:
+                    # Another creation's own hard-owner/key-scope refusal frees its slot; rerun ours.
+                    if not exc.hard_affinity_owner_excluded:
+                        raise
                 except Exception:
                     pass
                 continue
@@ -1418,8 +1421,11 @@ class _HTTPBridgeMixin(
                         inflight_count=len(self._http_bridge_inflight_sessions),
                     )
                     raise timeout_error from exc
-                except Exception:
-                    raise
+                except ProxyResponseError as exc:
+                    # The creator's flag can come from its own request's exclusions; run our own creation.
+                    if not exc.hard_affinity_owner_excluded:
+                        raise
+                    continue
                 if session is None:
                     continue
                 fork_key = _http_bridge_parallel_fork_key(
@@ -1759,8 +1765,7 @@ class _HTTPBridgeMixin(
                     and selection.error_code in (CONTINUITY_OWNER_UNAVAILABLE, "hard_affinity_saturated")
                 ):
                     raise _http_bridge_previous_response_owner_unavailable_error()
-                status_code, error_payload = selection_failure_response(selection)
-                raise ProxyResponseError(status_code, error_payload)
+                raise _http_bridge_selection_failure_error(selection)
             if require_preferred_account and preferred_account_id is not None and account.id != preferred_account_id:
                 await self._load_balancer.release_account_lease(selected_account_lease)
                 selected_account_lease = None

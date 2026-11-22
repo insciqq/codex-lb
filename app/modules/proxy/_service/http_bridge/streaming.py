@@ -656,6 +656,11 @@ def _http_bridge_error_is_ambiguous_transport(exc: ProxyResponseError) -> bool:
 
 
 def _http_bridge_account_capacity_wait_seconds(exc: ProxyResponseError) -> float | None:
+    if exc.hard_affinity_owner_excluded:
+        # The hard owner is excluded by this request or outside its API key's
+        # account scope; waiting cannot make it selectable (see
+        # ``_account_selection_recovery_sleep_seconds``).
+        return None
     code, message = _proxy_error_code_message(exc)
     if code == "capacity_exhausted_active_sessions":
         return None

@@ -15,6 +15,8 @@ from app.core.config.settings import get_settings
 from app.core.openai.requests import ResponsesRequest
 from app.core.utils.sse import parse_sse_data_json
 from app.modules.api_keys.service import ApiKeyUsageReservationData
+from app.modules.proxy._service.http_bridge.owner_forwarding import _OwnerForwardOutcome, _OwnerForwardRequestError
+from app.modules.proxy._service.http_bridge.streaming import _http_bridge_account_capacity_wait_seconds
 from app.modules.proxy.http_bridge_forwarding import (
     HTTP_BRIDGE_AFFINITY_KEY_ENCODING_HEADER,
     HTTP_BRIDGE_AFFINITY_KEY_HEADER,
@@ -24,6 +26,7 @@ from app.modules.proxy.http_bridge_forwarding import (
     HTTP_BRIDGE_CODEX_AFFINITY_HEADER,
     HTTP_BRIDGE_FILE_OWNER_HEADER,
     HTTP_BRIDGE_FORWARDED_HEADER,
+    HTTP_BRIDGE_HARD_AFFINITY_OWNER_EXCLUDED_HEADER,
     HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER,
     HTTP_BRIDGE_ORIGIN_INSTANCE_HEADER,
     HTTP_BRIDGE_ORIGINAL_UNANCHORED_HEADER,
@@ -1658,6 +1661,87 @@ async def test_owner_forward_non_200_carries_local_refusal_provenance(
     assert exc_info.value.status_code == 502
     assert exc_info.value.payload["error"]["code"] == "stream_incomplete"
     assert exc_info.value.local_pre_dispatch_refusal is expected_local_refusal
+
+
+@pytest.mark.parametrize(
+    ("owner_headers", "expected_owner_excluded"),
+    [
+        ({HTTP_BRIDGE_HARD_AFFINITY_OWNER_EXCLUDED_HEADER: "1"}, True),
+        ({}, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_owner_forward_non_200_carries_hard_owner_excluded_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_headers: dict[str, str],
+    expected_owner_excluded: bool,
+) -> None:
+    """A ``hard_affinity_saturated`` body cannot say that the owner's selector
+    found the hard owner excluded by the request or outside its account scope.
+    The owner's marker is the only carrier, so the rebuilt error keeps it and
+    the origin does not wait to forward the same failure again; without the
+    marker the error stays an ordinary saturation."""
+
+    class FakeResponse:
+        status = 503
+        headers = owner_headers
+
+        async def __aenter__(self) -> "FakeResponse":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def text(self) -> str:
+            return (
+                '{"error":{"message":"Hard affinity owner account is unavailable",'
+                '"type":"server_error","code":"hard_affinity_saturated"}}'
+            )
+
+    class FakeSession:
+        def __init__(self, *, timeout: aiohttp.ClientTimeout, trust_env: bool) -> None:
+            del timeout, trust_env
+
+        async def __aenter__(self) -> "FakeSession":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, **kwargs: object) -> FakeResponse:
+            del url, kwargs
+            return FakeResponse()
+
+    monkeypatch.setattr("app.modules.proxy.http_bridge_forwarding.aiohttp.ClientSession", FakeSession)
+
+    async def collect() -> None:
+        client = HTTPBridgeOwnerClient()
+        async for _event in client.stream_responses(
+            owner_endpoint="http://instance-b:2455",
+            payload=_payload(),
+            headers={"Authorization": "Bearer proxy-key"},
+            context=HTTPBridgeForwardContext(
+                origin_instance="instance-a",
+                target_instance="instance-b",
+                codex_session_affinity=True,
+                downstream_turn_state=None,
+            ),
+            request_started_at=10.0,
+            clock=VirtualClock(monotonic_value=10.0),
+        ):
+            return
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        await collect()
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.payload["error"]["code"] == "hard_affinity_saturated"
+    assert exc_info.value.hard_affinity_owner_excluded is expected_owner_excluded
+    assert exc_info.value.local_pre_dispatch_refusal is False
+    wrapped = _OwnerForwardRequestError(exc_info.value, outcome=_OwnerForwardOutcome.RECEIVER_REJECTED)
+    assert wrapped.hard_affinity_owner_excluded is expected_owner_excluded
+    for error in (exc_info.value, wrapped):
+        assert (_http_bridge_account_capacity_wait_seconds(error) is None) is expected_owner_excluded
 
 
 @pytest.mark.asyncio

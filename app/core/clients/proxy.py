@@ -603,6 +603,7 @@ class ProxyResponseError(Exception):
         retry_after_header: str | None = None,
         reservation_released: bool = False,
         local_pre_dispatch_refusal: bool = False,
+        hard_affinity_owner_excluded: bool = False,
     ) -> None:
         super().__init__(f"Proxy response error ({status_code})")
         self.status_code = status_code
@@ -625,6 +626,11 @@ class ProxyResponseError(Exception):
         # refusing instance may be another replica: an internal bridge forward
         # carries the provenance back so the origin reaches the same verdict.
         self.local_pre_dispatch_refusal = local_pre_dispatch_refusal
+        # Carries ``AccountSelection.hard_affinity_owner_excluded`` when a
+        # ``hard_affinity_saturated`` selection failure becomes this error: the
+        # hard owner is excluded by the request or outside its account scope,
+        # so a later capacity-recovery wait on the error cannot clear it.
+        self.hard_affinity_owner_excluded = hard_affinity_owner_excluded
 
 
 def _safe_retry_after_header(headers: Mapping[str, object] | None) -> str | None:

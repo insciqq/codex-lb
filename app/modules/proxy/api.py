@@ -297,6 +297,7 @@ from app.modules.proxy.capability_routing import required_capability_metadata_va
 from app.modules.proxy.downstream_delivery import ClosingStreamingResponse, DeliveryTracedStreamingResponse
 from app.modules.proxy.helpers import _openai_error_param, _parse_openai_error, _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import (
+    HTTP_BRIDGE_HARD_AFFINITY_OWNER_EXCLUDED_HEADER,
     HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER,
     parse_forwarded_request,
 )
@@ -6870,7 +6871,7 @@ async def _stream_responses(
                 startup_error,
                 headers={
                     **rate_limit_headers,
-                    **_owner_forward_local_refusal_headers(startup_error, forwarded_request=forwarded_request),
+                    **_owner_forward_error_provenance_headers(startup_error, forwarded_request=forwarded_request),
                 },
             )
     stream = _normalize_public_responses_stream(
@@ -6946,27 +6947,35 @@ def _strip_internal_bridge_headers(headers: Mapping[str, str]) -> dict[str, str]
     return {key: value for key, value in headers.items() if not key.lower().startswith("x-codex-bridge-")}
 
 
-def _owner_forward_local_refusal_headers(
+def _owner_forward_error_provenance_headers(
     error: ProxyResponseError | OpenAIErrorEnvelopeModel,
     *,
     forwarded_request: bool,
 ) -> dict[str, str]:
-    """Mark an owner instance's error response as a local pre-dispatch refusal.
+    """Mark an owner instance's error response with provenance its body cannot carry.
 
     The origin instance rebuilds the error from the status and the body, and
     the body cannot express the difference between a refusal the owner raised
     before any upstream frame was sent and a transport failure it observed —
     both are `stream_incomplete`. Without this marker the origin's own native
     Codex transport-failure lifecycle aborts the committed body, which is
-    issue #2364 one hop further out. Only forwarded requests carry it: the
-    header belongs to the internal bridge contract, not to the public API.
+    issue #2364 one hop further out. Likewise a ``hard_affinity_saturated``
+    body cannot say that the hard owner was excluded by the request or lies
+    outside its account scope, which tells the origin not to wait on it. Only
+    forwarded requests carry these headers: they belong to the internal bridge
+    contract, not to the public API.
     """
 
     if not forwarded_request or not isinstance(error, ProxyResponseError):
         return {}
-    if not error.local_pre_dispatch_refusal:
-        return {}
-    return {HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1"}
+    headers: dict[str, str] = {}
+    if error.local_pre_dispatch_refusal:
+        headers[HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER] = "1"
+    # The hard owner was excluded by the request or is outside its account
+    # scope, so the origin must not wait on this failure either.
+    if error.hard_affinity_owner_excluded:
+        headers[HTTP_BRIDGE_HARD_AFFINITY_OWNER_EXCLUDED_HEADER] = "1"
+    return headers
 
 
 async def _http_bridge_active_for_request(

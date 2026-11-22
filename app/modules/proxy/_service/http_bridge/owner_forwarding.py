@@ -188,6 +188,7 @@ class _OwnerForwardRequestError(ProxyResponseError):
             retry_after_seconds=source.retry_after_seconds,
             retry_after_header=source.retry_after_header,
             local_pre_dispatch_refusal=source.local_pre_dispatch_refusal,
+            hard_affinity_owner_excluded=source.hard_affinity_owner_excluded,
         )
         self.outcome = outcome
 

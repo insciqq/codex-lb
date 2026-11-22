@@ -126,3 +126,40 @@ complete resend on the original thread recovers on A with its encrypted
 reasoning and completed tool history unchanged. This neither reconstructs
 missing history nor makes that body portable to B. Real quota exhaustion still
 refuses the owned turn. The behavior requires no new setting or migration.
+
+## Hard owner outside the caller's account scope
+
+`select_account` filters the pool by the caller's `account_ids` before sticky
+selection narrows a hard `CODEX_SESSION` row to its owner. An API key whose
+assignments no longer include the session's owner therefore always ends in
+`hard_affinity_saturated`, which every transport used to treat as a briefly
+unavailable owner: 2 s waits until the request budget ran out (75 s by default
+on HTTP/SSE, up to 7200 s on the HTTP bridge), followed by the same error.
+
+The selector already reported a saturation whose owner the caller excluded
+(`hard_affinity_owner_excluded`), and the recovery-wait helper refuses to wait
+on it. An owner outside the caller's scope is reported the same way. The HTTP
+bridge's session creation turns a selection failure into a
+`ProxyResponseError` before its capacity-wait plan runs, so that error now
+carries the flag and the plan does not wait on it either; this also covers a
+creation that excluded the owner. A forwarded request fails on the owner
+replica, whose error response the origin rebuilds from status and body alone;
+the owner therefore adds `x-codex-bridge-hard-affinity-owner-excluded`, the
+same way it marks a local pre-dispatch refusal, and the origin's rebuilt error
+keeps the flag. When the bridge is full, a fresh session waits on any
+in-flight creation for a free slot, and a request for a session that another
+request is already creating waits on that creation; both rethrew a
+`ProxyResponseError` the creation fails with. A flagged failure belongs to the
+creating request: its hard owner and key, and its own `exclude_account_ids`,
+which an anchored same-key waiter need not share. It now arrives at once, so
+both waiters treat it as a wake-up and rerun their own creation, which fails
+with its own flagged error when the cause applies to them too. Other creator
+errors still propagate to waiters as before. The request still fails with
+`hard_affinity_saturated` and the same status and payload; only the futile wait
+is gone. The row is kept, so the client can still reach the owner with a key
+that is assigned to it.
+
+Example: a thread was served by account A, then its key was reassigned to B
+only. The next turn with that key fails immediately with
+`hard_affinity_saturated` instead of emitting `waiting_for_account_capacity`
+keepalives until the budget expires.

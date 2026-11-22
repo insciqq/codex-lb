@@ -95,6 +95,11 @@ _HTTP_BRIDGE_SIGNATURE_VERSION_V2 = "2"
 # transport-failure lifecycle aborts the committed body, moving issue #2364's
 # empty 200 from the owner onto the origin.
 HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER = "x-codex-bridge-local-pre-dispatch-refusal"
+# Same hop, same reason: a ``hard_affinity_saturated`` body cannot say that the
+# owner's selector found the hard owner excluded by the request or outside its
+# API key's account scope. Without this marker the origin would treat the
+# rebuilt error as a briefly unavailable owner and wait to forward it again.
+HTTP_BRIDGE_HARD_AFFINITY_OWNER_EXCLUDED_HEADER = "x-codex-bridge-hard-affinity-owner-excluded"
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +263,9 @@ class HTTPBridgeOwnerClient:
                             # local pre-dispatch refusal (issue #2364).
                             local_pre_dispatch_refusal=_bool_header(
                                 response.headers.get(HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER)
+                            ),
+                            hard_affinity_owner_excluded=_bool_header(
+                                response.headers.get(HTTP_BRIDGE_HARD_AFFINITY_OWNER_EXCLUDED_HEADER)
                             ),
                             retry_after_header=retry_after_header,
                             retry_after_seconds=_retry_after_seconds_from_header(retry_after_header),

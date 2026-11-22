@@ -29,6 +29,7 @@ from app.core.balancer.logic import (
 from app.core.crypto import TokenEncryptor
 from app.db.models import Account, AccountStatus, StickySessionKind, UsageHistory
 from app.modules.api_keys.repository import ApiKeysRepository
+from app.modules.proxy._service.support import _account_selection_recovery_sleep_seconds
 from app.modules.proxy.affinity import (
     _AffinityPolicy,
     _codex_backend_identity,
@@ -2977,6 +2978,79 @@ async def test_raw_legacy_codex_session_owner_excluded_by_the_caller_reports_a_s
     assert sticky_repo.account_ids_by_key == {raw_session: owner.id}
     assert sticky_repo.upserts == []
     assert sticky_repo.deleted == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_in_scope", [True, False])
+async def test_hard_codex_session_owner_outside_the_caller_scope_reports_a_self_inflicted_saturation(
+    owner_in_scope: bool,
+) -> None:
+    """An API key restricted to assigned accounts passes them as
+    ``account_ids``. When the thread's hard owner is not among them, for
+    example after the key's assignments changed, the scope drops the owner
+    from the pool just as an exclusion does and no re-selection can serve the
+    turn while the scope holds, so the saturation is reported as caused by the
+    caller. Ownership stays untouched."""
+    balancer, owner, alternate, sticky_repo = _make_cap_spillover_balancer(
+        f"hard-owner-{'in' if owner_in_scope else 'outside'}-scope"
+    )
+    assert alternate is not None
+    raw_session = "legacy-process-scoped"
+    sticky_repo.account_ids_by_key = {raw_session: owner.id}
+
+    selected = await balancer.select_account(
+        sticky_key=_codex_session_selection_key(raw_session),
+        sticky_kind=StickySessionKind.CODEX_SESSION,
+        sticky_source="session_header",
+        legacy_sticky_key=raw_session,
+        spill_bare_session_on_account_cap=True,
+        routing_strategy="usage_weighted",
+        lease_kind="stream",
+        account_ids={owner.id, alternate.id} if owner_in_scope else {alternate.id},
+    )
+
+    if owner_in_scope:
+        assert selected.account is not None
+        assert selected.account.id == owner.id
+        assert selected.hard_affinity_owner_excluded is False
+        await balancer.release_account_lease(selected.lease)
+        return
+    assert selected.account is None
+    assert selected.error_code == "hard_affinity_saturated"
+    assert selected.hard_affinity_owner_excluded is True
+    assert _account_selection_recovery_sleep_seconds(selected) is None
+    assert sticky_repo.account_ids_by_key == {raw_session: owner.id}
+    assert sticky_repo.upserts == []
+    assert sticky_repo.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_unavailable_hard_codex_session_owner_inside_the_caller_scope_keeps_its_recovery_wait() -> None:
+    """Parity guard for the scope arm: an owner inside the caller's
+    ``account_ids`` that is only briefly unavailable is not excluded by the
+    caller, so the short owner-recovery wait stays."""
+    balancer, owner, alternate, sticky_repo = _make_cap_spillover_balancer("hard-owner-in-scope-unavailable")
+    assert alternate is not None
+    owner.status = AccountStatus.RATE_LIMITED
+    owner.reset_at = int(datetime.now(tz=timezone.utc).timestamp()) + 3600
+    raw_session = "legacy-process-scoped-unavailable"
+    sticky_repo.account_ids_by_key = {raw_session: owner.id}
+
+    selected = await balancer.select_account(
+        sticky_key=_codex_session_selection_key(raw_session),
+        sticky_kind=StickySessionKind.CODEX_SESSION,
+        sticky_source="session_header",
+        legacy_sticky_key=raw_session,
+        spill_bare_session_on_account_cap=True,
+        routing_strategy="usage_weighted",
+        lease_kind="stream",
+        account_ids={owner.id, alternate.id},
+    )
+
+    assert selected.account is None
+    assert selected.error_code == "hard_affinity_saturated"
+    assert selected.hard_affinity_owner_excluded is False
+    assert _account_selection_recovery_sleep_seconds(selected) is not None
 
 
 @pytest.mark.asyncio
