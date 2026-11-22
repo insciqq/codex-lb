@@ -81,6 +81,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _HTTP_BRIDGE_COOLDOWN_SUPPRESSION_ATTR,
     _HTTP_BRIDGE_EVENTLESS_COOLDOWN_MESSAGE,
     _HTTP_BRIDGE_EVENTLESS_TIMEOUT_DETAIL,
+    _HTTP_BRIDGE_LOCAL_REFUSAL_CANDIDATE_ATTR,
     _HTTP_BRIDGE_LOCAL_RESET_MESSAGE,
     _HTTP_BRIDGE_PRE_SUBMIT_FAILURE_ATTR,
     _HTTP_BRIDGE_PREPARED_ANCHOR_ATTR,
@@ -99,7 +100,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_is_previous_response_owner_unavailable,
     _http_bridge_models_compatible,
     _http_bridge_native_codex_full_history,
-    _http_bridge_owner_lookup_unavailable_error_envelope,
+    _http_bridge_owner_lookup_unavailable_error,
     _http_bridge_payload_looks_like_full_resend,
     _http_bridge_payload_without_previous_response_id,
     _http_bridge_previous_response_error_envelope,
@@ -114,6 +115,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_should_attempt_local_previous_response_recovery,
     _http_bridge_should_attempt_soft_affinity_reroute,
     _http_bridge_should_rollover_after_context_overflow,
+    _http_bridge_turn_local_refusal,
     _http_bridge_turn_state_anchor_for_owner_failure,
     _is_missing_durable_bridge_table_error,
     _log_http_bridge_event,
@@ -131,6 +133,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
 )
 from app.modules.proxy._service.http_bridge.owner_forwarding import (
     _owner_forward_failure_allows_local_recovery,
+    _owner_forward_may_have_dispatched,
 )
 from app.modules.proxy._service.http_bridge.quarantine import (
     _http_bridge_quarantine_clear_fence,
@@ -209,6 +212,7 @@ from app.modules.proxy._service.support import (
     _HTTPBridgeRetryCircuitAttemptSelection,
     _HTTPBridgeSession,
     _HTTPBridgeSessionKey,
+    _HTTPBridgeTurnDispatch,
     _is_local_account_cap_code,
     _request_log_client_fields,
     _signal_propagated_capacity_startup_ready,
@@ -1381,9 +1385,11 @@ class _HTTPBridgeStreamingMixin:
         deferred_account_backoff_tracker: _DeferredAccountBackoffTracker | None = None,
         bridge_payload: JsonObject | None = None,
         _denied_anchor_request_id: str | None = None,
+        _turn_dispatch: _HTTPBridgeTurnDispatch | None = None,
     ) -> AsyncIterator[str]:
         scheduler = scheduler_for(self)
         clock = clock_for(self)
+        turn_dispatch = _turn_dispatch if _turn_dispatch is not None else _HTTPBridgeTurnDispatch()
         del suppress_text_done_events
         dead_owner_anchor = False
         dead_owner_process_epoch_mismatch = False
@@ -1464,6 +1470,8 @@ class _HTTPBridgeStreamingMixin:
             request_state.deferred_account_error_backoffs = lifecycle.pending_backoffs
             request_state.deferred_account_backoff_tracker = deferred_account_backoff_tracker
             request_state.deferred_account_backoff_lifecycle = lifecycle
+            # Every request state of this client turn shares the turn's send marker.
+            request_state.bridge_turn_dispatch = turn_dispatch
             request_state.durable_owner_dead = dead_owner_anchor
             if request_state.native_codex_full_history:
                 # Native history goes upstream as the client's own anchor-free
@@ -1599,10 +1607,7 @@ class _HTTPBridgeStreamingMixin:
                         upstream_error_code="durable_lookup_failed",
                     )
                     logger.warning("Durable bridge continuity lookup failed; failing closed", exc_info=True)
-                    raise ProxyResponseError(
-                        502,
-                        _http_bridge_owner_lookup_unavailable_error_envelope(),
-                    ) from exc
+                    raise _http_bridge_owner_lookup_unavailable_error() from exc
                 if missing_durable_tables:
                     logger.warning(
                         "Durable bridge tables missing; using ordinary in-memory bridge fallback",
@@ -2787,6 +2792,8 @@ class _HTTPBridgeStreamingMixin:
                     yield line
                 return
             except ProxyResponseError as exc:
+                if _owner_forward_may_have_dispatched(exc):
+                    turn_dispatch.generating_frame_sent = True
                 if not _owner_forward_failure_allows_local_recovery(exc):
                     raise
                 if forwarded_any:
@@ -4513,16 +4520,34 @@ class _HTTPBridgeStreamingMixin:
         *args: Any,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        """Run one bridge request and release its process-level anchor pins."""
+        """Run one bridge request and release its process-level anchor pins.
+
+        Every bridge refusal of the client turn leaves through here. A
+        candidate refusal (raised before the attempt it refuses was sent) is
+        raised as the turn's own local pre-dispatch refusal only while no
+        generating frame of the turn was sent; otherwise an earlier frame may be
+        running upstream and the native Codex client keeps the
+        transport-failure lifecycle. The candidate itself may be shared with
+        other waiters of one session creation, so it is never changed.
+        """
         request_id = ensure_request_id()
+        turn_dispatch = _HTTPBridgeTurnDispatch()
         inner_stream = self._stream_via_http_bridge_impl(
             *args,
             _denied_anchor_request_id=request_id,
+            _turn_dispatch=turn_dispatch,
             **kwargs,
         )
         try:
             async for event_block in inner_stream:
                 yield event_block
+        except ProxyResponseError as exc:
+            if (
+                getattr(exc, _HTTP_BRIDGE_LOCAL_REFUSAL_CANDIDATE_ATTR, False)
+                and not turn_dispatch.generating_frame_sent
+            ):
+                raise _http_bridge_turn_local_refusal(exc) from exc
+            raise
         finally:
             try:
                 await inner_stream.aclose()

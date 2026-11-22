@@ -26,6 +26,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_durable_lease_ttl_seconds,
     _http_bridge_live_previous_response_alias_owner,
     _http_bridge_live_turn_state_alias_owner,
+    _http_bridge_local_refusal,
     _http_bridge_owner_lookup_unavailable_error_envelope,
     _http_bridge_previous_response_alias_key,
     _http_bridge_request_budget_seconds,
@@ -185,7 +186,8 @@ class _HTTPBridgeSessionRegistryMixin:
     async def close_all_http_bridge_sessions(self: _HTTPBridgeServiceProtocol) -> bool:
         async with self._http_bridge_lock:
             sessions_to_close, inflight_futures = self._take_all_http_bridge_sessions_locked()
-        shutdown_error = ProxyResponseError(
+        # Only session resolution awaits these creation futures, before any turn it serves is submitted.
+        shutdown_error = _http_bridge_local_refusal(
             503,
             openai_error(
                 "upstream_unavailable",

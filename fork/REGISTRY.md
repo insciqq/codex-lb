@@ -24,8 +24,8 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 
 | Status | Issues | Meaning |
 |---|---|---|
-| fixed | 36 | fixed in the fork by a taken PR or the fork's own commits |
-| partial | 14 | partly addressed in the fork; the reason says what is left |
+| fixed | 35 | fixed in the fork by a taken PR or the fork's own commits |
+| partial | 15 | partly addressed in the fork; the reason says what is left |
 | fixed-upstream | 5 | fixed in upstream main |
 | not-fixed | 15 | reviewed and not fixed in the fork, for the reason given |
 | out-of-scope | 37 | a feature request |
@@ -349,7 +349,7 @@ Scope: every pull request and issue open upstream at the snapshot, pull requests
 | [2327](https://github.com/Soju06/codex-lb/issues/2327) | fix(accounts): recover stale holds after verified matching operator probes | open | not-fixed | PRs [2330](https://github.com/Soju06/codex-lb/pull/2330); A restart keeps the persisted rate-limit hold but drops the in-memory early-recovery evidence, so an account can stay excluded until the old deadline. The taken PRs 2626 and 2640 do not change this: they keep the upstream reset horizon in retry health and lift a hold after an upstream-confirmed reset credit. The proposed fix (PR 2330) persists hold generations through new database migrations, and the fork keeps the upstream schema. |
 | [2343](https://github.com/Soju06/codex-lb/issues/2343) | feat(health): expose request-persistence ownership during drain | open | out-of-scope | PRs [2344](https://github.com/Soju06/codex-lb/pull/2344); Feature request: new drain-status fields. |
 | [2356](https://github.com/Soju06/codex-lb/issues/2356) | bug(proxy): experimental context management returns 405 for native notes v2 calls | open | not-fixed | PRs [2101](https://github.com/Soju06/codex-lb/pull/2101); Native history and notes routes for an experimental Codex feature need account-local ownership, and the candidate PR 2101 can pin different owners on concurrent first writes. |
-| [2388](https://github.com/Soju06/codex-lb/issues/2388) | bug(proxy): other HTTP-bridge local refusals still reach native Codex clients as an empty 200 | open | fixed | own fix |
+| [2388](https://github.com/Soju06/codex-lb/issues/2388) | bug(proxy): other HTTP-bridge local refusals still reach native Codex clients as an empty 200 | open | partial | own fix; The HTTP bridge's own refusals raised before any frame of the turn was sent reach native Codex clients as errors. Still an empty 200: refusals from the session reconnect and from shared account selection, such as an exhausted request budget, which also run after dispatch; a failed prewarm, observed on the upstream leg; and refusals after a frame of the turn was sent, including a recovery retry refused after upstream rejected the first frame. |
 | [2389](https://github.com/Soju06/codex-lb/issues/2389) | bug(http-bridge): a model-transition fork rescues one turn, then re-derives the same owner conflict | open | deferred | Converging a forked lane means repointing the parent thread's turn-state and session aliases to it, an ownership change scheduled after the first release. |
 | [2409](https://github.com/Soju06/codex-lb/issues/2409) | bug(proxy): intermittent cache misses on Astra/SOL with the same Pro account across HTTP and WebSocket (195k–777k input) | open | partial | partly fixed by PR [2503](https://github.com/Soju06/codex-lb/pull/2503); For native Codex clients, misses after a replayed image came from the bridge bypass and are fixed; other clients' image threads still bypass the bridge. Requests without session identity mint a new cache key by design, and the remaining same-account misses are upstream cache behavior. |
 | [2413](https://github.com/Soju06/codex-lb/issues/2413) | feat: Luna Reserve (gpt-reserve) fallback when chat quota is exhausted | open | out-of-scope | PRs [2473](https://github.com/Soju06/codex-lb/pull/2473); Feature request: fall back to a reserve model when chat quota is exhausted. |
@@ -551,3 +551,4 @@ Fork commits without an upstream PR: fixes, security and dependency work. Fork t
 | chore(deps): bump url to 2.5.9 for RUSTSEC-2026-0592 | - | security gate |
 | fix(proxy): fail fast for a hard owner outside the key's accounts | - | bug found in production or review |
 | fix(egress): pool native HTTP connections per account | [2471](https://github.com/Soju06/codex-lb/issues/2471) | - |
+| fix(proxy): deliver every HTTP bridge pre-dispatch refusal to native clients | [2388](https://github.com/Soju06/codex-lb/issues/2388) | - |

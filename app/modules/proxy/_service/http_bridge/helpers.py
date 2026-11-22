@@ -733,6 +733,9 @@ _HTTP_BRIDGE_PREPARED_ANCHOR_ATTR = "http_bridge_prepared_continuity_anchor"
 # ``upstream_request_timeout`` for an ordinary pre-submit budget exhaustion,
 # which is overload or host-network evidence and must not be replayed.
 _HTTP_BRIDGE_COOLDOWN_SUPPRESSION_ATTR = "http_bridge_cooldown_suppression"
+# Provenance for a bridge refusal raised before the attempt it refuses was
+# sent. The turn wrapper decides whether it is a local pre-dispatch refusal.
+_HTTP_BRIDGE_LOCAL_REFUSAL_CANDIDATE_ATTR = "http_bridge_local_refusal_candidate"
 _HTTP_BRIDGE_STALE_INFLIGHT_MIN_SECONDS = 120.0
 # Upper bound for the per-request fail-safe sweep's wait on a detached
 # session's ``pending_lock``. The sweep runs on every bridge request, so a
@@ -2023,7 +2026,7 @@ def _http_bridge_parallel_fork_key(
     ):
         return None
     if incoming_turn_state is not None or previous_response_id is not None:
-        raise ProxyResponseError(502, _http_bridge_continuity_lost_error_envelope())
+        raise _http_bridge_continuity_lost_error()
 
     fork_key = _HTTPBridgeSessionKey(
         "internal_request_parallel",
@@ -2420,7 +2423,7 @@ def _raise_http_bridge_incompatible_admission_handoff(
         request_service_tier=request_service_tier,
         service_tier_supported=service_tier_supported,
     )
-    raise ProxyResponseError(
+    raise _http_bridge_local_refusal(
         503,
         openai_error(
             "upstream_unavailable",
@@ -3115,10 +3118,7 @@ def _fail_closed_http_bridge_recovery_lease(
         model_class=_extract_model_class(session.request_model) if session.request_model else None,
         owner_check_applied=True,
     )
-    return ProxyResponseError(
-        502,
-        _http_bridge_owner_lookup_unavailable_error_envelope(),
-    )
+    return _http_bridge_owner_lookup_unavailable_error()
 
 
 async def _renew_durable_http_bridge_lease(
@@ -3542,6 +3542,56 @@ def _http_bridge_owner_lookup_unavailable_error_envelope() -> OpenAIErrorEnvelop
         "HTTP bridge owner metadata unavailable; retry later.",
         error_type="server_error",
     )
+
+
+def _http_bridge_local_refusal(
+    status_code: int,
+    payload: OpenAIErrorEnvelope,
+    *,
+    retry_after_seconds: int | None = None,
+) -> ProxyResponseError:
+    """Build a refusal the bridge raises before the attempt it refuses is sent.
+
+    Callers raise it while resolving the session for a turn or from the
+    submission above its pending-request enqueue and ``response.create`` send,
+    often with a transport code such as ``upstream_unavailable``. That only
+    proves this attempt sent nothing, so the error itself is not a local
+    pre-dispatch refusal: ``_stream_via_http_bridge`` raises a turn-owned copy
+    that is one while no generating frame of the client turn was sent
+    (``_HTTPBridgeTurnDispatch``). The copy lets a native Codex client receive
+    the refusal instead of a committed ``200`` with no bytes (issue 2388).
+    """
+    return _mark_http_bridge_local_refusal_candidate(
+        ProxyResponseError(status_code, payload, retry_after_seconds=retry_after_seconds)
+    )
+
+
+def _mark_http_bridge_local_refusal_candidate(exc: ProxyResponseError) -> ProxyResponseError:
+    setattr(exc, _HTTP_BRIDGE_LOCAL_REFUSAL_CANDIDATE_ATTR, True)
+    return exc
+
+
+def _http_bridge_turn_local_refusal(exc: ProxyResponseError) -> ProxyResponseError:
+    """Return the turn's own copy of a candidate refusal, marked as a local pre-dispatch refusal.
+
+    The candidate can be shared, for example by every waiter of one session
+    creation, so it is never changed in place. The copy keeps every field the
+    callers read (status, payload, retry hints and provenance attributes).
+    """
+    refusal = type(exc).__new__(type(exc))
+    refusal.__dict__.update(vars(exc))
+    refusal.args = exc.args
+    refusal.__dict__.pop(_HTTP_BRIDGE_LOCAL_REFUSAL_CANDIDATE_ATTR, None)
+    refusal.local_pre_dispatch_refusal = True
+    return refusal
+
+
+def _http_bridge_continuity_lost_error() -> ProxyResponseError:
+    return _http_bridge_local_refusal(502, _http_bridge_continuity_lost_error_envelope())
+
+
+def _http_bridge_owner_lookup_unavailable_error() -> ProxyResponseError:
+    return _http_bridge_local_refusal(502, _http_bridge_owner_lookup_unavailable_error_envelope())
 
 
 def _mark_http_bridge_reader_handoff_reconnect_failed(session: Any, old_reader: Any) -> None:

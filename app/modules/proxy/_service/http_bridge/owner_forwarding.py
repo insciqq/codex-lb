@@ -202,6 +202,17 @@ def _owner_forward_failure_allows_local_recovery(exc: ProxyResponseError) -> boo
     }
 
 
+def _owner_forward_may_have_dispatched(exc: ProxyResponseError) -> bool:
+    """Whether a failed owner forward may have sent a generating frame of the turn.
+
+    Only a forward that never reached the owner, or an owner that answered
+    with its own local pre-dispatch refusal, proves the turn sent nothing.
+    """
+    if not isinstance(exc, _OwnerForwardRequestError) or exc.outcome == _OwnerForwardOutcome.NOT_DISPATCHED:
+        return False
+    return not (exc.outcome == _OwnerForwardOutcome.RECEIVER_REJECTED and exc.local_pre_dispatch_refusal)
+
+
 def _durable_recovery_supersedes_local_session(
     durable_lookup: DurableBridgeLookup | None,
     session: _HTTPBridgeSession,

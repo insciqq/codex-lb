@@ -963,6 +963,22 @@ class _DeferredAccountBackoffTracker:
 
 
 @dataclass(slots=True)
+class _HTTPBridgeTurnDispatch:
+    """Whether a generating frame of one client turn may have reached upstream.
+
+    A client turn can run on several request states (local recoveries, an
+    owner-forward recovery, an account-neutral replay), and each new state
+    starts with no send attempt of its own. They all share this marker. It is
+    set at every ``response.create`` send of any of them and when a failed
+    owner forward may have dispatched the turn, and it is never cleared. Only
+    while it is unset is a candidate bridge refusal of the turn a local
+    pre-dispatch refusal.
+    """
+
+    generating_frame_sent: bool = False
+
+
+@dataclass(slots=True)
 class _DeferredKeyedStreamHealthPenalty:
     """Classified account-health write deferred until reservation settlement."""
 
@@ -1318,6 +1334,7 @@ class _WebSocketRequestState:
     deferred_account_error_backoffs: dict[str, Account] = field(default_factory=dict)
     deferred_account_backoff_tracker: _DeferredAccountBackoffTracker | None = None
     deferred_account_backoff_lifecycle: _DeferredAccountBackoffLifecycle | None = None
+    bridge_turn_dispatch: _HTTPBridgeTurnDispatch | None = None
     # Classified health writes (mark_rate_limit / mark_quota_exceeded /
     # record_error) deferred by keyed pre-created retry branches until this
     # request's API-key reservation settles or its fallback release commits

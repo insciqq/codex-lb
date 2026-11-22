@@ -104,6 +104,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_durable_lease_ttl_seconds,
     _http_bridge_is_previous_response_owner_unavailable,
     _http_bridge_key_strength,
+    _http_bridge_local_refusal,
     _http_bridge_native_codex_full_history,
     _http_bridge_payload_looks_like_full_resend,
     _http_bridge_precreated_retry_failure_error,
@@ -473,6 +474,9 @@ async def _send_http_bridge_request_text_with_archive_id(
     token = set_request_id(request_state.archive_request_id)
     try:
         request_state.response_create_attempt_count += 1
+        if request_state.bridge_turn_dispatch is not None:
+            # From here the turn's frame may reach upstream, whatever the send's outcome.
+            request_state.bridge_turn_dispatch.generating_frame_sent = True
         attempt = _HTTPBridgeResponseCreateAttempt(ordinal=request_state.response_create_attempt_count)
         request_state.response_create_attempt = attempt
         request_state.response_create_sent_at = clock.monotonic()
@@ -1716,7 +1720,7 @@ class _HTTPBridgeRequestSubmitMixin:
             await self._release_http_bridge_admission_preregistration(session, request_state=request_state)
             if not session.upstream_close_attempted:
                 await self._retire_http_bridge_after_drain_if_ready(session)
-            raise ProxyResponseError(
+            raise _http_bridge_local_refusal(
                 502,
                 openai_error("upstream_unavailable", "HTTP responses session bridge is retiring"),
             )
@@ -1743,7 +1747,7 @@ class _HTTPBridgeRequestSubmitMixin:
                             cache_key_family=session.key.affinity_kind,
                             model_class=_extract_model_class(session.request_model) if session.request_model else None,
                         )
-                        raise ProxyResponseError(
+                        raise _http_bridge_local_refusal(
                             502,
                             openai_error("upstream_unavailable", "HTTP responses session bridge is closed"),
                         )
@@ -1788,7 +1792,7 @@ class _HTTPBridgeRequestSubmitMixin:
                             cache_key_family=session.key.affinity_kind,
                             model_class=_extract_model_class(session.request_model) if session.request_model else None,
                         )
-                        raise ProxyResponseError(
+                        raise _http_bridge_local_refusal(
                             502,
                             openai_error("upstream_unavailable", "HTTP responses session bridge is closed"),
                         )
@@ -1990,7 +1994,7 @@ class _HTTPBridgeRequestSubmitMixin:
                         cache_key_family=session.key.affinity_kind,
                         model_class=_extract_model_class(session.request_model) if session.request_model else None,
                     )
-                    raise ProxyResponseError(
+                    raise _http_bridge_local_refusal(
                         502,
                         openai_error("upstream_unavailable", "HTTP responses session bridge is closed"),
                     )
@@ -2678,6 +2682,8 @@ class _HTTPBridgeRequestSubmitMixin:
                     event = parse_sse_event(event_block)
                     event_type = _event_type_from_payload(event, payload)
                     if event_type in {"response.failed", "response.incomplete", "error"}:
+                        # Observed on the upstream leg (the warm-up frame was sent and the
+                        # reader may report its socket's death), so not a local refusal.
                         raise ProxyResponseError(
                             502,
                             openai_error(
@@ -2931,7 +2937,7 @@ class _HTTPBridgeRequestSubmitMixin:
             # The caller saw a held lease when it decided not to read settings.
             # Reading them now would suspend pending_lock on a settings-cache
             # refresh (issue 1971), so refuse the turn instead.
-            raise ProxyResponseError(
+            raise _http_bridge_local_refusal(
                 503,
                 openai_error(
                     "upstream_unavailable",
@@ -2993,7 +2999,7 @@ class _HTTPBridgeRequestSubmitMixin:
             _, cancellation = await _await_task_deferring_cancellation(release_task)
             if cancellation is not None:
                 raise cancellation
-            raise ProxyResponseError(
+            raise _http_bridge_local_refusal(
                 502,
                 openai_error("upstream_unavailable", "HTTP responses session bridge is closed"),
             )

@@ -1876,7 +1876,8 @@ reason = "Native history and notes routes for an experimental Codex feature need
 [issue.2388]
 title = "bug(proxy): other HTTP-bridge local refusals still reach native Codex clients as an empty 200"
 state = "open"
-status = "pending"
+status = "partial"
+reason = "The HTTP bridge's own refusals raised before any frame of the turn was sent reach native Codex clients as errors. Still an empty 200: refusals from the session reconnect and from shared account selection, such as an exhausted request budget, which also run after dispatch; a failed prewarm, observed on the upstream leg; and refusals after a frame of the turn was sent, including a recovery retry refused after upstream rejected the first frame."
 
 [issue.2389]
 title = "bug(http-bridge): a model-transition fork rescues one turn, then re-derives the same owner conflict"

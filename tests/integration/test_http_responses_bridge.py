@@ -8,8 +8,8 @@ import logging
 import socket
 import time
 from collections import deque
-from collections.abc import AsyncGenerator
-from dataclasses import replace
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, cast
@@ -27,6 +27,7 @@ import app.modules.proxy.service as proxy_module
 from app.core.clients.proxy_websocket import UpstreamWebSocketMessage as _FakeUpstreamMessage
 from app.core.config.dashboard_overrides import with_dashboard_overrides
 from app.core.config.settings import Settings
+from app.core.errors import PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE
 from app.core.openai.model_registry import ModelRegistry
 from app.core.utils.request_id import (
     reset_request_id,
@@ -49,6 +50,7 @@ from app.db.session import SessionLocal
 from app.dependencies import get_proxy_service_for_app
 from app.modules.proxy._service import support as proxy_support
 from app.modules.proxy._service.http_bridge import helpers as http_bridge_helpers_module
+from app.modules.proxy._service.http_bridge import mixin as http_bridge_mixin_module
 from app.modules.proxy._service.http_bridge import quarantine as http_bridge_quarantine_module
 from app.modules.proxy._service.http_bridge import retry_circuit as http_bridge_retry_circuit_module
 from app.modules.proxy._service.http_bridge import streaming as http_bridge_streaming_module
@@ -18577,8 +18579,12 @@ async def _native_owner_forward_retry_circuit_refusal(
     *,
     slug: str,
     owner_delay_seconds: float = 0.0,
+    owner_status: int = 503,
+    owner_error: dict[str, str] | None = None,
+    owner_headers: dict[str, str] | None = None,
+    on_owner_answer: Callable[[], None] | None = None,
 ) -> Any:
-    """Send a native continuation the owner replica refuses with its retry-circuit 503."""
+    """Send a native continuation the owner replica refuses, by default with its retry-circuit 503."""
     from app.modules.proxy.http_bridge_forwarding import HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER
 
     _install_bridge_settings_with_limits(
@@ -18634,7 +18640,8 @@ async def _native_owner_forward_retry_circuit_refusal(
 
     owner_refusal_body = json.dumps(
         {
-            "error": {
+            "error": owner_error
+            or {
                 "message": _RETRY_CIRCUIT_SUPPRESSION_MESSAGE,
                 "type": "server_error",
                 "code": "upstream_request_timeout",
@@ -18643,8 +18650,12 @@ async def _native_owner_forward_retry_circuit_refusal(
     )
 
     class FakeOwnerResponse:
-        status = 503
-        headers = {HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1", "Retry-After": "30"}
+        status = owner_status
+        headers = (
+            owner_headers
+            if owner_headers is not None
+            else {HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1", "Retry-After": "30"}
+        )
 
         async def __aenter__(self) -> "FakeOwnerResponse":
             await asyncio.sleep(owner_delay_seconds)
@@ -18654,6 +18665,8 @@ async def _native_owner_forward_retry_circuit_refusal(
             return None
 
         async def text(self) -> str:
+            if on_owner_answer is not None:
+                on_owner_answer()
             return owner_refusal_body
 
     class FakeOwnerSession:
@@ -18740,6 +18753,904 @@ async def test_native_codex_owner_forward_retry_circuit_refusal_keeps_retry_hint
     assert "retry: 30000\n" in response.text
     assert '"code":"upstream_request_timeout"' in response.text.replace(" ", "")
     assert response.text.rstrip().endswith("data: [DONE]")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_certified", [True, False], ids=["owner_certified", "owner_uncertified"])
+async def test_native_codex_origin_refusal_after_an_owner_rejection_follows_the_owner_proof(
+    async_client,
+    app_instance,
+    monkeypatch,
+    caplog,
+    owner_certified: bool,
+):
+    """An owner rejection without the local-refusal mark may have sent the turn upstream.
+
+    The origin recovers locally from the owner's instance-mismatch rejection and
+    then refuses the turn itself while resolving a session. That refusal is
+    delivered only when the owner marked its rejection as a local pre-dispatch
+    refusal; otherwise a frame of the turn may be running on the owner, so the
+    native client keeps the transport-failure lifecycle (issue 2388).
+    """
+    from app.modules.proxy.http_bridge_forwarding import HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER
+
+    caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
+
+    async def ring_unreachable(*args, **kwargs):
+        del args, kwargs
+        raise ConnectionError("ring unreachable")
+
+    response = await _native_owner_forward_retry_circuit_refusal(
+        async_client,
+        app_instance,
+        monkeypatch,
+        slug=f"native-owner-rejection-{'certified' if owner_certified else 'uncertified'}",
+        # An owner keeps this envelope on the forward, and the origin may recover from it locally.
+        owner_status=409,
+        owner_error={
+            "message": "HTTP bridge session is owned by a different instance; retry to reach the correct replica",
+            "type": "server_error",
+            "code": "bridge_instance_mismatch",
+        },
+        owner_headers={HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1"} if owner_certified else {},
+        on_owner_answer=lambda: monkeypatch.setattr(
+            proxy_module, "_active_http_bridge_instance_ring", ring_unreachable
+        ),
+    )
+
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if "reason=owner_metadata_unavailable" in record.getMessage()
+        and "upstream_error_code=ring_lookup_failed" in record.getMessage()
+    ], "the origin's recovery was not refused while resolving its session"
+    if owner_certified:
+        assert response.status_code == 502, response.text
+        assert response.json()["error"]["message"] == _OWNER_METADATA_UNAVAILABLE
+    else:
+        assert (response.status_code, response.content) == (200, b""), response.text
+
+
+# --- Issue 2388: every local pre-dispatch refusal reaches native Codex clients ---
+#
+# Each delivered case forces one refusal the bridge raises itself before any
+# generating frame of the turn was sent, at the submission or while resolving
+# the session. Before the fix every one of them reached a native Codex client as
+# a committed 200 with an empty body, because the refusal reuses a transport
+# error code. The kept cases refuse after a frame of the turn (or its warm-up)
+# went upstream: they keep that transport lifecycle.
+
+_NATIVE_REFUSAL_USER_AGENT = "codex_exec/0.153.4"
+_BRIDGE_CLOSED = "HTTP responses session bridge is closed"
+_OWNER_METADATA_UNAVAILABLE = "HTTP bridge owner metadata unavailable; retry later."
+
+
+@dataclass
+class _NativeRefusalTurn:
+    """The second native turn of a bridge thread; a case's ``arm`` adjusts it."""
+
+    client: AsyncClient
+    service: Any
+    monkeypatch: pytest.MonkeyPatch
+    upstream: _FakeBridgeUpstreamWebSocket
+    session: Any
+    turn_state: str
+    response_id: str
+    headers: dict[str, str]
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _NativeRefusalCase:
+    site: str
+    arm: Callable[[_NativeRefusalTurn], Awaitable[None]]
+    status: int
+    code: str
+    message: str
+    # The layers this refusal left (``_record_refusal_layers``), pinning the site.
+    raised_by: frozenset[str] = frozenset()
+    # Fragments one log record must contain, or that no record may contain.
+    log_markers: tuple[str, ...] = ()
+    absent_log_markers: tuple[str, ...] = ()
+    # Turn frames sent upstream after the case was armed; a warm-up frame is not one.
+    turn_frames: int = 0
+    upstream_factory: Callable[[], _FakeBridgeUpstreamWebSocket] = _FakeBridgeUpstreamWebSocket
+
+
+def _refuse_at_submit(turn: _NativeRefusalTurn, mutate: Callable[[Any, Any], None]) -> None:
+    """Change the session at the submission entry, after the retry circuit admitted the turn."""
+    admitted = proxy_module.ProxyService._http_bridge_precreated_retry_allowed
+
+    async def admit_then_mutate(self, session, **kwargs):
+        allowed = await admitted(self, session, **kwargs)
+        mutate(self, session)
+        return allowed
+
+    turn.monkeypatch.setattr(proxy_module.ProxyService, "_http_bridge_precreated_retry_allowed", admit_then_mutate)
+
+
+def _fail_session_reconnect(turn: _NativeRefusalTurn) -> None:
+    async def reconnect_failed(self, session, **kwargs):
+        del self, session, kwargs
+        return False
+
+    turn.monkeypatch.setattr(
+        proxy_module.ProxyService, "_retry_http_bridge_request_on_fresh_upstream", reconnect_failed
+    )
+
+
+def _miss_durable_lookup(turn: _NativeRefusalTurn) -> None:
+    async def no_durable_row(**kwargs):
+        del kwargs
+        return None
+
+    turn.monkeypatch.setattr(turn.service._durable_bridge, "lookup_request_targets", no_durable_row)
+
+
+def _make_first_session_incompatible(turn: _NativeRefusalTurn, module: Any) -> None:
+    """Make the first turn's session incompatible with the next turn (as a service-tier change does)."""
+    compatible = module._http_bridge_compatible
+
+    def first_session_incompatible(session, *args, **kwargs):
+        return session is not turn.session and compatible(session, *args, **kwargs)
+
+    turn.monkeypatch.setattr(module, "_http_bridge_compatible", first_session_incompatible)
+
+
+def _use_fresh_bridge_session(turn: _NativeRefusalTurn) -> None:
+    turn.headers = {"session_id": f"{turn.headers['session_id']}-fresh", "user-agent": _NATIVE_REFUSAL_USER_AGENT}
+
+
+async def _seed_account_neutral_replay_row(turn: _NativeRefusalTurn, nonce: str) -> str:
+    """Record a durable account-neutral replay row reachable by its turn-state, and return that turn-state."""
+    from app.modules.proxy.continuity import make_http_bridge_account_neutral_replay_key
+
+    kind, key = make_http_bridge_account_neutral_replay_key(nonce)
+    turn_state = f"http_turn_{nonce}"
+    lookup = await turn.service._durable_bridge.claim_live_session(
+        session_key_kind=kind,
+        session_key_value=key,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_process_epoch="test-process",
+        lease_ttl_seconds=60.0,
+        account_id=turn.session.account.id,
+        model="gpt-5.1",
+        service_tier=None,
+        latest_turn_state=turn_state,
+        latest_response_id=None,
+        allow_takeover=True,
+    )
+    await turn.service._durable_bridge.register_turn_state(
+        session_id=lookup.session_id,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_epoch=lookup.owner_epoch,
+        turn_state=turn_state,
+        lease_ttl_seconds=60.0,
+    )
+    turn.headers = {"x-codex-turn-state": turn_state, "user-agent": _NATIVE_REFUSAL_USER_AGENT}
+    turn.payload = {**turn.payload, "input": "continue"}
+    return turn_state
+
+
+async def _arm_submit_session_retiring(turn: _NativeRefusalTurn) -> None:
+    _refuse_at_submit(turn, lambda service, session: setattr(session.upstream_control, "retire_after_drain", True))
+
+
+async def _arm_submit_session_unregistered(turn: _NativeRefusalTurn) -> None:
+    def close_and_unregister(service, session):
+        session.closed = True
+        service._http_bridge_sessions.pop(session.key, None)
+
+    _refuse_at_submit(turn, close_and_unregister)
+
+
+async def _arm_submit_session_reconnect_failed(turn: _NativeRefusalTurn) -> None:
+    _refuse_at_submit(turn, lambda service, session: setattr(session, "closed", True))
+    _fail_session_reconnect(turn)
+
+
+async def _arm_submit_session_closed_after_admission(turn: _NativeRefusalTurn) -> None:
+    admit = proxy_module.ProxyService._acquire_request_state_response_create_admission
+
+    async def admit_then_close(self, request_state, **kwargs):
+        await admit(self, request_state, **kwargs)
+        kwargs["bridge_session"].closed = True
+
+    turn.monkeypatch.setattr(
+        proxy_module.ProxyService, "_acquire_request_state_response_create_admission", admit_then_close
+    )
+    _fail_session_reconnect(turn)
+
+
+async def _arm_submit_lease_without_snapshot(turn: _NativeRefusalTurn) -> None:
+    async def no_snapshot(self, session):
+        del self, session
+        return None
+
+    turn.monkeypatch.setattr(proxy_module.ProxyService, "_http_bridge_reacquire_snapshot", no_snapshot)
+
+
+class _WarmupFailingUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
+    """Upstream that answers a warm-up frame (``generate: false``) with ``response.failed``."""
+
+    async def send_text(self, text: str) -> None:
+        if json.loads(text).get("generate") is not False:
+            await super().send_text(text)
+            return
+        self.sent_text.append(text)
+        failed = {
+            "type": "response.failed",
+            "response": {
+                "id": "resp_warmup_failed",
+                "status": "failed",
+                "error": {"code": "server_error", "message": "warm-up failed"},
+            },
+        }
+        await self._messages.put(_FakeUpstreamMessage("text", text=json.dumps(failed, separators=(",", ":"))))
+
+
+async def _arm_submit_prewarm_failed(turn: _NativeRefusalTurn) -> None:
+    # A fresh session prewarms; it gets its own upstream so the first session's reader cannot take the frames.
+    _use_fresh_bridge_session(turn)
+    turn.monkeypatch.setattr(proxy_module, "_http_bridge_prewarm_enabled", lambda settings: True)
+    warmup_failing = _WarmupFailingUpstreamWebSocket()
+
+    async def connect_warmup_failing(headers, access_token, account_id_header, *, base_url=None, session=None):
+        del headers, access_token, account_id_header, base_url, session
+        return warmup_failing
+
+    turn.monkeypatch.setattr(proxy_module, "connect_responses_websocket", connect_warmup_failing)
+    turn.upstream = warmup_failing
+
+
+async def _arm_submit_session_closed_during_lease(turn: _NativeRefusalTurn) -> None:
+    load_balancer = turn.service._load_balancer
+    acquire = load_balancer.acquire_account_lease
+
+    async def acquire_then_close(account_id, **kwargs):
+        lease = await acquire(account_id, **kwargs)
+        turn.session.closed = True
+        return lease
+
+    turn.monkeypatch.setattr(load_balancer, "acquire_account_lease", acquire_then_close)
+
+
+async def _arm_resolve_durable_lookup_failed(turn: _NativeRefusalTurn) -> None:
+    async def lookup_failed(**kwargs):
+        del kwargs
+        raise RuntimeError("durable metadata unavailable")
+
+    turn.monkeypatch.setattr(turn.service._durable_bridge, "lookup_request_targets", lookup_failed)
+
+
+async def _arm_resolve_owner_lookup_failed(turn: _NativeRefusalTurn) -> None:
+    async def owner_lookup_failed(*args, **kwargs):
+        del args, kwargs
+        raise ConnectionRefusedError("ring unavailable")
+
+    _use_fresh_bridge_session(turn)
+    turn.monkeypatch.setattr(proxy_module, "_http_bridge_owner_instance", owner_lookup_failed)
+
+
+async def _arm_resolve_ring_lookup_failed(turn: _NativeRefusalTurn) -> None:
+    async def owner_is_this_instance(*args, **kwargs):
+        del args, kwargs
+        return "instance-a"
+
+    async def ring_lookup_failed(*args, **kwargs):
+        del args, kwargs
+        raise ConnectionRefusedError("ring unavailable")
+
+    _use_fresh_bridge_session(turn)
+    turn.monkeypatch.setattr(proxy_module, "_http_bridge_owner_instance", owner_is_this_instance)
+    turn.monkeypatch.setattr(proxy_module, "_active_http_bridge_instance_ring", ring_lookup_failed)
+
+
+async def _arm_resolve_continuation_without_session(turn: _NativeRefusalTurn) -> None:
+    _use_fresh_bridge_session(turn)
+    turn.payload = {**turn.payload, "previous_response_id": turn.response_id, "input": "continue"}
+    _miss_durable_lookup(turn)
+    _make_first_session_incompatible(turn, http_bridge_mixin_module)
+
+
+async def _arm_resolve_turn_state_alias_incompatible(turn: _NativeRefusalTurn) -> None:
+    turn.headers = {"x-codex-turn-state": turn.turn_state, "user-agent": _NATIVE_REFUSAL_USER_AGENT}
+    _miss_durable_lookup(turn)
+    _make_first_session_incompatible(turn, http_bridge_mixin_module)
+
+
+async def _arm_resolve_previous_response_session_incompatible(turn: _NativeRefusalTurn) -> None:
+    turn.headers = {"x-codex-turn-state": "http_turn_unregistered_alias", "user-agent": _NATIVE_REFUSAL_USER_AGENT}
+    turn.payload = {**turn.payload, "previous_response_id": turn.response_id, "input": "continue"}
+    _miss_durable_lookup(turn)
+    _make_first_session_incompatible(turn, http_bridge_mixin_module)
+
+
+async def _arm_resolve_existing_session_incompatible(turn: _NativeRefusalTurn) -> None:
+    _make_first_session_incompatible(turn, http_bridge_helpers_module)
+
+
+async def _arm_resolve_incompatible_admission_handoff(turn: _NativeRefusalTurn) -> None:
+    # A closed session another turn is still being admitted on is a retained handoff.
+    turn.session.closed = True
+    turn.session.admission_waiter_count = 1
+    _make_first_session_incompatible(turn, http_bridge_mixin_module)
+
+
+async def _arm_resolve_account_neutral_alias_without_session(turn: _NativeRefusalTurn) -> None:
+    from app.modules.proxy.continuity import make_http_bridge_account_neutral_replay_key
+
+    kind, key = make_http_bridge_account_neutral_replay_key("alias-without-session")
+    turn_state = "http_turn_account_neutral_alias_without_session"
+    alias_key = http_bridge_helpers_module._http_bridge_turn_state_alias_key(turn_state, None)
+    turn.service._http_bridge_turn_state_index[alias_key] = proxy_module._HTTPBridgeSessionKey(kind, key, None)
+    turn.headers = {"x-codex-turn-state": turn_state, "user-agent": _NATIVE_REFUSAL_USER_AGENT}
+    _miss_durable_lookup(turn)
+
+
+async def _arm_resolve_account_neutral_claim_without_tables(turn: _NativeRefusalTurn) -> None:
+    await _seed_account_neutral_replay_row(turn, "claim_without_tables")
+
+    async def tables_missing(**kwargs):
+        del kwargs
+        raise RuntimeError("no such table: http_bridge_sessions")
+
+    turn.monkeypatch.setattr(turn.service._durable_bridge, "claim_live_session", tables_missing)
+
+
+async def _arm_resolve_account_neutral_lease_renewal_failed(turn: _NativeRefusalTurn) -> None:
+    await _seed_account_neutral_replay_row(turn, "lease_renewal_failed")
+    # One completed turn creates the live account-neutral session the refused turn reuses.
+    created = await turn.client.post("/backend-api/codex/responses", json=turn.payload, headers=turn.headers)
+    assert created.status_code == 200, created.text
+
+    async def renewal_failed(**kwargs):
+        del kwargs
+        raise RuntimeError("durable lease renewal unavailable")
+
+    turn.monkeypatch.setattr(turn.service._durable_bridge, "renew_live_session", renewal_failed)
+
+
+async def _arm_resolve_session_creation_shutdown(turn: _NativeRefusalTurn) -> None:
+    """Make the turn wait on another turn's session creation while the bridge shuts down."""
+    service = turn.service
+    key = turn.session.key
+    service._http_bridge_sessions.pop(key)
+    service._http_bridge_detached_sessions[id(turn.session)] = turn.session
+    creation = asyncio.get_running_loop().create_future()
+    service._http_bridge_inflight_sessions[key] = creation
+    registry_wait = proxy_module.ProxyService._await_http_bridge_registry_wait
+
+    async def shut_down_while_waiting(self, future, *, timeout):
+        if future is creation:
+            await self.close_all_http_bridge_sessions()
+        return await registry_wait(self, future, timeout=timeout)
+
+    turn.monkeypatch.setattr(proxy_module.ProxyService, "_await_http_bridge_registry_wait", shut_down_while_waiting)
+
+
+async def _arm_kept_unanswered_reattach_send(turn: _NativeRefusalTurn) -> None:
+    """Reattach a continuation, then refuse its recovery after upstream took the frame silently."""
+    turn.payload = {**turn.payload, "previous_response_id": turn.response_id, "input": "continue"}
+    # The anchor's durable owner is an earlier process, so the continuation reattaches as a dead owner.
+    turn.monkeypatch.setattr(http_bridge_streaming_module, "http_bridge_owner_process_epoch", lambda: "earlier-process")
+    upstream = turn.upstream
+
+    async def cooling_down(self, session):
+        del self, session
+        return 10.0
+
+    async def ring_unreachable(*args, **kwargs):
+        del args, kwargs
+        raise ConnectionError("ring unreachable")
+
+    async def accept_silently(text: str) -> None:
+        # The frame may now run upstream. The post-submit cooldown check fails the turn
+        # closed with a local previous-response rejection, and the recovery it starts
+        # cannot resolve a session because the ring is unreachable.
+        upstream.sent_text.append(text)
+        turn.monkeypatch.setattr(
+            proxy_module.ProxyService, "_http_bridge_precreated_retry_cooldown_seconds", cooling_down
+        )
+        turn.monkeypatch.setattr(proxy_module, "_active_http_bridge_instance_ring", ring_unreachable)
+
+    turn.monkeypatch.setattr(upstream, "send_text", accept_silently)
+
+
+async def _arm_refuse_recovery_after_rejected_send(turn: _NativeRefusalTurn) -> None:
+    """Refuse the recovery's retry after upstream rejected the turn's first frame."""
+    # The bridge never anchors native history, so the turn carries its own anchor for upstream to reject.
+    turn.payload = {**turn.payload, "previous_response_id": turn.response_id, "input": "continue"}
+    admit = proxy_module.ProxyService._acquire_request_state_response_create_admission
+    admissions = 0
+
+    async def close_on_recovery_admission(self, request_state, **kwargs):
+        nonlocal admissions
+        await admit(self, request_state, **kwargs)
+        admissions += 1
+        if admissions > 1:
+            kwargs["bridge_session"].closed = True
+
+    turn.monkeypatch.setattr(
+        proxy_module.ProxyService, "_acquire_request_state_response_create_admission", close_on_recovery_admission
+    )
+    _fail_session_reconnect(turn)
+
+
+_SUBMISSION = frozenset({"submission"})
+_STREAM_LEASE = frozenset({"submission", "stream_lease"})
+_SESSION_RESOLUTION = frozenset({"session_resolution"})
+_CONTINUATION_WITHOUT_SESSION = ("continuity_fail_closed surface=http_bridge reason=continuity_lost",)
+_SUBMIT_SESSION_CLOSED_AFTER_ADMISSION = _NativeRefusalCase(
+    "submit_session_closed_after_admission",
+    _arm_submit_session_closed_after_admission,
+    502,
+    "upstream_unavailable",
+    _BRIDGE_CLOSED,
+    _SUBMISSION,
+    ("event=submit_on_closed", "detail=session_retired_after_admission"),
+)
+_RESOLVE_DURABLE_LOOKUP_FAILED = _NativeRefusalCase(
+    "resolve_durable_lookup_failed",
+    _arm_resolve_durable_lookup_failed,
+    502,
+    "upstream_unavailable",
+    _OWNER_METADATA_UNAVAILABLE,
+    frozenset(),
+    ("reason=owner_metadata_unavailable", "upstream_error_code=durable_lookup_failed"),
+)
+_NATIVE_LOCAL_REFUSAL_CASES = (
+    _NativeRefusalCase(
+        "submit_session_retiring",
+        _arm_submit_session_retiring,
+        502,
+        "upstream_unavailable",
+        "HTTP responses session bridge is retiring",
+        _SUBMISSION,
+    ),
+    _NativeRefusalCase(
+        "submit_session_unregistered",
+        _arm_submit_session_unregistered,
+        502,
+        "upstream_unavailable",
+        _BRIDGE_CLOSED,
+        _SUBMISSION,
+        ("event=submit_on_closed", "detail=session_unregistered_before_reconnect"),
+    ),
+    _NativeRefusalCase(
+        "submit_session_reconnect_failed",
+        _arm_submit_session_reconnect_failed,
+        502,
+        "upstream_unavailable",
+        _BRIDGE_CLOSED,
+        _SUBMISSION,
+        ("event=submit_on_closed", "detail=None"),
+    ),
+    _SUBMIT_SESSION_CLOSED_AFTER_ADMISSION,
+    _NativeRefusalCase(
+        "submit_lease_without_snapshot",
+        _arm_submit_lease_without_snapshot,
+        503,
+        "upstream_unavailable",
+        "HTTP responses session bridge lost its stream lease without a settings snapshot; retry the request.",
+        _STREAM_LEASE,
+    ),
+    _NativeRefusalCase(
+        "submit_session_closed_during_lease",
+        _arm_submit_session_closed_during_lease,
+        502,
+        "upstream_unavailable",
+        _BRIDGE_CLOSED,
+        _STREAM_LEASE,
+    ),
+    _RESOLVE_DURABLE_LOOKUP_FAILED,
+    _NativeRefusalCase(
+        "resolve_owner_lookup_failed",
+        _arm_resolve_owner_lookup_failed,
+        502,
+        "upstream_unavailable",
+        _OWNER_METADATA_UNAVAILABLE,
+        _SESSION_RESOLUTION,
+        ("reason=owner_metadata_unavailable", "upstream_error_code=owner_lookup_failed"),
+    ),
+    _NativeRefusalCase(
+        "resolve_ring_lookup_failed",
+        _arm_resolve_ring_lookup_failed,
+        502,
+        "upstream_unavailable",
+        _OWNER_METADATA_UNAVAILABLE,
+        _SESSION_RESOLUTION,
+        ("reason=owner_metadata_unavailable", "upstream_error_code=ring_lookup_failed"),
+    ),
+    _NativeRefusalCase(
+        "resolve_continuation_without_session",
+        _arm_resolve_continuation_without_session,
+        502,
+        "stream_incomplete",
+        PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
+        _SESSION_RESOLUTION,
+        _CONTINUATION_WITHOUT_SESSION,
+    ),
+    # The next three share the message and layer. Their inputs lead to different
+    # branches; the continuity-lost record and the fork-key layer must not appear.
+    _NativeRefusalCase(
+        "resolve_turn_state_alias_incompatible",
+        _arm_resolve_turn_state_alias_incompatible,
+        502,
+        "stream_incomplete",
+        PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
+        _SESSION_RESOLUTION,
+        absent_log_markers=_CONTINUATION_WITHOUT_SESSION,
+    ),
+    _NativeRefusalCase(
+        "resolve_previous_response_session_incompatible",
+        _arm_resolve_previous_response_session_incompatible,
+        502,
+        "stream_incomplete",
+        PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
+        _SESSION_RESOLUTION,
+        absent_log_markers=_CONTINUATION_WITHOUT_SESSION,
+    ),
+    _NativeRefusalCase(
+        "resolve_account_neutral_alias_without_session",
+        _arm_resolve_account_neutral_alias_without_session,
+        502,
+        "stream_incomplete",
+        PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
+        _SESSION_RESOLUTION,
+        absent_log_markers=_CONTINUATION_WITHOUT_SESSION,
+    ),
+    _NativeRefusalCase(
+        "resolve_existing_session_incompatible",
+        _arm_resolve_existing_session_incompatible,
+        502,
+        "stream_incomplete",
+        PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
+        frozenset({"session_resolution", "parallel_fork_key"}),
+    ),
+    _NativeRefusalCase(
+        "resolve_incompatible_admission_handoff",
+        _arm_resolve_incompatible_admission_handoff,
+        503,
+        "upstream_unavailable",
+        "HTTP responses session bridge is preserving an incompatible admission handoff",
+        _SESSION_RESOLUTION,
+        ("http_bridge_handoff_compatibility_rejected",),
+    ),
+    _NativeRefusalCase(
+        "resolve_session_creation_shutdown",
+        _arm_resolve_session_creation_shutdown,
+        503,
+        "upstream_unavailable",
+        "HTTP responses session bridge is shutting down",
+        _SESSION_RESOLUTION,
+    ),
+    _NativeRefusalCase(
+        "resolve_account_neutral_claim_without_tables",
+        _arm_resolve_account_neutral_claim_without_tables,
+        502,
+        "upstream_unavailable",
+        _OWNER_METADATA_UNAVAILABLE,
+        frozenset({"session_resolution", "durable_claim"}),
+    ),
+    _NativeRefusalCase(
+        "resolve_account_neutral_lease_renewal_failed",
+        _arm_resolve_account_neutral_lease_renewal_failed,
+        502,
+        "upstream_unavailable",
+        _OWNER_METADATA_UNAVAILABLE,
+        _SESSION_RESOLUTION,
+        ("event=recovery_lease_unavailable", "detail=outcome=renew_error"),
+    ),
+)
+_NATIVE_TRANSPORT_LIFECYCLE_CASES = (
+    _NativeRefusalCase(
+        "prewarm_failed",
+        _arm_submit_prewarm_failed,
+        502,
+        "upstream_unavailable",
+        "HTTP responses session bridge prewarm failed",
+        _SUBMISSION,
+    ),
+    _NativeRefusalCase(
+        "recovery_after_unanswered_send",
+        _arm_kept_unanswered_reattach_send,
+        502,
+        "upstream_unavailable",
+        _OWNER_METADATA_UNAVAILABLE,
+        _SESSION_RESOLUTION,
+        # The post-submit cooldown check, not upstream, rejected the anchor.
+        ("continuity_fail_closed surface=http_bridge reason=retry_circuit_cooldown_continuity_bound",),
+        turn_frames=1,
+    ),
+    # Upstream rejected the first frame definitively, but the marker is never
+    # cleared: the recovery's refusal keeps the conservative transport lifecycle.
+    _NativeRefusalCase(
+        "recovery_after_rejected_send",
+        _arm_refuse_recovery_after_rejected_send,
+        502,
+        "upstream_unavailable",
+        _BRIDGE_CLOSED,
+        _SUBMISSION,
+        ("event=submit_on_closed", "detail=session_retired_after_admission"),
+        turn_frames=1,
+        upstream_factory=_DeniesAnchoredTurnUpstreamWebSocket,
+    ),
+)
+
+
+def _proxy_error_message(exc: proxy_module.ProxyResponseError) -> object:
+    error = exc.payload.get("error") if isinstance(exc.payload, dict) else None
+    return error.get("message") if isinstance(error, dict) else None
+
+
+def _record_refusal_layers(turn: _NativeRefusalTurn, message: str) -> set[str]:
+    """Record which bridge layers the refusal carrying ``message`` propagated out of."""
+    layers: set[str] = set()
+    for layer, method in (
+        ("submission", "_submit_http_bridge_request"),
+        ("stream_lease", "_ensure_http_bridge_session_stream_lease_locked"),
+        ("session_resolution", "_get_or_create_http_bridge_session"),
+        ("durable_claim", "_claim_durable_http_bridge_session"),
+    ):
+        original = getattr(proxy_module.ProxyService, method)
+
+        async def recorded(self, *args, _layer=layer, _original=original, **kwargs):
+            try:
+                return await _original(self, *args, **kwargs)
+            except proxy_module.ProxyResponseError as exc:
+                if _proxy_error_message(exc) == message:
+                    layers.add(_layer)
+                raise
+
+        turn.monkeypatch.setattr(proxy_module.ProxyService, method, recorded)
+    fork_key = http_bridge_mixin_module._http_bridge_parallel_fork_key
+
+    def recorded_fork_key(*args, **kwargs):
+        try:
+            return fork_key(*args, **kwargs)
+        except proxy_module.ProxyResponseError as exc:
+            if _proxy_error_message(exc) == message:
+                layers.add("parallel_fork_key")
+            raise
+
+    turn.monkeypatch.setattr(http_bridge_mixin_module, "_http_bridge_parallel_fork_key", recorded_fork_key)
+    return layers
+
+
+async def _native_bridge_turn_refused_locally(
+    async_client,
+    app_instance,
+    monkeypatch: pytest.MonkeyPatch,
+    case: _NativeRefusalCase,
+) -> tuple[Any, int, set[str]]:
+    """Complete one native turn, arm ``case`` and send the next turn.
+
+    Returns the refused turn's response, the number of turn frames sent
+    upstream after the case was armed (a warm-up frame is not a turn) and the
+    layers the refusal propagated out of.
+    """
+    slug = f"native-refusal-{case.site.replace('_', '-')}"
+    account_id = await _import_account(async_client, f"acc_{slug}", f"{slug}@example.com")
+    account = await _get_account(account_id)
+    upstream = case.upstream_factory()
+    native_detection = http_bridge_helpers_module.is_native_codex_client_request
+    _install_denied_anchor_bridge_fakes(monkeypatch, account=account, upstream=cast(Any, upstream))
+    # Keep production native detection in the bridge: the route and the bridge see the same client.
+    monkeypatch.setattr(http_bridge_helpers_module, "is_native_codex_client_request", native_detection)
+    service = get_proxy_service_for_app(app_instance)
+    headers = {"session_id": f"{slug}-session", "user-agent": _NATIVE_REFUSAL_USER_AGENT}
+    turn_one_input, turn_two_input = _denied_anchor_turn_inputs()
+
+    async with _client_reporting_committed_stream_failures(app_instance) as client:
+        first = await client.post(
+            "/backend-api/codex/responses",
+            json={"model": "gpt-5.1", "instructions": "Return exactly OK.", "input": turn_one_input},
+            headers=headers,
+        )
+        assert first.status_code == 200
+        (session,) = service._http_bridge_sessions.values()
+        turn_state = first.headers["x-codex-turn-state"]
+        turn = _NativeRefusalTurn(
+            client=client,
+            service=service,
+            monkeypatch=monkeypatch,
+            upstream=upstream,
+            session=session,
+            turn_state=turn_state,
+            response_id=f"{upstream.response_id_prefix}_1",
+            # The turn-state keeps the refused turn off the first turn's unanchored handoff.
+            headers={**headers, "x-codex-turn-state": turn_state},
+            payload={"model": "gpt-5.1", "instructions": "Return exactly OK.", "input": turn_two_input},
+        )
+        await case.arm(turn)
+        layers = _record_refusal_layers(turn, case.message)
+        sent_before = len(turn.upstream.sent_text)
+        refused = await client.post("/backend-api/codex/responses", json=turn.payload, headers=turn.headers)
+    sent = turn.upstream.sent_text[sent_before:]
+    return refused, len([text for text in sent if json.loads(text).get("generate") is not False]), layers
+
+
+def _assert_native_refusal_reached_its_site(caplog, case: _NativeRefusalCase, layers: set[str]) -> None:
+    assert layers == case.raised_by, f"{case.site}: the refusal left {sorted(layers)}"
+    messages = [record.getMessage() for record in caplog.records]
+    if case.log_markers:
+        assert [message for message in messages if all(marker in message for marker in case.log_markers)], (
+            f"{case.site}: the turn was refused somewhere else"
+        )
+    for marker in case.absent_log_markers:
+        assert not [message for message in messages if marker in message], f"{case.site}: refused at {marker}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", _NATIVE_LOCAL_REFUSAL_CASES, ids=lambda case: case.site)
+async def test_native_codex_http_bridge_local_refusal_returns_error_before_commit(
+    async_client,
+    app_instance,
+    monkeypatch,
+    caplog,
+    case: _NativeRefusalCase,
+):
+    """A native Codex client must receive each local refusal, not an empty 200.
+
+    Regression for issue 2388: these refusals share a transport error code, so
+    the native lifecycle replayed them into the committed body and the client
+    saw ``200`` with zero bytes.
+    """
+    _install_bridge_settings(monkeypatch, enabled=True)
+    caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
+
+    response, dispatched, layers = await _native_bridge_turn_refused_locally(
+        async_client, app_instance, monkeypatch, case
+    )
+
+    _assert_native_refusal_reached_its_site(caplog, case, layers)
+    assert response.status_code == case.status, f"native client received {response.status_code}: {response.text!r}"
+    assert response.json()["error"] == {"message": case.message, "type": "server_error", "code": case.code}
+    assert dispatched == case.turn_frames, "the refused attempt was sent upstream"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", _NATIVE_TRANSPORT_LIFECYCLE_CASES, ids=lambda case: case.site)
+async def test_native_codex_http_bridge_refusal_after_an_upstream_frame_keeps_the_transport_lifecycle(
+    async_client,
+    app_instance,
+    monkeypatch,
+    caplog,
+    case: _NativeRefusalCase,
+):
+    """A refusal after a frame of the turn went upstream is not a local refusal.
+
+    The refused attempt sent nothing itself, but an earlier frame of the same
+    client turn, or its warm-up, reached the upstream leg. Whether upstream
+    left it unanswered or rejected it, the native client keeps the
+    transport-failure lifecycle: a committed ``200`` with no bytes.
+    """
+    _install_bridge_settings(monkeypatch, enabled=True)
+    caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
+
+    response, dispatched, layers = await _native_bridge_turn_refused_locally(
+        async_client, app_instance, monkeypatch, case
+    )
+
+    _assert_native_refusal_reached_its_site(caplog, case, layers)
+    assert (response.status_code, response.content) == (200, b""), response.text
+    assert dispatched == case.turn_frames
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    (_SUBMIT_SESSION_CLOSED_AFTER_ADMISSION, _RESOLVE_DURABLE_LOOKUP_FAILED),
+    ids=lambda case: case.site,
+)
+async def test_native_codex_http_bridge_local_refusal_emits_terminal_after_commit(
+    async_client,
+    app_instance,
+    monkeypatch,
+    caplog,
+    case: _NativeRefusalCase,
+):
+    """Once the response has committed, a local refusal must arrive as an unmarked terminal.
+
+    The startup probe is disabled and the bridge stream starts late, so the
+    refusal lands after the ``200`` is on the wire, for one submission refusal
+    and one session-resolution refusal.
+    """
+    _install_bridge_settings(monkeypatch, enabled=True)
+    from app.modules.proxy import api as proxy_api_module
+
+    monkeypatch.setattr(proxy_api_module, "_HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS", 0.0)
+    monkeypatch.setattr(proxy_api_module, "_CAPACITY_STARTUP_SIGNAL_DISCOVERY_SECONDS", 0.0)
+    caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
+    caplog.set_level(logging.WARNING, logger="app.modules.proxy.downstream_delivery")
+    bridge_stream = proxy_module.ProxyService._stream_via_http_bridge
+
+    async def late_bridge_stream(self, *args, **kwargs):
+        await asyncio.sleep(0.05)
+        async for line in bridge_stream(self, *args, **kwargs):
+            yield line
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_stream_via_http_bridge", late_bridge_stream)
+
+    response, dispatched, layers = await _native_bridge_turn_refused_locally(
+        async_client, app_instance, monkeypatch, case
+    )
+
+    _assert_native_refusal_reached_its_site(caplog, case, layers)
+    assert response.status_code == 200
+    events = [
+        json.loads(block.split("data: ", 1)[1])
+        for block in response.text.split("\n\n")
+        if "data: " in block and "data: [DONE]" not in block
+    ]
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1, f"expected one terminal failure, got {[event.get('type') for event in events]}"
+    assert failed[0]["response"]["error"]["code"] == case.code
+    assert failed[0]["response"]["error"]["message"] == case.message
+    assert "_codex_lb_synthetic_transport_failure" not in response.text
+    assert response.text.rstrip().endswith("data: [DONE]")
+    assert not [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.modules.proxy.downstream_delivery"
+        and "outcome=exception_before_terminal" in record.getMessage()
+    ], "the refusal still escaped the committed body instead of ending it with a terminal"
+    assert dispatched == 0, "the refused turn was sent upstream"
+
+
+@pytest.mark.asyncio
+async def test_forwarded_session_resolution_refusal_marks_the_owner_error_as_a_local_refusal(
+    async_client,
+    app_instance,
+    monkeypatch,
+):
+    """An owner replica marks a session-resolution refusal for the origin it answers.
+
+    The origin rebuilds the failure from the owner's status and body; the marker
+    is what keeps the origin's native lifecycle from aborting its own body
+    (``test_native_codex_owner_forward_denied_anchor_refusal_returns_502_before_commit``
+    covers the origin half).
+    """
+    from app.modules.proxy import api as proxy_api_module
+    from app.modules.proxy.http_bridge_forwarding import HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER
+
+    _install_bridge_settings(monkeypatch, enabled=True)
+    owner_settings = proxy_module.get_settings()
+    monkeypatch.setattr(proxy_api_module, "get_settings", lambda: owner_settings)
+    account_id = await _import_account(
+        async_client,
+        "acc_forwarded_resolution_refusal_owner",
+        "forwarded-resolution-refusal-owner@example.com",
+    )
+    account = await _get_account(account_id)
+    upstream = _FakeBridgeUpstreamWebSocket()
+    _install_denied_anchor_bridge_fakes(monkeypatch, account=account, upstream=cast(Any, upstream))
+    service = get_proxy_service_for_app(app_instance)
+
+    async def lookup_failed(**kwargs):
+        del kwargs
+        raise RuntimeError("durable metadata unavailable")
+
+    monkeypatch.setattr(service._durable_bridge, "lookup_request_targets", lookup_failed)
+    payload, headers = _denied_anchor_owner_forward_headers(
+        {"model": "gpt-5.1", "instructions": "Return exactly OK.", "input": "hello"},
+        session_key="forwarded-resolution-refusal-owner-session",
+    )
+
+    async with _client_reporting_committed_stream_failures(app_instance) as client:
+        response = await client.post(
+            "/internal/bridge/responses",
+            json=payload.model_dump_for_forwarding(),
+            headers=headers,
+        )
+
+    assert response.status_code == 502, response.text
+    assert response.json()["error"]["message"] == _OWNER_METADATA_UNAVAILABLE
+    assert response.headers.get(HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER) == "1"
+    assert upstream.sent_text == []
 
 
 # --- Reproduction for #1384 takeover (narrowed scope): accepted, output-free capacity failure ---

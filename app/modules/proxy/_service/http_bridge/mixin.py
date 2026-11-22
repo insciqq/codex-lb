@@ -83,7 +83,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_capacity_after_planned_closes,
     _http_bridge_claim_allows_takeover,
     _http_bridge_compatible,
-    _http_bridge_continuity_lost_error_envelope,
+    _http_bridge_continuity_lost_error,
     _http_bridge_endpoint_matches_current_instance,
     _http_bridge_has_durable_recovery_anchor,
     _http_bridge_incompatible_model_fork_key,
@@ -93,7 +93,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_models_compatible,
     _http_bridge_owner_check_required,
     _http_bridge_owner_instance,
-    _http_bridge_owner_lookup_unavailable_error_envelope,
+    _http_bridge_owner_lookup_unavailable_error,
     _http_bridge_parallel_fork_key,
     _http_bridge_previous_response_alias_key,
     _http_bridge_previous_response_owner_unavailable_error,
@@ -116,6 +116,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_turn_state_alias_key,
     _log_http_bridge_event,
     _log_http_bridge_startup_wait_timeout,
+    _mark_http_bridge_local_refusal_candidate,
     _mark_http_bridge_reader_handoff_reconnect_failed,
     _persist_http_bridge_replacement_account,
     _persistent_http_bridge_affinity,
@@ -575,7 +576,7 @@ class _HTTPBridgeMixin(
                                 key=alias_key.affinity_key,
                             ):
                                 if alias_session is None:
-                                    raise ProxyResponseError(502, _http_bridge_continuity_lost_error_envelope())
+                                    raise _http_bridge_continuity_lost_error()
                                 bind_account_neutral_recovery_owner(alias_session)
                                 continue
                             self._http_bridge_turn_state_index.pop(alias_index_key, None)
@@ -606,7 +607,7 @@ class _HTTPBridgeMixin(
                             preferred_account_id=preferred_account_id,
                             require_preferred_account=require_preferred_account,
                         ):
-                            raise ProxyResponseError(502, _http_bridge_continuity_lost_error_envelope())
+                            raise _http_bridge_continuity_lost_error()
                         else:
                             self._promote_http_bridge_session_to_codex_affinity(
                                 alias_session,
@@ -673,7 +674,7 @@ class _HTTPBridgeMixin(
                                 not _http_bridge_alias_target_is_stale(previous_session)
                                 and not previous_session.handoff_in_progress
                             ):
-                                raise ProxyResponseError(502, _http_bridge_continuity_lost_error_envelope())
+                                raise _http_bridge_continuity_lost_error()
                             elif previous_key is not None:
                                 self._http_bridge_previous_response_index.pop(previous_alias_key, None)
                         if model_transition_rebind:
@@ -836,10 +837,7 @@ class _HTTPBridgeMixin(
                                     session_id=incoming_turn_state or incoming_session_key,
                                     upstream_error_code="owner_lookup_failed",
                                 )
-                                raise ProxyResponseError(
-                                    502,
-                                    _http_bridge_owner_lookup_unavailable_error_envelope(),
-                                ) from exc
+                                raise _http_bridge_owner_lookup_unavailable_error() from exc
                             if _http_bridge_can_local_recover_without_ring(
                                 key=key,
                                 headers=headers,
@@ -866,10 +864,7 @@ class _HTTPBridgeMixin(
                                 session_id=incoming_turn_state or incoming_session_key,
                                 upstream_error_code="ring_lookup_failed",
                             )
-                            raise ProxyResponseError(
-                                502,
-                                _http_bridge_owner_lookup_unavailable_error_envelope(),
-                            ) from exc
+                            raise _http_bridge_owner_lookup_unavailable_error() from exc
                         if ring_lookup_failed or _http_bridge_can_local_recover_without_ring(
                             key=key,
                             headers=headers,
@@ -1247,7 +1242,7 @@ class _HTTPBridgeMixin(
                             previous_response_id=previous_response_id,
                             session_id=incoming_turn_state or incoming_session_key,
                         )
-                        continuity_error = ProxyResponseError(502, _http_bridge_continuity_lost_error_envelope())
+                        continuity_error = _http_bridge_continuity_lost_error()
                     elif missing_turn_state_alias and inflight_future is None and durable_lookup is None:
                         turn_state_scope_conflict = incoming_turn_state is not None and any(
                             alias == incoming_turn_state and alias_api_key != api_key_id
@@ -1560,7 +1555,11 @@ class _HTTPBridgeMixin(
                     # local successor claims (no pre-claim lookup, or a
                     # forced replace of a live local session).
                     claim_kwargs["record_restart_takeover"] = True
-                await self._claim_durable_http_bridge_session(created_session, **claim_kwargs)
+                try:
+                    await self._claim_durable_http_bridge_session(created_session, **claim_kwargs)
+                except ProxyResponseError as claim_error:
+                    # Creating the session precedes the turn's submission; see _http_bridge_local_refusal.
+                    raise _mark_http_bridge_local_refusal_candidate(claim_error)
                 async with self._http_bridge_lock:
                     current_future = self._http_bridge_inflight_sessions.get(key)
                     if current_future is inflight_future:
